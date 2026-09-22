@@ -4,6 +4,9 @@ Repository chính thức: https://github.com/minhtuan5991/StoryForce
 
 ## Máy sử dụng app
 
+- Trong **Thiết lập → Chung → Cập nhật ứng dụng**, bấm **Kiểm tra bản cập nhật** để kiểm tra ngay, bỏ qua thời gian chờ 6 giờ. Trạng thái kiểm tra/tải hiển thị ở đây. Khi sẵn sàng, Stop rồi Start để cài hoặc bấm **Tải bộ cài đã sẵn sàng** để cài thủ công.
+- Bản 3.1.1 được bổ sung nút này nhưng giữ nguyên số phiên bản theo yêu cầu. Nếu đã cài 3.1.1 trước đó, tải lại Setup từ GitHub và cài đè một lần để nhận giao diện mới; bộ cập nhật chỉ tự tải phiên bản có số cao hơn.
+
 - Cài bản 3.1.0 hoặc mới hơn một lần. Các bản 3.0.0 chưa có bộ cập nhật.
 - Bản đã cài bằng Setup tự kiểm tra GitHub khi mở app, tối đa một lần mỗi 6 giờ. App vẫn hoạt động nếu mất mạng.
 - Bản mới được tải ở nền vào `StoryForge US Data/updates`, không gửi nội dung dự án, media hoặc tài khoản AI lên GitHub.

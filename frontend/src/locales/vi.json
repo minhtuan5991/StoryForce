@@ -1420,5 +1420,17 @@
   "Includes imported copies, audio, images, video, render attempts and TXT files inside this project folder. Exports and originals elsewhere remain.": "Bao gồm bản sao đã nhập, âm thanh, ảnh, video, các lần dựng và TXT trong thư mục dự án. Giữ bản xuất và bản gốc ở nơi khác.",
   "Shared files and linked folders were kept.": "File dùng chung và thư mục liên kết được giữ lại.",
   "Some files could not be removed. Close apps using them, then remove these files manually:": "Một số file chưa xóa được. Đóng ứng dụng đang dùng chúng, rồi xóa thủ công các file sau:",
-  "Private project files will be permanently deleted. Shared files, exports outside the project folder and original imports elsewhere will remain.": "File riêng trong thư mục dự án sẽ bị xóa vĩnh viễn. Giữ file dùng chung, bản xuất ngoài thư mục dự án và các bản gốc ở nơi khác."
+  "Private project files will be permanently deleted. Shared files, exports outside the project folder and original imports elsewhere will remain.": "File riêng trong thư mục dự án sẽ bị xóa vĩnh viễn. Giữ file dùng chung, bản xuất ngoài thư mục dự án và các bản gốc ở nơi khác.",
+  "App updates": "Cập nhật ứng dụng",
+  "Current version": "Phiên bản hiện tại",
+  "Check for updates": "Kiểm tra bản cập nhật",
+  "Download ready installer": "Tải bộ cài đã sẵn sàng",
+  "Open latest release": "Mở bản phát hành mới nhất",
+  "Check GitHub for a newer version.": "Kiểm tra phiên bản mới trên GitHub.",
+  "Checking for updates…": "Đang kiểm tra bản cập nhật…",
+  "Downloading and verifying the new installer…": "Đang tải và xác minh bộ cài mới…",
+  "Update ready. Stop and Start the app to install, or download the installer below.": "Bản cập nhật đã sẵn sàng. Stop rồi Start để cài, hoặc tải bộ cài bên trên.",
+  "You are using the latest version.": "Bạn đang dùng phiên bản mới nhất.",
+  "Could not check for updates. Check your Internet connection and try again.": "Không kiểm tra được bản cập nhật. Hãy kiểm tra kết nối Internet rồi thử lại.",
+  "Manual checks run immediately without the 6-hour wait. Current tasks are not stopped.": "Kiểm tra ngay không cần chờ 6 giờ. Các tác vụ đang chạy không bị dừng."
 }

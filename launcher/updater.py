@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 REPOSITORY = 'minhtuan5991/StoryForce'
 MAX_INSTALLER_BYTES = 300 * 1024 * 1024
 LOG = logging.getLogger('app')
+CHECK_LOCK = threading.Lock()
 
 
 def version(value):
@@ -105,14 +106,24 @@ def download(root, info):
         partial.unlink(missing_ok=True)
 
 
-def check(root, current):
+def check(root, current, force=False):
+    if not CHECK_LOCK.acquire(blocking=False):
+        return
+    try:
+        _check(root, current, force)
+    finally:
+        CHECK_LOCK.release()
+
+
+def _check(root, current, force=False):
     folder = root / 'updates'
     folder.mkdir(parents=True, exist_ok=True)
     status = folder / 'status.json'
     try:
         previous = json.loads(status.read_text(encoding='utf-8')) if status.exists() else {}
-        if time.time() - previous.get('checked_at', 0) < 6 * 3600:
+        if not force and time.time() - previous.get('checked_at', 0) < 6 * 3600:
             return
+        save_json(status, {'checked_at': time.time(), 'state': 'checking'})
         with request(f'https://api.github.com/repos/{REPOSITORY}/releases/latest') as response:
             payload = response.read(1024 * 1024 + 1)
         if len(payload) > 1024 * 1024:
@@ -122,6 +133,7 @@ def check(root, current):
             pending_file = folder / 'pending.json'
             pending = json.loads(pending_file.read_text()) if pending_file.exists() else None
             if pending != info or not (folder / info['name']).exists():
+                save_json(status, {'checked_at': time.time(), 'state': 'downloading', 'version': info['version']})
                 download(root, info)
         save_json(status, {'checked_at': time.time(), 'state': 'ready' if info else 'current',
                            'version': info['version'] if info else current})

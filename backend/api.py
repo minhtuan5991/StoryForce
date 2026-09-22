@@ -33,6 +33,8 @@ from .providers import PROVIDERS, PROVIDER_URLS
 from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets
 from .portability import project_archive, inspect_database
 from .youtube_metadata import metadata_fingerprint, upload_text
+from launcher import updater
+import threading
 
 
 def create_app(data_root: str | Path | None = None):
@@ -653,6 +655,41 @@ def create_app(data_root: str | Path | None = None):
     @app.get("/api/novelty")
     def novelty():
         with database.session() as db:return {"items":[serialize(n) for n in db.query(Novelty).order_by(desc(Novelty.updated_at)).limit(500)],"method":"Transparent token Jaccard + structured motif overlap; no embedding API required"}
+
+    @app.get("/api/updates")
+    def update_status():
+        path = root / 'updates' / 'status.json'
+        try:
+            status = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'state':'idle'}
+        except (OSError, ValueError):
+            status = {'state':'idle'}
+        return {**status, 'current_version': VERSION, 'automatic_install': updater.enabled(APP_ROOT),
+                'release_url': f'https://github.com/{updater.REPOSITORY}/releases/latest'}
+
+    @app.post("/api/updates/check")
+    def check_updates():
+        # Separate thread; never occupy the story/render executor or wait on network in the request.
+        if not updater.CHECK_LOCK.locked():
+            threading.Thread(target=updater.check, args=(root, VERSION, True), daemon=True).start()
+        return {'state':'checking'}
+
+    @app.get("/api/updates/installer")
+    def update_installer():
+        try:
+            folder = root / 'updates'
+            info = json.loads((folder / 'pending.json').read_text(encoding='utf-8'))
+            normalized = '.'.join(map(str, updater.version(info['version'])))
+            name = f'StoryForge-US-{normalized}-Setup.exe'
+            if info['name'] != name:
+                raise ValueError('Invalid installer name')
+            path = safe_path(root, 'updates/' + name)
+            with path.open('rb') as stream:
+                checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+            if checksum != info['sha256'] or path.stat().st_size != info['size']:
+                raise ValueError('Installer checksum mismatch')
+            return FileResponse(path, filename=name, media_type='application/octet-stream')
+        except (OSError, ValueError, KeyError):
+            raise HTTPException(409, 'No verified installer is ready. Check for updates again.')
 
     @app.get("/api/settings")
     def get_settings():

@@ -88,6 +88,39 @@ def test_tampered_staged_installer_cannot_launch(tmp_path, monkeypatch):
     installer = updater.download(tmp_path, info)
     installer.write_bytes(b'evil')
     assert not updater.apply_pending(tmp_path, tmp_path / 'app', '3.1.0', tmp_path)
+
+
+def test_manual_check_bypasses_interval(tmp_path, monkeypatch):
+    calls = []
+    def latest(url):
+        calls.append(url)
+        return io.BytesIO(json.dumps(release(tag='v3.1.0')).encode())
+    monkeypatch.setattr(updater, 'request', latest)
+    updater.check(tmp_path, '3.1.1')
+    updater.check(tmp_path, '3.1.1')
+    assert len(calls) == 1
+    updater.check(tmp_path, '3.1.1', force=True)
+    assert len(calls) == 2
+    assert not updater.CHECK_LOCK.locked()
+
+
+def test_updates_api_manual_and_verified_download(client, monkeypatch):
+    import threading
+    called = threading.Event()
+    def check(root, current, force):
+        assert force is True
+        called.set()
+    monkeypatch.setattr(updater, 'check', check)
+    assert client.get('/api/updates').json()['current_version'] == '3.1.1'
+    assert client.post('/api/updates/check').status_code == 200
+    assert called.wait(2)
+    assert client.get('/api/updates/installer').status_code == 409
+    monkeypatch.setattr(updater, 'request', lambda url: io.BytesIO(b'installer'))
+    info = updater.candidate(release(), '3.1.1')
+    path = updater.download(client.app.state.root, info)
+    assert client.get('/api/updates/installer').content == b'installer'
+    path.write_bytes(b'corrupt')
+    assert client.get('/api/updates/installer').status_code == 409
     info['name'] = '../outside.exe'
-    (tmp_path / 'updates/pending.json').write_text(json.dumps(info))
-    assert not updater.apply_pending(tmp_path, tmp_path / 'app', '3.1.0', tmp_path)
+    (client.app.state.root / 'updates/pending.json').write_text(json.dumps(info))
+    assert client.get('/api/updates/installer').status_code == 409
