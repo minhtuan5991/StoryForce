@@ -35,3 +35,5 @@
 .view-text{overflow-wrap:anywhere}
 .draft-view-translation{padding:20px;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);margin:18px 0}
 .draft-view-translation>.narration-text{margin:16px 0;white-space:pre-wrap;line-height:1.8}
+
+.brand .brand-version{display:block;font-size:11px;line-height:1.5;font-weight:600;letter-spacing:.4px;color:var(--muted);margin:2px 0}
