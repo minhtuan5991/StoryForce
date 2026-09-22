@@ -1,0 +1,24 @@
+.venv/
+node_modules/
+frontend/dist/
+__pycache__/
+.pytest_cache/
+build/
+release/
+tools/
+*.db*
+*.log
+test-results/
+playwright-report/
+.runtime/
+.env
+.env.*
+!.env.example
+storyforge.config.json
+**/storyforge.config.json
+StoryForge US Data/
+*.pem
+*.key
+*.pfx
+*.p12
+*.tsbuildinfo
