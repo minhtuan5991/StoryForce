@@ -36,6 +36,7 @@ async function handle(message) {
   if (!tabId) throw new Error('Open the provider tab first.');
   const tab=await chrome.tabs.get(tabId);
   if (!ALLOWED.includes(new URL(tab.url).hostname)) throw new Error('The tab is no longer on a supported provider.');
+  await ensureContent(tabId);
   const result=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:message.action,prompt:job.prompt});
   if (!result?.ok) {
     await request('/jobs/'+job.id+'/status','POST',{step:result?.error || 'Bridge unavailable; use manual mode'});
@@ -53,7 +54,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
 });
 
 async function ensureContent(tabId){
-  try{const response=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'});if(response?.version==='1.1.5')return}catch{}
+  try{const response=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'});if(response?.version==='1.1.6')return}catch{}
   const tab=await chrome.tabs.get(tabId);
   if(!ALLOWED.includes(new URL(tab.url).hostname))throw new Error('Unsupported provider tab');
   await chrome.scripting.executeScript({target:{tabId},files:['adapters.js','content.js']});

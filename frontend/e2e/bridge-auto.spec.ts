@@ -1,5 +1,86 @@
-import {test,expect} from '@playwright/test';
+import {test as base,expect,type Page} from '@playwright/test';
 import path from 'node:path';
+
+// Keep Comet's browser-level page lifecycle isolated between fixture cases.
+const test=base.extend({
+  context:async({playwright,browserName,launchOptions,headless,channel,contextOptions},use)=>{
+    const browser=await playwright[browserName].launch({...launchOptions,headless,channel});
+    try{await use(await browser.newContext(contextOptions))}finally{await browser.close()}
+  },
+});
+
+async function chatgptFixture(page:Page,body:string){
+  await page.route('https://chatgpt.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8">'+body}));
+  await page.addInitScript(()=>{(window as any).chrome={runtime:{onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
+  await page.goto('https://chatgpt.com/');
+  await page.addScriptTag({path:path.resolve('../browser-extension/adapters.js')});
+  await page.addScriptTag({path:path.resolve('../browser-extension/content.js')});
+  return (message:any)=>page.evaluate(message=>new Promise<any>(resolve=>(window as any).bridgeListener({type:'storyforge',jobKey:'new-composer:1',prompt:'A complete prompt.\n\nReturn JSON with English and Tiếng Việt.',...message},{},resolve)),message);
+}
+
+for(const [name,editor] of [
+  ['Vietnamese textarea','<textarea id="current" placeholder="Hỏi ChatGPT"></textarea>'],
+  ['rich textbox without the old ID','<div id="current" role="textbox" contenteditable="true"><p><br></p></div>'],
+  ['plain text editor','<div id="current" role="textbox" contenteditable="plaintext-only"></div>'],
+  ['unique unnamed editor','<div id="current" contenteditable=""></div>'],
+]){
+  test('fills the '+name+' and sends only after the full prompt is present',async({page})=>{
+    const invoke=await chatgptFixture(page,`<aside><textarea>Search history</textarea></aside>
+      <textarea id="prompt-textarea" readonly>Read-only copy</textarea>
+      <div contenteditable="true" style="display:none">Hidden copy</div>
+      <main>${editor}<button data-testid="composer-send-button" disabled>Gửi</button>
+      <button aria-label="Start voice mode" onclick="window.wrongClick=true">Voice</button></main>`);
+    await page.evaluate(()=>{
+      document.getElementById('current')!.addEventListener('input',()=>{(document.querySelector('[data-testid="composer-send-button"]') as HTMLButtonElement).disabled=false});
+      document.querySelector('[data-testid="composer-send-button"]')!.addEventListener('click',()=>{(window as any).sentCount=((window as any).sentCount||0)+1});
+    });
+    const prepared=await invoke({action:'auto-prepare'});
+    expect(prepared.ok,prepared.error).toBe(true);
+    expect((await invoke({action:'auto-check-send',baseline:prepared.baseline})).ready).toBe(true);
+    expect((await invoke({action:'auto-send',baseline:prepared.baseline})).submitted).toBe(true);
+    expect((await invoke({action:'auto-send',baseline:prepared.baseline})).ok).toBe(false);
+    expect(await page.evaluate(()=>(window as any).sentCount)).toBe(1);
+    expect(await page.evaluate(()=>(window as any).wrongClick||false)).toBe(false);
+    await expect(page.locator('aside textarea')).toHaveValue('Search history');
+    await expect(page.locator('#prompt-textarea')).toHaveValue('Read-only copy');
+  });
+}
+
+test('a draft that mounts after page load is never overwritten',async({page})=>{
+  const invoke=await chatgptFixture(page,'<main></main>');
+  await page.evaluate(()=>setTimeout(()=>document.querySelector('main')!.insertAdjacentHTML('beforeend','<textarea placeholder="Hỏi ChatGPT">My existing draft</textarea>'),650));
+  const prepared=await invoke({action:'auto-prepare'});
+  expect(prepared.ok).toBe(false);expect(prepared.error).toContain('chưa gửi');
+  await expect(page.locator('textarea')).toHaveValue('My existing draft');
+});
+
+test('an editor remount is detected before sending and the next preparation fills the live editor',async({page})=>{
+  const invoke=await chatgptFixture(page,'<main><textarea placeholder="Hỏi ChatGPT"></textarea><button data-testid="send-button">Send</button></main>');
+  await page.evaluate(()=>{
+    document.querySelector('textarea')!.addEventListener('input',()=>{
+      const replacement=document.createElement('textarea');replacement.placeholder='Hỏi ChatGPT';
+      document.querySelector('textarea')!.replaceWith(replacement);
+    },{once:true});
+    document.querySelector('button')!.addEventListener('click',()=>{(window as any).sentCount=((window as any).sentCount||0)+1});
+  });
+  const remounted=await invoke({action:'auto-prepare'});
+  expect(remounted).toMatchObject({ok:false,code:'EDITOR_CHANGED'});
+  expect(await page.evaluate(()=>(window as any).sentCount||0)).toBe(0);
+  const prepared=await invoke({action:'auto-prepare'});
+  expect(prepared.ok,prepared.error).toBe(true);
+  expect((await invoke({action:'auto-send',baseline:prepared.baseline})).submitted).toBe(true);
+  expect(await page.evaluate(()=>(window as any).sentCount)).toBe(1);
+});
+
+test('ambiguous fallback fields are left untouched',async({page})=>{
+  const invoke=await chatgptFixture(page,'<main><div contenteditable="true"></div><div contenteditable="true"></div></main>');
+  await page.clock.install();
+  const pending=invoke({action:'auto-prepare'});
+  await page.clock.runFor(8100);
+  const prepared=await pending;
+  expect(prepared).toMatchObject({ok:false,code:'INPUT_NOT_READY'});
+  expect(await page.locator('[contenteditable]').allTextContents()).toEqual(['','']);
+});
 
 test('Vietnamese Gemini waits for the enabled send control and never clicks a hidden or stop button',async({page})=>{
   await page.route('https://gemini.google.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><meta charset="utf-8">

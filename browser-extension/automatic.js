@@ -20,6 +20,16 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
   };
   const stillEnabled=async()=>{if(!(await read()).enabled)throw new Error('Tự động đã tắt. Bật lại để tiếp tục; không tự gửi lại prompt.')};
   const textJob=job=>['chatgpt','gemini'].includes(job.provider)&&!['image_generation','video_generation','tts_context'].includes(job.kind);
+  const recoverablePreparation=error=>['INPUT_NOT_READY','EDITOR_CHANGED'].includes(error.code)||
+    /Prompt field not found|message channel closed|message port closed|Response port closed|Receiving end does not exist|Could not establish connection|frame was removed/i.test(error.message||'');
+  async function waitForComposer(state){
+    const prepareChecks=(state.prepareChecks||0)+1;
+    if(prepareChecks>8||now()>state.deadline)return false;
+    const message='Đang chờ ô nhập AI/kết nối tab sẵn sàng ('+prepareChecks+'/8); chưa gửi yêu cầu.';
+    await write({...state,phase:'opening',prepareChecks,prepareRetryAt:now()+2000,message});
+    try{await request('/jobs/'+state.jobId+'/status','POST',{step:message})}catch{}
+    return true;
+  }
   const retryCode=state=>state.retryStopped?null:state.retryCode||(/chưa phải JSON hợp lệ/.test(state.message||'')?'INVALID_JSON':/Chưa có nút gửi khả dụng/.test(state.message||'')?'SEND_NOT_READY':null);
   async function queueRetry(state,code){
     const message='Tự động chờ 30 giây rồi thử lại bằng yêu cầu mới: '+(code==='INVALID_JSON'?'câu trả lời không phải JSON.':'chưa có nút gửi khả dụng.');
@@ -37,7 +47,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
     // A prepared job has never authorized Send. Retry filling in a fresh tab,
     // preserving any draft in the previous tab (including one filled by 1.1.0).
     const reset=phase==='prepared'?{phase:'opening',tabId:undefined,baseline:undefined}:{phase};
-    return write({...state,...reset,enabled:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),previous:'',stable:0,sendChecks:0,jsonChecks:0,jsonRetryAt:0,message:'Đang tiếp tục. Prompt đã gửi sẽ không được gửi lại.'},true);
+    return write({...state,...reset,enabled:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),previous:'',stable:0,sendChecks:0,jsonChecks:0,jsonRetryAt:0,prepareChecks:0,prepareRetryAt:0,message:'Đang tiếp tục. Prompt đã gửi sẽ không được gửi lại.'},true);
   }
   async function tick(){
     if(busy)return;
@@ -58,6 +68,15 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       let job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt);
       if(state.jobId&&!job){state=await write({enabled:true,phase:'idle',message:'Tác vụ trước đã hoàn tất hoặc đã hủy.'})}
       if(state.phase==='paused'){
+        // Repair a previously paused 1.1.5 pre-send failure once on upgrade.
+        // The backend must confirm Send has NEVER been authorized for this attempt.
+        if(!state.preparationRecovered&&job&&textJob(job)&&state.owner&&
+           ['opening','prepared'].includes(state.resumePhase)&&recoverablePreparation({message:state.message})){
+          const {claim}=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
+          if(claim.phase==='claimed')await write({...state,phase:'opening',preparationRecovered:true,prepareChecks:0,
+            prepareRetryAt:0,deadline:now()+Math.max(30000,(state.timeout||180)*1000),message:'Đang kết nối lại ô nhập AI sau bản sửa lỗi.'});
+          return;
+        }
         // Upgrade an already-paused 1.1.4 job without requiring a popup click.
         const code=retryCode(state);
         if(job&&textJob(job)&&state.owner&&code)await queueRetry(state,code);
@@ -90,6 +109,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       };
       await stillEnabled();
       if(state.phase==='opening'){
+        if(state.prepareRetryAt&&now()<state.prepareRetryAt)return;
         if(!state.tabId){
           // Dedicated job tabs never overwrite an existing user draft/conversation.
           const tab=await chrome.tabs.create({url:job.url,active:true});
@@ -152,6 +172,14 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       }
     }catch(error){
       const current=await read();
+      if(['opening','prepared'].includes(current.phase)&&recoverablePreparation(error)){
+        if(await waitForComposer(current))return;
+        // One bounded wait sequence; further attempts require the user's Resume.
+        await write({...current,phase:'paused',preparationRecovered:true,resumePhase:current.phase,
+          message:'Chưa kết nối được ô nhập AI sau các lần chờ. Kiểm tra tab ChatGPT, tải lại trang rồi bấm Tiếp tục.'});
+        if(current.jobId){try{await request('/jobs/'+current.jobId+'/status','POST',{step:'Tự động tạm dừng: Chưa kết nối được ô nhập AI sau các lần chờ. Tải lại tab rồi tiếp tục.'})}catch{}}
+        return;
+      }
       if(['INVALID_JSON','SEND_NOT_READY'].includes(error.code)){
         await queueRetry(current,error.code);return;
       }

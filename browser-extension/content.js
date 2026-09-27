@@ -1,11 +1,26 @@
 (() => {
-  if (globalThis.storyForgeVersion === '1.1.5') return;
+  if (globalThis.storyForgeVersion === '1.1.6') return;
   if (globalThis.storyForgeListener) chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener);
-  globalThis.storyForgeVersion = '1.1.5';
+  globalThis.storyForgeVersion = '1.1.6';
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
     (el.checkVisibility ? el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) : getComputedStyle(el).visibility!=='hidden');
   const first = selectors => selectors.flatMap(selector => [...document.querySelectorAll(selector)]).find(visible);
+  const editable = el =>
+    visible(el)&&(el instanceof HTMLTextAreaElement||el instanceof HTMLInputElement||el.isContentEditable)&&
+    !el.disabled&&!el.readOnly&&el.getAttribute('aria-disabled')!=='true'&&el.getAttribute('aria-readonly')!=='true';
+  function promptField(a){
+    const known=a.input.flatMap(selector=>[...document.querySelectorAll(selector)]).find(editable);
+    if(known)return known;
+    // ChatGPT's composer ID/placeholder can change. Only use a unique visible
+    // editor outside navigation/search/dialogs; never guess between multiple drafts.
+    if(a.host!=='chatgpt.com')return;
+    const candidates=[...document.querySelectorAll('textarea,[contenteditable]')].filter(el=>
+      editable(el)&&!el.closest('nav,aside,[role="navigation"],[role="search"],[role="dialog"]')&&
+      !el.parentElement?.isContentEditable);
+    if(candidates.length===1)return candidates[0];
+  }
+  const transient = (message,code='INPUT_NOT_READY') => Object.assign(new Error(message),{code});
   const runButton = a => a.run.flatMap(selector=>[...document.querySelectorAll(selector)]).find(el=>
     visible(el)&&!el.matches(':disabled')&&el.getAttribute('aria-disabled')!=='true'&&
     getComputedStyle(el).pointerEvents!=='none'&&!a.busy.some(selector=>el.matches(selector)));
@@ -48,15 +63,17 @@
   // innerText includes CSS paragraph spacing; textContent omits block breaks.
   const inputText=element=>normalizeText(element.value??editorText(element));
   async function execute(message) {
-    if(message.action==='ping')return {version:'1.1.5'};
+    if(message.action==='ping')return {version:'1.1.6'};
     check();
     const a = adapter();
     if(message.action==='auto-prepare'){
       if(first(a.busy))throw new Error('Trang AI đang trả lời. Chờ hoàn tất rồi tiếp tục.');
-      const existing=first(a.input);
+      const existing=promptField(a);
       if(existing&&inputText(existing)&&inputText(existing)!==normalizeText(message.prompt))throw new Error('Ô nhập AI có nội dung chưa gửi. Kiểm tra nội dung đó rồi tiếp tục.');
       const baseline=snapshot();
-      await execute({...message,action:'fill'});
+      await execute({...message,action:'fill',preserveDraft:true});
+      const after=snapshot();
+      if(after.count!==baseline.count||after.last!==baseline.last||first(a.busy))throw new Error('Nội dung trang đã thay đổi trong khi điền prompt. Kiểm tra tab AI rồi tiếp tục.');
       return {baseline};
     }
     if(message.action==='auto-send'||message.action==='auto-check-send'){
@@ -70,7 +87,8 @@
       if(first(a.busy))throw new Error('AI đang tạo câu trả lời; không gửi thêm.');
       const current=snapshot();
       if(!message.baseline||current.count!==message.baseline.count||current.last!==message.baseline.last)throw new Error('Nội dung trang đã thay đổi. Kiểm tra thủ công để tránh lấy nhầm câu trả lời.');
-      const input=first(a.input);
+      const input=promptField(a);
+      if(!input)throw transient('Ô nhập đang tải lại. Đang chờ trang AI sẵn sàng.');
       if(!input||inputText(input)!==normalizeText(message.prompt))throw new Error('Prompt trên trang không khớp tác vụ. Không tự gửi.');
       button=runButton(a);
       if(button)break;
@@ -90,9 +108,15 @@
     }
     if (message.action === 'fill') {
       let element = null;
-      for (let i = 0; i < 20; i++) { element = first(a.input); if (element) break; await new Promise(resolve => setTimeout(resolve, 400)); }
-      if (!element) throw new Error('Prompt field not found. Open the correct generation screen, or copy/paste the prompt manually.');
+      for (let i = 0; i < 20; i++) { check(); element = promptField(a); if (element) break; await new Promise(resolve => setTimeout(resolve, 400)); }
+      if (!element) throw transient('Chưa tìm thấy ô nhập ChatGPT/AI sẵn sàng. Đang chờ trang tải xong.');
       if (element.disabled || element.readOnly) throw new Error('Provider input is disabled. Resolve account or quota requirements manually.');
+      // Recheck AFTER the editor appears; a late-mounted draft belongs to the user too.
+      if(message.preserveDraft){
+        if(first(a.busy))throw new Error('AI đang tạo câu trả lời; không điền thêm prompt.');
+        if(inputText(element)&&inputText(element)!==normalizeText(message.prompt))throw new Error('Ô nhập AI có nội dung chưa gửi. Kiểm tra nội dung đó rồi tiếp tục.');
+      }
+      if(inputText(element)===normalizeText(message.prompt))return {message:'Prompt đã có sẵn trong ô nhập.'};
       element.focus();
       if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
         Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set.call(element, message.prompt);
@@ -109,7 +133,14 @@
       }
       element.dispatchEvent(new Event('change', {bubbles:true}));
       // Let the provider reconcile its editor model before checking/sending.
-      await new Promise(resolve=>setTimeout(resolve,100));
+      await new Promise(resolve=>setTimeout(resolve,350));
+      check();
+      const current=promptField(a);
+      if(!element.isConnected||current!==element)throw transient('Ô soạn thảo vừa tải lại. Đang kết nối lại để điền prompt.','EDITOR_CHANGED');
+      if(inputText(current)!==normalizeText(message.prompt)){
+        if(!inputText(current))throw transient('Trang AI chưa giữ nội dung vừa nhập. Đang chờ rồi điền lại.','EDITOR_CHANGED');
+        throw new Error('Nội dung trong ô nhập không khớp prompt. Kiểm tra tab AI để tránh ghi đè bản nháp.');
+      }
       return {message:'Prompt filled. Review the page before Send / Run.'};
     }
     if (message.action === 'send') {

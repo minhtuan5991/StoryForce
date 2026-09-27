@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 import pytest
 from launcher import updater
+from backend.config import VERSION
 
 
 def release(data=b'installer', tag='v3.2.0'):
@@ -111,7 +112,7 @@ def test_updates_api_manual_and_verified_download(client, monkeypatch):
         assert force is True
         called.set()
     monkeypatch.setattr(updater, 'check', check)
-    assert client.get('/api/updates').json()['current_version'] == '3.1.1'
+    assert client.get('/api/updates').json()['current_version'] == VERSION
     assert client.post('/api/updates/check').status_code == 200
     assert called.wait(2)
     assert client.get('/api/updates/installer').status_code == 409
