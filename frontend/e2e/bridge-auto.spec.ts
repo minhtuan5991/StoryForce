@@ -82,6 +82,31 @@ test('ambiguous fallback fields are left untouched',async({page})=>{
   expect(await page.locator('[contenteditable]').allTextContents()).toEqual(['','']);
 });
 
+test('capture combines all blocks of the newest assistant reply and ignores the user prompt',async({page})=>{
+  const invoke=await chatgptFixture(page,'<main><textarea placeholder="Hỏi ChatGPT"></textarea><article data-turn="assistant" data-testid="conversation-turn-1"><div data-message-author-role="assistant" data-message-id="old"><div class="markdown">Old answer</div></div></article></main>');
+  const prepared=await invoke({action:'auto-prepare'});expect(prepared.ok).toBe(true);
+  await page.evaluate(()=>document.querySelector('main')!.insertAdjacentHTML('beforeend',
+    '<article data-turn="user"><div class="markdown">{"prompt":"do not capture"}</div></article><article data-turn="assistant" data-testid="conversation-turn-3"><div data-message-author-role="assistant" data-message-id="new"><div class="markdown">{"answer":</div><div class="markdown">"new response"}</div></div></article>'));
+  const result=await invoke({action:'auto-poll',baseline:prepared.baseline});
+  expect(result).toMatchObject({ok:true,busy:false});expect(JSON.parse(result.text)).toEqual({answer:'new response'});
+  expect(JSON.parse((await invoke({action:'capture'})).text)).toEqual({answer:'new response'});
+});
+
+test('new assistant message identity survives unchanged DOM counts and streaming is not finished',async({page})=>{
+  const invoke=await chatgptFixture(page,'<main><textarea placeholder="Hỏi ChatGPT"></textarea><article data-turn="assistant" data-testid="conversation-turn-1"><div class="markdown">Old answer</div></article></main>');
+  const prepared=await invoke({action:'auto-prepare'});expect(prepared.ok).toBe(true);
+  expect((await invoke({action:'auto-poll',baseline:prepared.baseline})).text).toBe('');
+  await page.evaluate(()=>{
+    const reply=document.querySelector('article')!;reply.setAttribute('data-testid','conversation-turn-3');
+    reply.innerHTML='<div class="markdown">{"answer":"new response"}</div>';
+    document.body.insertAdjacentHTML('beforeend','<button data-testid="stop-button">Stop</button>');
+  });
+  expect((await invoke({action:'auto-poll',baseline:prepared.baseline})).busy).toBe(true);
+  await page.locator('[data-testid="stop-button"]').evaluate(el=>el.remove());
+  const result=await invoke({action:'auto-poll',baseline:prepared.baseline});
+  expect(result.busy).toBe(false);expect(JSON.parse(result.text)).toEqual({answer:'new response'});
+});
+
 test('Vietnamese Gemini waits for the enabled send control and never clicks a hidden or stop button',async({page})=>{
   await page.route('https://gemini.google.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><meta charset="utf-8">
     <rich-textarea><div contenteditable="true" role="textbox"></div></rich-textarea>

@@ -1,7 +1,7 @@
 (() => {
-  if (globalThis.storyForgeVersion === '1.1.6') return;
+  if (globalThis.storyForgeVersion === '1.1.7') return;
   if (globalThis.storyForgeListener) chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener);
-  globalThis.storyForgeVersion = '1.1.6';
+  globalThis.storyForgeVersion = '1.1.7';
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
     (el.checkVisibility ? el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) : getComputedStyle(el).visibility!=='hidden');
@@ -31,16 +31,26 @@
     if (checkpoint()) throw new Error('Browser checkpoint detected. Complete it yourself, then retry.');
   }
   function lastResult() {
-    const a = adapter();
-    for (const selector of a.result) {
-      const elements = [...document.querySelectorAll(selector)].filter(visible);
-      if (elements.length) return elements.at(-1).innerText.trim();
-    }
-    return '';
+    return snapshot().last;
   }
   const sent=new Set();
   function snapshot(){
-    for(const selector of adapter().result){
+    const a=adapter();
+    if(a.messages){
+      const selector=a.messages.join(',');
+      const roots=[...document.querySelectorAll(selector)].filter(el=>visible(el)&&!el.parentElement?.closest(selector));
+      if(roots.length){
+        const latest=roots.at(-1);
+        // One reply can contain several prose/code blocks. Count messages, not
+        // markdown fragments, and never return just the last paragraph/block.
+        const blocks=[...latest.querySelectorAll('.markdown,[data-message-content]')].filter(el=>
+          visible(el)&&!el.parentElement?.closest('.markdown,[data-message-content]'));
+        const last=(blocks.length?blocks.map(el=>el.innerText).join('\n\n'):latest.innerText).trim();
+        const id=latest.getAttribute('data-message-id')||latest.querySelector('[data-message-id]')?.getAttribute('data-message-id')||latest.getAttribute('data-testid');
+        return {count:roots.length,last,...(id?{id}:{})};
+      }
+    }
+    for(const selector of a.result){
       const elements=[...document.querySelectorAll(selector)].filter(visible);
       if(elements.length)return {count:elements.length,last:elements.at(-1).innerText.trim()};
     }
@@ -63,7 +73,7 @@
   // innerText includes CSS paragraph spacing; textContent omits block breaks.
   const inputText=element=>normalizeText(element.value??editorText(element));
   async function execute(message) {
-    if(message.action==='ping')return {version:'1.1.6'};
+    if(message.action==='ping')return {version:'1.1.7'};
     check();
     const a = adapter();
     if(message.action==='auto-prepare'){
@@ -103,7 +113,9 @@
     if(message.action==='auto-poll'){
       const current=snapshot();
       if(!message.baseline)throw new Error('Thiếu mốc câu trả lời trước khi gửi; hãy lấy kết quả thủ công.');
-      const fresh=current.count>message.baseline.count&&current.last!==message.baseline.last;
+      const newMessage=current.count>message.baseline.count||
+        (current.id&&message.baseline.id&&current.id!==message.baseline.id);
+      const fresh=newMessage&&current.last!==message.baseline.last;
       return {text:fresh?current.last:'',busy:!!first(a.busy)};
     }
     if (message.action === 'fill') {

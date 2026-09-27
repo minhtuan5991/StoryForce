@@ -1,8 +1,8 @@
 // Centralized, versioned selector maps. Providers can change these at any time.
 // Never operate outside a known provider or bypass a platform checkpoint.
 globalThis.STORYFORGE_ADAPTERS = {
-  version: '1.1.6',
-  chatgpt: {host: 'chatgpt.com', input: [
+  version: '1.1.7',
+  chatgpt: {host: 'chatgpt.com', messages:['[data-message-author-role="assistant"]','[data-turn="assistant"]'], input: [
     '#prompt-textarea[contenteditable="true"]', 'textarea#prompt-textarea',
     '#prompt-textarea [contenteditable="true"]',
     'form[data-type="unified-composer"] [contenteditable="true"]',

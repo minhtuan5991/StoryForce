@@ -20,6 +20,8 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
   };
   const stillEnabled=async()=>{if(!(await read()).enabled)throw new Error('Tự động đã tắt. Bật lại để tiếp tục; không tự gửi lại prompt.')};
   const textJob=job=>['chatgpt','gemini'].includes(job.provider)&&!['image_generation','video_generation','tts_context'].includes(job.kind);
+  const collectionWindow=state=>Math.min(30*60*1000,Math.max(15*60*1000,(state.timeout||180)*1000));
+  const collectingMessage='AI đang tạo nội dung. Đang tiếp tục chờ và lấy kết quả; không gửi lại prompt.';
   const recoverablePreparation=error=>['INPUT_NOT_READY','EDITOR_CHANGED'].includes(error.code)||
     /Prompt field not found|message channel closed|message port closed|Response port closed|Receiving end does not exist|Could not establish connection|frame was removed/i.test(error.message||'');
   async function waitForComposer(state){
@@ -47,7 +49,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
     // A prepared job has never authorized Send. Retry filling in a fresh tab,
     // preserving any draft in the previous tab (including one filled by 1.1.0).
     const reset=phase==='prepared'?{phase:'opening',tabId:undefined,baseline:undefined}:{phase};
-    return write({...state,...reset,enabled:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),previous:'',stable:0,sendChecks:0,jsonChecks:0,jsonRetryAt:0,prepareChecks:0,prepareRetryAt:0,message:'Đang tiếp tục. Prompt đã gửi sẽ không được gửi lại.'},true);
+    return write({...state,...reset,enabled:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),collectionDeadline:phase==='submitted'?now()+collectionWindow(state):undefined,previous:'',stable:0,sendChecks:0,jsonChecks:0,jsonRetryAt:0,prepareChecks:0,prepareRetryAt:0,message:'Đang tiếp tục. Prompt đã gửi sẽ không được gửi lại.'},true);
   }
   async function tick(){
     if(busy)return;
@@ -68,6 +70,19 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       let job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt);
       if(state.jobId&&!job){state=await write({enabled:true,phase:'idle',message:'Tác vụ trước đã hoàn tất hoặc đã hủy.'})}
       if(state.phase==='paused'){
+        // Recover collection once after upgrading from the old three-minute
+        // timeout. The sent claim can ONLY resume polling, never prepare/send.
+        if(!state.collectionRecovered&&job&&textJob(job)&&state.owner&&state.tabId&&state.baseline&&
+           state.resumePhase==='submitted'&&/hết thời gian chờ|message channel closed|message port closed|Response port closed/i.test(state.message||'')){
+          const {claim}=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
+          if(claim.phase==='sent'){
+            const message='Đang tiếp tục lấy câu trả lời đã gửi sau bản sửa lỗi; không gửi lại prompt.';
+            await write({...state,phase:'submitted',collectionRecovered:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),
+              collectionDeadline:now()+collectionWindow(state),previous:'',stable:0,jsonChecks:0,jsonRetryAt:0,message});
+            try{await request('/jobs/'+job.id+'/status','POST',{step:message})}catch{}
+          }
+          return;
+        }
         // Repair a previously paused 1.1.5 pre-send failure once on upgrade.
         // The backend must confirm Send has NEVER been authorized for this attempt.
         if(!state.preparationRecovered&&job&&textJob(job)&&state.owner&&
@@ -138,7 +153,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
         }
         // Persist uncertainty BEFORE authorizing/clicking. A worker restart must
         // collect or pause, never click Send a second time.
-        state=await write({...state,phase:'submitted',deadline:now()+Math.max(30000,state.timeout*1000),previous:'',stable:0});
+        state=await write({...state,phase:'submitted',deadline:now()+Math.max(30000,state.timeout*1000),collectionDeadline:now()+collectionWindow(state),previous:'',stable:0});
         const permit=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt,authorize_send:true});
         if(!permit.send)throw new Error('Lượt gửi đã được ghi nhận. Chỉ tiếp tục lấy kết quả; không tự gửi lại.');
         await stillEnabled();
@@ -149,6 +164,14 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       if(state.phase==='submitted'){
         await ensureContent(state.tabId);
         const result=await message('auto-poll',{baseline:state.baseline});
+        const collectionDeadline=state.collectionDeadline||(state.deadline+collectionWindow(state));
+        if(now()>collectionDeadline)throw new Error('Đã hết thời gian chờ tối đa để lấy kết quả. Kiểm tra tab AI rồi bấm Tiếp tục; không gửi lại prompt.');
+        // Extend the inactivity deadline while the provider is actively working
+        // or the response grows. The hard limit above prevents an endless wait.
+        if(result.busy||(result.text&&result.text!==state.previous)){
+          state=await write({...state,collectionDeadline,deadline:now()+Math.max(30000,(state.timeout||180)*1000)});
+          if(result.busy&&state.message!==collectingMessage){await status(collectingMessage);state=await read()}
+        }
         if(result.text&&!result.busy){
           const stable=result.text===state.previous?(state.stable||0)+1:0;
           state=await write({...state,previous:result.text,stable,stableSince:result.text===state.previous?state.stableSince:now()});
@@ -168,7 +191,10 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
             return;
           }
         }else if(state.stable||state.previous){state=await write({...state,stable:0,previous:''})}
-        if(now()>state.deadline)throw new Error('Đã hết thời gian chờ. Kiểm tra tab AI rồi bấm Tiếp tục lấy kết quả; prompt không được gửi lại.');
+        if(now()>state.deadline){
+          const waiting='Đang tiếp tục chờ câu trả lời trong giới hạn thu kết quả; không gửi lại prompt.';
+          if(state.message!==waiting)await status(waiting);
+        }
       }
     }catch(error){
       const current=await read();
@@ -185,7 +211,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       }
       // Missing/local app connection is recoverable without re-sending anything.
       const message=error.message||String(error);
-      await write({...current,phase:'paused',retryStopped:current.phase==='retry_wait'||current.retryStopped,resumePhase:current.phase==='paused'?current.resumePhase:current.phase,message});
+      await write({...current,phase:'paused',collectionRecovered:current.phase==='submitted'?true:current.collectionRecovered,retryStopped:current.phase==='retry_wait'||current.retryStopped,resumePhase:current.phase==='paused'?current.resumePhase:current.phase,message});
       if(current.jobId){try{await request('/jobs/'+current.jobId+'/status','POST',{step:'Tự động tạm dừng: '+message})}catch{}}
     }finally{busy=false}
   }

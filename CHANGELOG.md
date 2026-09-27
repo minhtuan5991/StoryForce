@@ -2,7 +2,9 @@
 
 ## 3.1.2 — 2026-09-28
 
-- Browser Bridge 1.1.6 recognizes additional ChatGPT composers, including Vietnamese inputs and rich text editors without the previous element ID.
+- Browser Bridge 1.1.7 recognizes additional ChatGPT composers, including Vietnamese inputs and rich text editors without the previous element ID.
+- Continue collecting slow replies within a bounded 15-minute window instead of stopping after three minutes; recover an already-sent legacy timeout by polling only.
+- Read all blocks of the latest assistant message and use message identity when rendered message counts stay unchanged.
 - Bounded recovery reconnects pre-send tasks after delayed editor loading or a closed message channel, preserving user drafts and single-send authorization.
 - Verify the filled prompt before sending; keep existing project settings and workflows.
 - Reload the unpacked Browser Bridge extension after installing this update.

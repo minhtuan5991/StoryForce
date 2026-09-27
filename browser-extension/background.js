@@ -54,7 +54,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
 });
 
 async function ensureContent(tabId){
-  try{const response=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'});if(response?.version==='1.1.6')return}catch{}
+  try{const response=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'});if(response?.version==='1.1.7')return}catch{}
   const tab=await chrome.tabs.get(tabId);
   if(!ALLOWED.includes(new URL(tab.url).hostname))throw new Error('Unsupported provider tab');
   await chrome.scripting.executeScript({target:{tabId},files:['adapters.js','content.js']});

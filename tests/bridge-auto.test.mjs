@@ -38,7 +38,7 @@ function fixture(){
     return {updated:true};
   };
   const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},now:()=>time});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
-  return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:()=>{time+=31000}};
+  return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:(ms=31000)=>{time+=ms}};
 }
 
 test('late composer and disconnected content script recover in the same tab, even after worker restart',async()=>{
@@ -214,10 +214,43 @@ test('uncertain send response pauses, and explicit resume never sends twice',asy
   for(let i=0;i<4;i++)await a.tick();assert.deepEqual(f.counts(),{sent:1,saved:1});
 });
 test('timeout, generating state, disable and cancellation cannot auto-submit again',async()=>{
-  const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();f.state.poll.busy=true;f.advance();await a.tick();
+  const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();f.state.poll.busy=true;f.advance(16*60*1000);await a.tick();
   assert.equal((await a.read()).phase,'paused');assert.equal(f.counts().saved,0);
   await a.setEnabled(false);await a.tick();assert.equal(f.counts().sent,1);
   f.state.jobs=[];await a.resume();await a.tick();assert.equal((await a.read()).phase,'idle');assert.equal(f.counts().saved,0);
+});
+
+test('slow generation continues past the initial timeout and saves once after completion across restarts',async()=>{
+  const f=fixture();let a=f.create();await a.setEnabled(true);await a.tick();
+  f.state.poll={text:'',busy:true};f.advance(4*60*1000);await a.tick();
+  assert.equal((await a.read()).phase,'submitted');assert.equal(f.counts().sent,1);
+  a=f.create();f.advance(2*60*1000);await a.tick();
+  assert.equal((await a.read()).phase,'submitted');
+  f.state.poll={text:'{"answer":"new response"}',busy:false};for(let i=0;i<6;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.state.retries,0);
+});
+
+test('a completed answer arriving after the old deadline is allowed to stabilize before saving',async()=>{
+  const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();
+  f.advance(4*60*1000);for(let i=0;i<6;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.state.retries,0);
+});
+
+test('upgrade resumes a legacy collection timeout without another send or new tab',async()=>{
+  const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();
+  f.db.autoBridge={...f.db.autoBridge,phase:'paused',resumePhase:'submitted',message:'Đã hết thời gian chờ. Kiểm tra tab AI rồi bấm Tiếp tục lấy kết quả; prompt không được gửi lại.'};
+  f.advance(4*60*1000);await a.tick();assert.equal((await a.read()).phase,'submitted');
+  for(let i=0;i<6;i++)await a.tick();assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);
+});
+
+test('no response continues polling until the hard limit, then cannot loop recovery or submit twice',async()=>{
+  const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();
+  f.state.poll={text:'',busy:false};f.advance();await a.tick();
+  assert.equal((await a.read()).phase,'submitted');
+  f.advance(16*60*1000);await a.tick();
+  assert.equal((await a.read()).phase,'paused');
+  for(let i=0;i<10;i++)await a.tick();
+  assert.equal((await a.read()).phase,'paused');assert.deepEqual(f.counts(),{sent:1,saved:0});assert.equal(f.state.retries,0);
 });
 test('invalid backend result stays paused instead of submitting the prompt again',async()=>{
   const f=fixture(),a=f.create();f.state.rejectResult=true;await a.setEnabled(true);
