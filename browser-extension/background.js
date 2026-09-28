@@ -1,4 +1,6 @@
 import {createAutomaticBridge,parseResult} from './automatic.js';
+import {withTabReadDeadline} from './transport.js';
+import {copyResponseSource} from './raw-response.js';
 const BASE = 'http://127.0.0.1:8787';
 const ALLOWED = ['chatgpt.com','gemini.google.com','aistudio.google.com','labs.google'];
 async function request(path, method='GET', body) {
@@ -54,12 +56,26 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
 });
 
 async function ensureContent(tabId){
-  try{const response=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'});if(response?.version==='1.1.7')return}catch{}
+  try{
+    const response=await withTabReadDeadline(()=>chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'}));
+    if(response?.version==='1.1.8')return;
+  }catch(error){
+    // Do not pile up injections in a hung renderer. A disconnected listener
+    // can be reinstalled, but a timed-out read waits for the next collection tick.
+    if(error.code==='TAB_READ_TIMEOUT')throw error;
+  }
   const tab=await chrome.tabs.get(tabId);
   if(!ALLOWED.includes(new URL(tab.url).hostname))throw new Error('Unsupported provider tab');
-  await chrome.scripting.executeScript({target:{tabId},files:['adapters.js','content.js']});
+  await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},files:['adapters.js','content.js']}));
 }
-const automatic=createAutomaticBridge({chrome,request,ensureContent});
+async function captureRaw(tabId,target){
+  const tab=await chrome.tabs.get(tabId);
+  if(new URL(tab.url).hostname!=='chatgpt.com')throw new Error('Unsupported raw response tab');
+  const results=await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},world:'MAIN',func:copyResponseSource,args:[target]}));
+  if(!results[0]?.result?.text)throw new Error('Raw response unavailable');
+  return results[0].result;
+}
+const automatic=createAutomaticBridge({chrome,request,ensureContent,captureRaw});
 let timer;
 function schedule(delay=0){clearTimeout(timer);timer=setTimeout(async()=>{await automatic.tick();const state=await automatic.read();if(state.enabled)schedule(state.phase==='paused'?5000:state.jobId?2000:5000)},delay)}
 async function initialize(){

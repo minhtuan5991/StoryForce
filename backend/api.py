@@ -442,6 +442,7 @@ def create_app(data_root: str | Path | None = None):
             result=re.sub(r"^```(?:json)?\s*|\s*```$","",result.strip())
             result=json.loads(result)
         workflow.complete_ai(id,result)
+        logging.getLogger("browser_bridge").info("Job %s: result accepted via manual paste",id)
         return {"accepted":True}
 
     @app.post("/api/jobs/{id}/complete-resources")
@@ -832,7 +833,10 @@ def create_app(data_root: str | Path | None = None):
     def bridge_result(id:str,body:dict=Body(...)):
         result=body.get("result")
         if isinstance(result,str):result=json.loads(re.sub(r"^```(?:json)?\s*|\s*```$","",result.strip()))
-        workflow.complete_ai(id,result,expected_attempt=body.get("attempt"));return {"accepted":True}
+        workflow.complete_ai(id,result,expected_attempt=body.get("attempt"))
+        logging.getLogger("browser_bridge").info("Job %s: result accepted via %s",id,
+            "automatic collection" if body.get("attempt") is not None else "manual bridge capture")
+        return {"accepted":True}
 
     @app.get("/api/diagnostics")
     def diagnostics():

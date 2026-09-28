@@ -1,4 +1,5 @@
 // One persisted state machine, independent of the popup's lifetime.
+import {withTabReadDeadline} from './transport.js';
 export function parseResult(text) {
   const candidates = [text.trim(), ...Array.from(text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g), m=>m[1].trim())];
   const start=text.indexOf('{'),end=text.lastIndexOf('}');
@@ -7,7 +8,7 @@ export function parseResult(text) {
   throw new Error('Câu trả lời chưa phải JSON hợp lệ. Kiểm tra tab AI rồi tiếp tục lấy kết quả; không gửi lại prompt.');
 }
 
-export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date.now()}) {
+export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,now=()=>Date.now(),readTimeoutMs=12000}) {
   let busy=false,storageQueue=Promise.resolve();
   const read=async()=> (await chrome.storage.local.get('autoBridge')).autoBridge||{enabled:false,phase:'idle',message:'Tự động đang tắt.'};
   const write=(state,explicit=false)=>{
@@ -22,7 +23,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
   const textJob=job=>['chatgpt','gemini'].includes(job.provider)&&!['image_generation','video_generation','tts_context'].includes(job.kind);
   const collectionWindow=state=>Math.min(30*60*1000,Math.max(15*60*1000,(state.timeout||180)*1000));
   const collectingMessage='AI đang tạo nội dung. Đang tiếp tục chờ và lấy kết quả; không gửi lại prompt.';
-  const recoverablePreparation=error=>['INPUT_NOT_READY','EDITOR_CHANGED'].includes(error.code)||
+  const recoverablePreparation=error=>['INPUT_NOT_READY','EDITOR_CHANGED','TAB_READ_TIMEOUT'].includes(error.code)||
     /Prompt field not found|message channel closed|message port closed|Response port closed|Receiving end does not exist|Could not establish connection|frame was removed/i.test(error.message||'');
   async function waitForComposer(state){
     const prepareChecks=(state.prepareChecks||0)+1;
@@ -33,6 +34,8 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
     return true;
   }
   const retryCode=state=>state.retryStopped?null:state.retryCode||(/chưa phải JSON hợp lệ/.test(state.message||'')?'INVALID_JSON':/Chưa có nút gửi khả dụng/.test(state.message||'')?'SEND_NOT_READY':null);
+  const collectionExpired=state=>now()>(state.collectionDeadline||(state.deadline+collectionWindow(state)));
+  const collectionTimeout=()=>new Error('Đã hết thời gian chờ tối đa để lấy kết quả. Kiểm tra tab AI rồi bấm Tiếp tục; không gửi lại prompt.');
   async function queueRetry(state,code){
     const message='Tự động chờ 30 giây rồi thử lại bằng yêu cầu mới: '+(code==='INVALID_JSON'?'câu trả lời không phải JSON.':'chưa có nút gửi khả dụng.');
     await write({...state,phase:'retry_wait',retryCode:code,retryAt:now()+30000,retryId:crypto.randomUUID(),message});
@@ -70,14 +73,14 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       let job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt);
       if(state.jobId&&!job){state=await write({enabled:true,phase:'idle',message:'Tác vụ trước đã hoàn tất hoặc đã hủy.'})}
       if(state.phase==='paused'){
-        // Recover collection once after upgrading from the old three-minute
-        // timeout. The sent claim can ONLY resume polling, never prepare/send.
-        if(!state.collectionRecovered&&job&&textJob(job)&&state.owner&&state.tabId&&state.baseline&&
+        // Recover collection once with the updated renderer, even if an older
+        // version already extended its timeout. A sent claim resumes reads only.
+        if(!state.rendererRecovered&&job&&textJob(job)&&state.owner&&state.tabId&&state.baseline&&
            state.resumePhase==='submitted'&&/hết thời gian chờ|message channel closed|message port closed|Response port closed/i.test(state.message||'')){
           const {claim}=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
           if(claim.phase==='sent'){
             const message='Đang tiếp tục lấy câu trả lời đã gửi sau bản sửa lỗi; không gửi lại prompt.';
-            await write({...state,phase:'submitted',collectionRecovered:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),
+            await write({...state,phase:'submitted',rendererRecovered:true,collectionRecovered:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),
               collectionDeadline:now()+collectionWindow(state),previous:'',stable:0,jsonChecks:0,jsonRetryAt:0,message});
             try{await request('/jobs/'+job.id+'/status','POST',{step:message})}catch{}
           }
@@ -118,8 +121,9 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       const message=async(action,extra={})=>{
         const tab=await chrome.tabs.get(state.tabId);
         if(new URL(tab.url).origin!==new URL(job.url).origin)throw new Error('Tab AI đã chuyển trang. Mở lại đúng nhà cung cấp rồi tiếp tục.');
-        const result=await chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action,jobKey:job.id+':'+job.attempt,prompt:job.prompt,...extra});
-        if(!result?.ok)throw Object.assign(new Error(result?.error||'Tab AI chưa sẵn sàng. Kiểm tra trang rồi tiếp tục.'),{code:result?.code});
+        const send=()=>chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action,jobKey:job.id+':'+job.attempt,...(action==='auto-poll'?{}:{prompt:job.prompt}),...extra});
+        const result=await (action==='auto-poll'?withTabReadDeadline(send,readTimeoutMs):send());
+        if(!result?.ok)throw Object.assign(new Error(result?.error||'Tab AI chưa sẵn sàng. Kiểm tra trang rồi tiếp tục.'),{code:result?.code||(!result&&action==='auto-poll'?'TAB_READ_UNAVAILABLE':undefined)});
         return {...result,tabUrl:tab.url};
       };
       await stillEnabled();
@@ -162,10 +166,15 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
         return;
       }
       if(state.phase==='submitted'){
+        if(collectionExpired(state))throw collectionTimeout();
+        if(state.pollRetryAt&&now()<state.pollRetryAt)return;
         await ensureContent(state.tabId);
         const result=await message('auto-poll',{baseline:state.baseline});
         const collectionDeadline=state.collectionDeadline||(state.deadline+collectionWindow(state));
-        if(now()>collectionDeadline)throw new Error('Đã hết thời gian chờ tối đa để lấy kết quả. Kiểm tra tab AI rồi bấm Tiếp tục; không gửi lại prompt.');
+        if(now()>collectionDeadline)throw collectionTimeout();
+        state=await write({...state,pollRetryAt:0,pollErrors:0,lastPollAt:now(),
+          // Diagnostic counters only; no prompt or response content in logs.
+          capture:result.capture||{characters:result.text?.length||0,busy:!!result.busy}});
         // Extend the inactivity deadline while the provider is actively working
         // or the response grows. The hard limit above prevents an endless wait.
         if(result.busy||(result.text&&result.text!==state.previous)){
@@ -175,10 +184,19 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
         if(result.text&&!result.busy){
           const stable=result.text===state.previous?(state.stable||0)+1:0;
           state=await write({...state,previous:result.text,stable,stableSince:result.text===state.previous?state.stableSince:now()});
+          if(stable===0){await status('Đã đọc được câu trả lời ('+result.text.length+' ký tự). Đang kiểm tra nội dung hoàn chỉnh…');state=await read()}
           if(stable>=3&&now()-(state.stableSince||0)>=4500){
             if(state.jsonRetryAt&&now()<state.jsonRetryAt&&now()<state.deadline)return;
             let output;
-            try{output=parseResult(result.text)}catch(error){
+            try{
+              try{output=parseResult(result.text)}catch(error){
+                if(!captureRaw||!result.copyTarget)throw error;
+                // Use the provider's source text when markdown rendering has
+                // consumed JSON escapes. Never "repair" or invent story content.
+                const raw=await captureRaw(state.tabId,result.copyTarget);
+                output=parseResult(raw.text);
+              }
+            }catch(error){
               const jsonChecks=(state.jsonChecks||0)+1;
               if(jsonChecks>=5||now()>state.deadline)throw Object.assign(new Error('Câu trả lời vẫn chưa phải JSON hợp lệ sau các lần chờ.'),{code:'INVALID_JSON'});
               state=await write({...state,jsonChecks,jsonRetryAt:now()+5000});
@@ -198,6 +216,16 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       }
     }catch(error){
       const current=await read();
+      // Reconnect reads in the SAME tab/attempt. A closed message channel after
+      // Send is not a reason to require a popup click or issue another prompt.
+      if(current.phase==='submitted'&&!collectionExpired(current)&&
+         (['TAB_READ_TIMEOUT','TAB_READ_UNAVAILABLE'].includes(error.code)||recoverablePreparation(error))){
+        const message='Tab AI đang chậm hoặc mất kết nối. Tự kết nối lại để lấy câu trả lời; không gửi lại prompt.';
+        await write({...current,pollErrors:(current.pollErrors||0)+1,pollRetryAt:now()+5000,
+          previous:'',stable:0,message});
+        if(current.message!==message){try{await request('/jobs/'+current.jobId+'/status','POST',{step:message})}catch{}}
+        return;
+      }
       if(['opening','prepared'].includes(current.phase)&&recoverablePreparation(error)){
         if(await waitForComposer(current))return;
         // One bounded wait sequence; further attempts require the user's Resume.
@@ -211,7 +239,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,now=()=>Date
       }
       // Missing/local app connection is recoverable without re-sending anything.
       const message=error.message||String(error);
-      await write({...current,phase:'paused',collectionRecovered:current.phase==='submitted'?true:current.collectionRecovered,retryStopped:current.phase==='retry_wait'||current.retryStopped,resumePhase:current.phase==='paused'?current.resumePhase:current.phase,message});
+      await write({...current,phase:'paused',rendererRecovered:current.phase==='submitted'?true:current.rendererRecovered,collectionRecovered:current.phase==='submitted'?true:current.collectionRecovered,retryStopped:current.phase==='retry_wait'||current.retryStopped,resumePhase:current.phase==='paused'?current.resumePhase:current.phase,message});
       if(current.jobId){try{await request('/jobs/'+current.jobId+'/status','POST',{step:'Tự động tạm dừng: '+message})}catch{}}
     }finally{busy=false}
   }

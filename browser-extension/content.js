@@ -1,7 +1,7 @@
 (() => {
-  if (globalThis.storyForgeVersion === '1.1.7') return;
+  if (globalThis.storyForgeVersion === '1.1.8') return;
   if (globalThis.storyForgeListener) chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener);
-  globalThis.storyForgeVersion = '1.1.7';
+  globalThis.storyForgeVersion = '1.1.8';
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
     (el.checkVisibility ? el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) : getComputedStyle(el).visibility!=='hidden');
@@ -38,16 +38,26 @@
     const a=adapter();
     if(a.messages){
       const selector=a.messages.join(',');
-      const roots=[...document.querySelectorAll(selector)].filter(el=>visible(el)&&!el.parentElement?.closest(selector));
+      // New ChatGPT renders search units instead of data-message-author-role.
+      // A selection-message wrapper groups multiple markdown blocks when no
+      // outer search unit is present. Both variants exclude user/thinking units.
+      const candidates=[...new Set([...document.querySelectorAll(selector)].map(el=>
+        el.matches('[data-markdown-text-style="assistant-message"]')?
+          el.closest('[data-chatgpt-selection-message-id]')||el:el))];
+      const roots=candidates.filter(el=>visible(el)&&!candidates.some(parent=>parent!==el&&parent.contains(el)));
       if(roots.length){
         const latest=roots.at(-1);
         // One reply can contain several prose/code blocks. Count messages, not
         // markdown fragments, and never return just the last paragraph/block.
-        const blocks=[...latest.querySelectorAll('.markdown,[data-message-content]')].filter(el=>
-          visible(el)&&!el.parentElement?.closest('.markdown,[data-message-content]'));
+        const blockSelector='.markdown,[data-message-content],[data-markdown-text-style="assistant-message"]';
+        const blocks=[...latest.querySelectorAll(blockSelector)].filter(el=>
+          visible(el)&&!el.parentElement?.closest(blockSelector));
         const last=(blocks.length?blocks.map(el=>el.innerText).join('\n\n'):latest.innerText).trim();
-        const id=latest.getAttribute('data-message-id')||latest.querySelector('[data-message-id]')?.getAttribute('data-message-id')||latest.getAttribute('data-testid');
-        return {count:roots.length,last,...(id?{id}:{})};
+        const id=latest.getAttribute('data-message-id')||latest.querySelector('[data-message-id]')?.getAttribute('data-message-id')||
+          latest.getAttribute('data-chatgpt-selection-message-id')||latest.querySelector('[data-chatgpt-selection-message-id]')?.getAttribute('data-chatgpt-selection-message-id')||
+          latest.getAttribute('data-testid')||latest.closest('[data-turn-key]')?.getAttribute('data-turn-key');
+        const selectionId=latest.getAttribute('data-chatgpt-selection-message-id')||latest.querySelector('[data-chatgpt-selection-message-id]')?.getAttribute('data-chatgpt-selection-message-id');
+        return {count:roots.length,last,...(id?{id}:{}),...(selectionId?{selectionId}:{})};
       }
     }
     for(const selector of a.result){
@@ -73,7 +83,7 @@
   // innerText includes CSS paragraph spacing; textContent omits block breaks.
   const inputText=element=>normalizeText(element.value??editorText(element));
   async function execute(message) {
-    if(message.action==='ping')return {version:'1.1.7'};
+    if(message.action==='ping')return {version:'1.1.8'};
     check();
     const a = adapter();
     if(message.action==='auto-prepare'){
@@ -116,7 +126,9 @@
       const newMessage=current.count>message.baseline.count||
         (current.id&&message.baseline.id&&current.id!==message.baseline.id);
       const fresh=newMessage&&current.last!==message.baseline.last;
-      return {text:fresh?current.last:'',busy:!!first(a.busy)};
+      const busy=!!first(a.busy);
+      return {text:fresh?current.last:'',busy,...(fresh&&current.selectionId?{copyTarget:{messageId:current.selectionId,text:current.last}}:{}),capture:{messages:current.count,
+        baselineMessages:message.baseline.count,characters:current.last.length,fresh:!!fresh,busy}};
     }
     if (message.action === 'fill') {
       let element = null;

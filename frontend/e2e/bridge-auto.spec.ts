@@ -1,5 +1,6 @@
 import {test as base,expect,type Page} from '@playwright/test';
 import path from 'node:path';
+import {copyResponseSource} from '../../browser-extension/raw-response.js';
 
 // Keep Comet's browser-level page lifecycle isolated between fixture cases.
 const test=base.extend({
@@ -48,8 +49,11 @@ for(const [name,editor] of [
 
 test('a draft that mounts after page load is never overwritten',async({page})=>{
   const invoke=await chatgptFixture(page,'<main></main>');
+  await page.clock.install();
   await page.evaluate(()=>setTimeout(()=>document.querySelector('main')!.insertAdjacentHTML('beforeend','<textarea placeholder="Hỏi ChatGPT">My existing draft</textarea>'),650));
-  const prepared=await invoke({action:'auto-prepare'});
+  const pending=invoke({action:'auto-prepare'});
+  await page.clock.runFor(1000);
+  const prepared=await pending;
   expect(prepared.ok).toBe(false);expect(prepared.error).toContain('chưa gửi');
   await expect(page.locator('textarea')).toHaveValue('My existing draft');
 });
@@ -105,6 +109,58 @@ test('new assistant message identity survives unchanged DOM counts and streaming
   await page.locator('[data-testid="stop-button"]').evaluate(el=>el.remove());
   const result=await invoke({action:'auto-poll',baseline:prepared.baseline});
   expect(result.busy).toBe(false);expect(JSON.parse(result.text)).toEqual({answer:'new response'});
+});
+
+test('captures the current ChatGPT search-unit/markdown renderer, not its user prompt or action labels',async({page})=>{
+  // Structure observed in Comet on 2026-09-28, with synthetic content/IDs.
+  const invoke=await chatgptFixture(page,`<main><textarea placeholder="Hỏi ChatGPT"></textarea>
+    <div data-turn-key="old-turn"><div data-content-search-unit-key="fallback-turn-0:2:assistant"
+      data-chatgpt-search-unit-key="fallback-turn-0:2:assistant">
+      <div data-chatgpt-selection-message-id="old-message">
+        <div data-markdown-text-style="assistant-message"><p>Old answer</p></div>
+      </div></div></div></main>`);
+  const prepared=await invoke({action:'auto-prepare'});expect(prepared.ok).toBe(true);
+  await page.locator('[data-turn-key]').evaluate(el=>el.remove());
+  await page.locator('main').evaluate(el=>el.insertAdjacentHTML('beforeend',`
+    <div data-turn-key="new-turn"><div data-content-search-unit-key="fallback-turn-0:0:user">
+      <div data-markdown-text-style="user-message">{"answer":"wrong user prompt"}</div></div>
+    <div data-content-search-unit-key="fallback-turn-0:1:thinking"><p>Thinking</p></div>
+    <div data-content-search-unit-key="fallback-turn-0:2:assistant" data-chatgpt-search-unit-key="fallback-turn-0:2:assistant">
+      <div data-chatgpt-selection-message-id="new-message">
+        <div data-markdown-text-style="assistant-message"><p><span>{"answer":</span><span>"new response",</span></p></div>
+        <div data-markdown-text-style="assistant-message"><p>"complete":true}</p></div>
+      </div><div class="turn-action-controls"><button>Sao chép</button></div>
+    </div></div>`));
+  const result=await invoke({action:'auto-poll',baseline:prepared.baseline});
+  expect(result.capture).toMatchObject({messages:1,baselineMessages:1,fresh:true,busy:false});
+  expect(JSON.parse(result.text)).toEqual({answer:'new response',complete:true});
+  expect((await invoke({action:'capture'})).text).toBe(result.text);
+});
+
+test('reads original JSON escapes through the scoped Copy action without writing to the clipboard',async({page})=>{
+  const invoke=await chatgptFixture(page,`<main><div data-turn-key="turn">
+    <div data-content-search-unit-key="turn:0:user"><div class="turn-action-controls"><button aria-label="Sao chép tin nhắn">Copy user</button></div></div>
+    <div class="response"><div data-content-search-unit-key="turn:2:assistant"><div data-chatgpt-selection-message-id="reply">
+      <div data-markdown-text-style="assistant-message"><p></p></div></div></div>
+      <div class="turn-action-controls"><button aria-label="Sao chép">Copy response</button></div></div>
+    </div></main>`);
+  const raw=JSON.stringify({text:'He said "hello".\nThen left.'});
+  await page.evaluate(raw=>{
+    (window as any).clipboardWrites=0;
+    Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:async()=>{(window as any).clipboardWrites++}});
+    (window as any).originalWrite=navigator.clipboard.writeText;
+    document.querySelector('p')!.textContent=raw.replaceAll('\\"','"');
+    document.querySelector('[aria-label="Sao chép"]')!.addEventListener('click',()=>navigator.clipboard.writeText(raw));
+    document.querySelector('[aria-label="Sao chép tin nhắn"]')!.addEventListener('click',()=>{(window as any).wrongCopy=true});
+  },raw);
+  const poll=await invoke({action:'auto-poll',baseline:{count:0,last:''}});
+  expect(()=>JSON.parse(poll.text)).toThrow();
+  const copied=await page.evaluate(copyResponseSource,poll.copyTarget);
+  expect(copied.text).toBe(raw);
+  expect(await page.evaluate(()=>(window as any).clipboardWrites)).toBe(0);
+  expect(await page.evaluate(()=>navigator.clipboard.writeText===(window as any).originalWrite)).toBe(true);
+  expect(await page.evaluate(()=>(window as any).wrongCopy||false)).toBe(false);
+  await expect(page.evaluate(copyResponseSource,{...poll.copyTarget,text:'changed'})).rejects.toThrow('Response changed');
 });
 
 test('Vietnamese Gemini waits for the enabled send control and never clicks a hidden or stop button',async({page})=>{

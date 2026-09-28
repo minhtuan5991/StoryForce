@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createAutomaticBridge,parseResult} from '../browser-extension/automatic.js';
+import {withTabReadDeadline} from '../browser-extension/transport.js';
 
 function fixture(){
   const db={};const calls=[];const closed=[];let time=1000;let sent=0;let saved=0;let claim;let created=0;
@@ -14,6 +15,8 @@ function fixture(){
     }
     if(message.action==='auto-check-send'&&state.checkError)return {ok:false,error:state.checkError,code:state.checkCode};
     if(message.action==='auto-send'){sent++;if(state.lostSend)throw Error('Response port closed');return {ok:true,submitted:true}}
+    if(message.action==='auto-poll'&&state.hungPoll)return new Promise(resolve=>{state.finishPoll=resolve});
+    if(message.action==='auto-poll'&&state.pollError)throw Error(state.pollError);
     return {ok:true,...state.poll};
   }}};
   const request=async(path,method,body)=>{
@@ -37,7 +40,7 @@ function fixture(){
     }
     return {updated:true};
   };
-  const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},now:()=>time});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
+  const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},now:()=>time,readTimeoutMs:20});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
   return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:(ms=31000)=>{time+=ms}};
 }
 
@@ -119,6 +122,28 @@ test('persistent non-JSON schedules a fresh request after waiting and keeps the 
   const f=fixture(),a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);
   for(let i=0;i<22;i++)await a.tick();
   assert.equal((await a.read()).phase,'retry_wait');assert.deepEqual(f.counts(),{sent:1,saved:0});assert.deepEqual(f.closed,[]);
+});
+
+test('source Copy is only used for stable invalid rendered JSON and saves once without resending',async()=>{
+  const f=fixture();let a=f.create();
+  f.state.poll={text:'{"answer":"new response","quote":"He said "hello"."}',busy:true,copyTarget:{messageId:'reply',text:'rendered'}};
+  f.state.rawText=JSON.stringify({answer:'new response',quote:'He said "hello".'});
+  await a.setEnabled(true);for(let i=0;i<6;i++)await a.tick();
+  assert.equal(f.state.rawReads||0,0);assert.equal(f.counts().saved,0);
+  f.state.poll.busy=false;for(let i=0;i<3;i++)await a.tick();
+  assert.equal(f.state.rawReads||0,0);
+  a=f.create();for(let i=0;i<5;i++)await a.tick();
+  assert.equal(f.state.rawReads,1);assert.deepEqual(f.counts(),{sent:1,saved:1});
+  assert.equal(f.state.retries,0);assert.deepEqual(f.closed,[9]);
+});
+
+test('valid rendered JSON does not use Copy and failed Copy never saves invalid content',async()=>{
+  const f=fixture(),a=f.create();f.state.poll.copyTarget={messageId:'reply'};
+  await a.setEnabled(true);for(let i=0;i<7;i++)await a.tick();
+  assert.equal(f.state.rawReads||0,0);assert.equal(f.counts().saved,1);
+  const g=fixture(),b=g.create();g.state.poll={text:'Invalid JSON',busy:false,copyTarget:{messageId:'reply'}};g.state.rawError='Response changed before copy';
+  await b.setEnabled(true);for(let i=0;i<7;i++)await b.tick();
+  assert.ok(g.state.rawReads>0);assert.deepEqual(g.counts(),{sent:1,saved:0});assert.deepEqual(g.closed,[]);
 });
 
 test('new request retry persists across restarts, then completes with one send per attempt',async()=>{
@@ -208,10 +233,60 @@ test('paused obsolete job releases the queue but a still-pending invalid result 
   assert.equal((await a.read()).phase,'submitted');
   assert.equal(f.counts().sent,1);
 });
-test('uncertain send response pauses, and explicit resume never sends twice',async()=>{
+test('uncertain send response resumes reading automatically and never sends twice',async()=>{
   const f=fixture(),a=f.create();f.state.lostSend=true;await a.setEnabled(true);await a.tick();
-  assert.equal((await a.read()).phase,'paused');await a.resume();
+  assert.equal((await a.read()).phase,'submitted');f.advance(6000);
   for(let i=0;i<4;i++)await a.tick();assert.deepEqual(f.counts(),{sent:1,saved:1});
+});
+
+test('hung renderer reads time out and a late callback cannot save or block the next read',async()=>{
+  const f=fixture();let a=f.create();await a.setEnabled(true);await a.tick();
+  f.state.hungPoll=true;await a.tick();
+  const waiting=await a.read();assert.equal(waiting.phase,'submitted');assert.equal(waiting.pollErrors,1);
+  assert.deepEqual(f.counts(),{sent:1,saved:0});
+  f.state.finishPoll({ok:true,text:'{"answer":"stale callback"}',busy:false});
+  f.state.hungPoll=false;f.advance(6000);a=f.create();
+  for(let i=0;i<6;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);assert.equal(f.state.retries,0);
+});
+
+test('disconnected response collection reconnects across worker restarts without a popup',async()=>{
+  for(const mode of ['poll','ping']){
+    const f=fixture();let a=f.create();await a.setEnabled(true);await a.tick();
+    if(mode==='poll')f.state.pollError='A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received';
+    else f.state.connectionError='Could not establish connection. Receiving end does not exist.';
+    await a.tick();assert.equal((await a.read()).phase,'submitted');
+    a=f.create();f.state.pollError=null;f.state.connectionError=null;f.advance(6000);
+    for(let i=0;i<6;i++)await a.tick();
+    assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);assert.equal(f.state.retries,0);
+  }
+});
+
+test('repeated collection disconnects respect the original hard deadline',async()=>{
+  const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();
+  const deadline=(await a.read()).collectionDeadline;
+  f.state.pollError='Response port closed';
+  for(let i=0;i<3;i++){f.advance(3*60*1000);await a.tick();assert.equal((await a.read()).collectionDeadline,deadline)}
+  f.advance(7*60*1000);await a.tick();
+  assert.equal((await a.read()).phase,'paused');assert.deepEqual(f.counts(),{sent:1,saved:0});
+  assert.equal(f.calls.filter(x=>x==='auto-poll').length,3);
+  for(let i=0;i<5;i++)await a.tick();assert.equal((await a.read()).phase,'paused');
+});
+
+test('cancel or disable during read reconnection does not collect or resend',async()=>{
+  for(const cancel of [true,false]){
+    const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();
+    f.state.hungPoll=true;await a.tick();
+    if(cancel)f.state.jobs=[];else await a.setEnabled(false);
+    f.state.hungPoll=false;f.advance(6000);for(let i=0;i<6;i++)await a.tick();
+    assert.deepEqual(f.counts(),{sent:1,saved:0});assert.equal(f.created(),1);
+  }
+});
+
+test('tab read deadline also bounds a hung ping/injection and clears after success',async()=>{
+  await assert.rejects(withTabReadDeadline(()=>new Promise(()=>{}),10),{code:'TAB_READ_TIMEOUT'});
+  assert.deepEqual(await withTabReadDeadline(async()=>({version:'test'}),10),{version:'test'});
+  await assert.rejects(withTabReadDeadline(async()=>{throw Error('Disconnected')},10),/Disconnected/);
 });
 test('timeout, generating state, disable and cancellation cannot auto-submit again',async()=>{
   const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();f.state.poll.busy=true;f.advance(16*60*1000);await a.tick();
@@ -238,7 +313,7 @@ test('a completed answer arriving after the old deadline is allowed to stabilize
 
 test('upgrade resumes a legacy collection timeout without another send or new tab',async()=>{
   const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();
-  f.db.autoBridge={...f.db.autoBridge,phase:'paused',resumePhase:'submitted',message:'Đã hết thời gian chờ. Kiểm tra tab AI rồi bấm Tiếp tục lấy kết quả; prompt không được gửi lại.'};
+  f.db.autoBridge={...f.db.autoBridge,phase:'paused',collectionRecovered:true,resumePhase:'submitted',message:'Đã hết thời gian chờ. Kiểm tra tab AI rồi bấm Tiếp tục lấy kết quả; prompt không được gửi lại.'};
   f.advance(4*60*1000);await a.tick();assert.equal((await a.read()).phase,'submitted');
   for(let i=0;i<6;i++)await a.tick();assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);
 });

@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.1.3 — 2026-09-28
+
+- Browser Bridge 1.1.8 recognizes ChatGPT's current search-unit and assistant Markdown renderer, including response identity across virtualized turns.
+- Recover original JSON escapes through the matching response's Copy action when rendered Markdown is not valid JSON; restore clipboard methods immediately afterward without reading the user's clipboard.
+- Bound stalled tab reads and reconnect within the existing collection deadline, without sending the prompt again.
+- Resume one legacy collection pause after upgrading the renderer; accepted results still close only their dedicated, unchanged provider tab.
+- Log whether a result arrived from automatic collection or a manual action to make future diagnostics verifiable.
+- Existing workflows and settings are unchanged. Reload Browser Bridge after installation.
+
 ## 3.1.2 — 2026-09-28
 
 - Browser Bridge 1.1.7 recognizes additional ChatGPT composers, including Vietnamese inputs and rich text editors without the previous element ID.
