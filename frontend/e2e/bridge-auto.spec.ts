@@ -129,7 +129,7 @@ test('captures the current ChatGPT search-unit/markdown renderer, not its user p
       <div data-chatgpt-selection-message-id="new-message">
         <div data-markdown-text-style="assistant-message"><p><span>{"answer":</span><span>"new response",</span></p></div>
         <div data-markdown-text-style="assistant-message"><p>"complete":true}</p></div>
-      </div><div class="turn-action-controls"><button>Sao chép</button></div>
+      </div><div class="turn-action-controls"><button aria-label="Sao chép">Sao chép</button></div>
     </div></div>`));
   const result=await invoke({action:'auto-poll',baseline:prepared.baseline});
   expect(result.capture).toMatchObject({messages:1,baselineMessages:1,fresh:true,busy:false});
@@ -161,6 +161,29 @@ test('reads original JSON escapes through the scoped Copy action without writing
   expect(await page.evaluate(()=>navigator.clipboard.writeText===(window as any).originalWrite)).toBe(true);
   expect(await page.evaluate(()=>(window as any).wrongCopy||false)).toBe(false);
   await expect(page.evaluate(copyResponseSource,{...poll.copyTarget,text:'changed'})).rejects.toThrow('Response changed');
+});
+
+test('current renderer waits for completed response controls even without the old Stop selector',async({page})=>{
+  const invoke=await chatgptFixture(page,`<main><div data-turn-key="new-turn">
+    <div data-content-search-unit-key="turn:0:user"><div class="turn-action-controls"><button aria-label="Sao chép tin nhắn">Copy user</button></div></div>
+    <div data-content-search-unit-key="turn:1:thinking"><div data-markdown-text-style="assistant-message">Thinking summary</div></div>
+    <div class="response"><div data-content-search-unit-key="turn:2:assistant"><div data-chatgpt-selection-message-id="reply">
+      <div data-markdown-text-style="assistant-message">{"answer":"partial but valid JSON"}</div></div></div></div>
+    </div></main>`);
+  const message={action:'auto-poll',baseline:{count:0,last:''}};
+  expect(await invoke(message)).toMatchObject({busy:true,capture:{messages:1,fresh:true}});
+  await page.locator('.response').evaluate(el=>el.insertAdjacentHTML('beforeend','<div class="turn-action-controls"><button aria-label="Sao chép">Copy response</button></div>'));
+  expect(await invoke(message)).toMatchObject({busy:false,capture:{messages:1,fresh:true}});
+});
+
+test('reinjection restores a lost listener of the same version and preserves send deduplication',async({page})=>{
+  const invoke=await chatgptFixture(page,'<main><textarea placeholder="Hỏi ChatGPT"></textarea><button data-testid="send-button">Send</button></main>');
+  const prepared=await invoke({action:'auto-prepare'});
+  expect((await invoke({action:'auto-send',baseline:prepared.baseline})).submitted).toBe(true);
+  await page.evaluate(()=>{(window as any).bridgeListener=undefined});
+  await page.addScriptTag({path:path.resolve('../browser-extension/content.js')});
+  expect((await invoke({action:'ping'})).ok).toBe(true);
+  expect((await invoke({action:'auto-send',baseline:prepared.baseline})).ok).toBe(false);
 });
 
 test('Vietnamese Gemini waits for the enabled send control and never clicks a hidden or stop button',async({page})=>{

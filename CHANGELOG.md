@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.4 — 2026-09-28
+
+- Browser Bridge 1.1.9 waits for the current ChatGPT response's completion controls before parsing or retrying, even when the Stop selector changes. Explicit thinking units are excluded from capture.
+- Reinjection restores a disconnected same-version content listener after Reload, preserving the per-tab sent-job guard.
+- Includes all ChatGPT answer collection fixes from 3.1.3. Other workflows and settings remain unchanged.
+
 ## 3.1.3 — 2026-09-28
 
 - Browser Bridge 1.1.8 recognizes ChatGPT's current search-unit and assistant Markdown renderer, including response identity across virtualized turns.

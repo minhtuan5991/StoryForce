@@ -1,7 +1,10 @@
 (() => {
-  if (globalThis.storyForgeVersion === '1.1.8') return;
-  if (globalThis.storyForgeListener) chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener);
-  globalThis.storyForgeVersion = '1.1.8';
+  // Injection is requested only after a failed/version-mismatched ping. A
+  // same-version marker can survive a disconnected listener after Reload.
+  if (globalThis.storyForgeListener) {
+    try { chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener); } catch {}
+  }
+  globalThis.storyForgeVersion = '1.1.9';
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
     (el.checkVisibility ? el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) : getComputedStyle(el).visibility!=='hidden');
@@ -33,7 +36,22 @@
   function lastResult() {
     return snapshot().last;
   }
-  const sent=new Set();
+  const sent=globalThis.storyForgeSent||(globalThis.storyForgeSent=new Set());
+  function responseFinished(latest){
+    if(!latest.matches('[data-markdown-text-style="assistant-message"]')&&
+       !latest.querySelector('[data-markdown-text-style="assistant-message"]'))return undefined;
+    let scope=latest;
+    while(scope){
+      // Current ChatGPT mounts these controls only once the response finishes.
+      // A user-message Copy button is not evidence that the assistant is done.
+      if([...scope.querySelectorAll('.turn-action-controls button')].some(el=>
+        /^(Copy|Copy response|Sao chép)$/i.test(el.getAttribute('aria-label')||'')&&
+        visible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true'))return true;
+      if(scope.hasAttribute('data-turn-key'))break;
+      scope=scope.parentElement;
+    }
+    return false;
+  }
   function snapshot(){
     const a=adapter();
     if(a.messages){
@@ -41,7 +59,8 @@
       // New ChatGPT renders search units instead of data-message-author-role.
       // A selection-message wrapper groups multiple markdown blocks when no
       // outer search unit is present. Both variants exclude user/thinking units.
-      const candidates=[...new Set([...document.querySelectorAll(selector)].map(el=>
+      const candidates=[...new Set([...document.querySelectorAll(selector)].filter(el=>
+        !el.closest('[data-content-search-unit-key$=":thinking"],[data-chatgpt-search-unit-key$=":thinking"]')).map(el=>
         el.matches('[data-markdown-text-style="assistant-message"]')?
           el.closest('[data-chatgpt-selection-message-id]')||el:el))];
       const roots=candidates.filter(el=>visible(el)&&!candidates.some(parent=>parent!==el&&parent.contains(el)));
@@ -57,7 +76,7 @@
           latest.getAttribute('data-chatgpt-selection-message-id')||latest.querySelector('[data-chatgpt-selection-message-id]')?.getAttribute('data-chatgpt-selection-message-id')||
           latest.getAttribute('data-testid')||latest.closest('[data-turn-key]')?.getAttribute('data-turn-key');
         const selectionId=latest.getAttribute('data-chatgpt-selection-message-id')||latest.querySelector('[data-chatgpt-selection-message-id]')?.getAttribute('data-chatgpt-selection-message-id');
-        return {count:roots.length,last,...(id?{id}:{}),...(selectionId?{selectionId}:{})};
+        return {count:roots.length,last,finished:responseFinished(latest),...(id?{id}:{}),...(selectionId?{selectionId}:{})};
       }
     }
     for(const selector of a.result){
@@ -83,7 +102,7 @@
   // innerText includes CSS paragraph spacing; textContent omits block breaks.
   const inputText=element=>normalizeText(element.value??editorText(element));
   async function execute(message) {
-    if(message.action==='ping')return {version:'1.1.8'};
+    if(message.action==='ping')return {version:'1.1.9'};
     check();
     const a = adapter();
     if(message.action==='auto-prepare'){
@@ -126,7 +145,7 @@
       const newMessage=current.count>message.baseline.count||
         (current.id&&message.baseline.id&&current.id!==message.baseline.id);
       const fresh=newMessage&&current.last!==message.baseline.last;
-      const busy=!!first(a.busy);
+      const busy=!!first(a.busy)||current.finished===false;
       return {text:fresh?current.last:'',busy,...(fresh&&current.selectionId?{copyTarget:{messageId:current.selectionId,text:current.last}}:{}),capture:{messages:current.count,
         baselineMessages:message.baseline.count,characters:current.last.length,fresh:!!fresh,busy}};
     }
