@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import {createAutomaticBridge,parseResult} from '../browser-extension/automatic.js';
 import {withTabReadDeadline} from '../browser-extension/transport.js';
 
-function fixture(){
+function fixture(options={pageSettleMs:0}){
   const db={};const calls=[];const closed=[];let time=1000;let sent=0;let saved=0;let claim;let created=0;
   const job={id:'job1',attempt:1,kind:'premise_mini_test',provider:'chatgpt',url:'https://chatgpt.com/',prompt:'Test prompt',timeout:30};
   const state={jobs:[job],poll:{text:'{"answer":"new response"}',busy:false},lostSend:false,rejectResult:false,retries:0};
-  const chrome={storage:{local:{get:async key=>structuredClone({[key]:db[key]}),set:async values=>Object.assign(db,structuredClone(values))}},tabs:{remove:async id=>{assert.ok(saved>0);if(state.closeError)throw Error('Cannot close');closed.push(id)},create:async()=>({id:9+created++}),get:async()=>({id:9,url:state.tabUrl||job.url,status:'complete'}),sendMessage:async(id,message)=>{
+  const chrome={storage:{local:{get:async key=>structuredClone({[key]:db[key]}),set:async values=>Object.assign(db,structuredClone(values))}},tabs:{remove:async id=>{assert.ok(saved>0);if(state.closeError)throw Error('Cannot close');closed.push(id)},create:async()=>({id:9+created++}),get:async()=>({id:9,url:state.tabUrl||job.url,status:state.tabStatus||'complete'}),sendMessage:async(id,message)=>{
     calls.push(message.action);
+    if(message.action==='auto-ready'){if(state.hungReady)return new Promise(()=>{});return {ok:true,ready:state.editorReady!==false}}
     if(message.action==='auto-prepare'){
       if(state.prepareError)return {ok:false,error:state.prepareError,code:state.prepareCode};
       return {ok:true,baseline:{count:1,last:'Old answer'}};
@@ -40,9 +41,37 @@ function fixture(){
     }
     return {updated:true};
   };
-  const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},now:()=>time,readTimeoutMs:20});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
+  const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},now:()=>time,readTimeoutMs:20,...options});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
   return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:(ms=31000)=>{time+=ms}};
 }
+
+test('waits after complete, resets on reload and preserves the wait across worker restarts',async()=>{
+  const f=fixture({});let a=f.create();f.state.tabStatus='loading';await a.setEnabled(true);await a.tick();
+  assert.deepEqual(f.calls,[]);
+  f.state.tabStatus='complete';await a.tick();await a.tick();assert.deepEqual(f.calls,[]);
+  f.state.tabStatus='loading';await a.tick();f.state.tabStatus='complete';await a.tick();
+  a=f.create();await a.tick();await a.tick();assert.deepEqual(f.calls,[]);
+  f.state.editorReady=false;await a.tick();assert.deepEqual(f.calls,['auto-ready']);
+  f.state.editorReady=true;await a.tick();assert.equal(f.counts().sent,1);assert.equal(f.created(),1);
+});
+
+test('unready or frozen pages wait without filling and pause at the existing deadline',async()=>{
+  for(const frozen of [false,true]){
+    const f=fixture(),a=f.create();f.state.editorReady=false;f.state.hungReady=frozen;
+    await a.setEnabled(true);await a.tick();assert.equal(f.counts().sent,0);
+    assert.ok(!f.calls.includes('auto-prepare'));
+    f.advance();await a.tick();assert.equal((await a.read()).phase,'paused');
+    assert.equal(f.state.retries,0);assert.equal(f.created(),1);
+  }
+});
+
+test('cancel or disable during page settling never fills or sends',async()=>{
+  for(const cancel of [false,true]){
+    const f=fixture({}),a=f.create();await a.setEnabled(true);await a.tick();
+    if(cancel)f.state.jobs=[];else await a.setEnabled(false);
+    for(let i=0;i<6;i++)await a.tick();assert.deepEqual(f.calls,[]);assert.equal(f.counts().sent,0);
+  }
+});
 
 test('late composer and disconnected content script recover in the same tab, even after worker restart',async()=>{
   for(const mode of ['editor','connection','channel']){

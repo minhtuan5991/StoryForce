@@ -58,7 +58,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
 async function ensureContent(tabId){
   try{
     const response=await withTabReadDeadline(()=>chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'}));
-    if(response?.version==='1.1.9')return;
+    if(response?.version==='1.1.10')return;
   }catch(error){
     // Do not pile up injections in a hung renderer. A disconnected listener
     // can be reinstalled, but a timed-out read waits for the next collection tick.

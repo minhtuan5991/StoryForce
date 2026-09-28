@@ -4,7 +4,7 @@
   if (globalThis.storyForgeListener) {
     try { chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener); } catch {}
   }
-  globalThis.storyForgeVersion = '1.1.9';
+  globalThis.storyForgeVersion = '1.1.10';
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
     (el.checkVisibility ? el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) : getComputedStyle(el).visibility!=='hidden');
@@ -101,10 +101,25 @@
   }
   // innerText includes CSS paragraph spacing; textContent omits block breaks.
   const inputText=element=>normalizeText(element.value??editorText(element));
+  let readiness;
   async function execute(message) {
-    if(message.action==='ping')return {version:'1.1.9'};
+    if(message.action==='ping')return {version:'1.1.10'};
     check();
     const a = adapter();
+    if(message.action==='auto-ready'){
+      const element=promptField(a);
+      if(document.readyState!=='complete'||!element||first(a.busy)){
+        readiness=undefined;
+        return {ready:false};
+      }
+      const text=inputText(element),time=performance.now();
+      // Only observe the editor here. Never focus, fill, or click a loading page.
+      if(!readiness||readiness.element!==element||readiness.text!==text){
+        readiness={element,text,since:time};
+        return {ready:false};
+      }
+      return {ready:time-readiness.since>=2000};
+    }
     if(message.action==='auto-prepare'){
       if(first(a.busy))throw new Error('Trang AI đang trả lời. Chờ hoàn tất rồi tiếp tục.');
       const existing=promptField(a);

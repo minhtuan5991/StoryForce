@@ -8,7 +8,7 @@ export function parseResult(text) {
   throw new Error('Câu trả lời chưa phải JSON hợp lệ. Kiểm tra tab AI rồi tiếp tục lấy kết quả; không gửi lại prompt.');
 }
 
-export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,now=()=>Date.now(),readTimeoutMs=12000}) {
+export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,now=()=>Date.now(),readTimeoutMs=12000,pageSettleMs=5000}) {
   let busy=false,storageQueue=Promise.resolve();
   const read=async()=> (await chrome.storage.local.get('autoBridge')).autoBridge||{enabled:false,phase:'idle',message:'Tự động đang tắt.'};
   const write=(state,explicit=false)=>{
@@ -121,26 +121,43 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
       const message=async(action,extra={})=>{
         const tab=await chrome.tabs.get(state.tabId);
         if(new URL(tab.url).origin!==new URL(job.url).origin)throw new Error('Tab AI đã chuyển trang. Mở lại đúng nhà cung cấp rồi tiếp tục.');
-        const send=()=>chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action,jobKey:job.id+':'+job.attempt,...(action==='auto-poll'?{}:{prompt:job.prompt}),...extra});
-        const result=await (action==='auto-poll'?withTabReadDeadline(send,readTimeoutMs):send());
-        if(!result?.ok)throw Object.assign(new Error(result?.error||'Tab AI chưa sẵn sàng. Kiểm tra trang rồi tiếp tục.'),{code:result?.code||(!result&&action==='auto-poll'?'TAB_READ_UNAVAILABLE':undefined)});
+        const readOnly=['auto-poll','auto-ready'].includes(action);
+        const send=()=>chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action,jobKey:job.id+':'+job.attempt,...(readOnly?{}:{prompt:job.prompt}),...extra});
+        const result=await (readOnly?withTabReadDeadline(send,readTimeoutMs):send());
+        if(!result?.ok)throw Object.assign(new Error(result?.error||'Tab AI chưa sẵn sàng. Kiểm tra trang rồi tiếp tục.'),{code:result?.code||(!result&&readOnly?'TAB_READ_TIMEOUT':undefined)});
         return {...result,tabUrl:tab.url};
       };
       await stillEnabled();
       if(state.phase==='opening'){
+        if(now()>state.deadline)throw new Error('Trang AI chưa tải ổn định trong thời gian chờ. Kiểm tra tab rồi bấm Tiếp tục; chưa gửi yêu cầu.');
         if(state.prepareRetryAt&&now()<state.prepareRetryAt)return;
         if(!state.tabId){
           // Dedicated job tabs never overwrite an existing user draft/conversation.
           const tab=await chrome.tabs.create({url:job.url,active:true});
-          state=await write({...state,tabId:tab.id,ownedTab:true});
+          state=await write({...state,tabId:tab.id,ownedTab:true,pageCompleteAt:undefined,pageCompleteUrl:undefined});
           await chrome.storage.local.set({['tab_'+job.id]:tab.id});
         }
         const tab=await chrome.tabs.get(state.tabId);
-        if(tab.status!=='complete'){
-          if(now()>state.deadline)throw new Error('Tab AI tải quá lâu. Kiểm tra kết nối và đăng nhập rồi tiếp tục.');
+        if(tab.status!=='complete'||tab.pendingUrl){
+          state=await write({...state,pageCompleteAt:undefined,pageCompleteUrl:undefined});
+          return;
+        }
+        if(state.pageCompleteAt==null||state.pageCompleteUrl!==tab.url){
+          state=await write({...state,pageCompleteAt:now(),pageCompleteUrl:tab.url});
+        }
+        if(now()-state.pageCompleteAt<pageSettleMs){
+          const waiting='Trang AI đã tải. Đang chờ thêm 5 giây để giao diện ổn định; chưa điền prompt.';
+          if(state.message!==waiting)await status(waiting);
           return;
         }
         await ensureContent(state.tabId);
+        const readiness=await message('auto-ready');
+        if(!readiness.ready){
+          const waiting='Đang chờ ô nhập AI ổn định ít nhất 2 giây; chưa điền prompt.';
+          if(state.message!==waiting)await status(waiting);
+          return;
+        }
+        await stillEnabled();
         const {baseline}=await message('auto-prepare');
         state=await write({...state,phase:'prepared',baseline});
         await status('Đã điền prompt. Đang gửi tự động…');

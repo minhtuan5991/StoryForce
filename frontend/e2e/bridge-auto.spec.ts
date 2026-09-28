@@ -10,13 +10,42 @@ const test=base.extend({
   },
 });
 
-async function chatgptFixture(page:Page,body:string){
-  await page.route('https://chatgpt.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8">'+body}));
+async function chatgptFixture(page:Page,body:string,url='https://chatgpt.com/'){
+  await page.route(new URL(url).origin+'/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8">'+body}));
   await page.addInitScript(()=>{(window as any).chrome={runtime:{onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
-  await page.goto('https://chatgpt.com/');
+  await page.goto(url);
   await page.addScriptTag({path:path.resolve('../browser-extension/adapters.js')});
   await page.addScriptTag({path:path.resolve('../browser-extension/content.js')});
   return (message:any)=>page.evaluate(message=>new Promise<any>(resolve=>(window as any).bridgeListener({type:'storyforge',jobKey:'new-composer:1',prompt:'A complete prompt.\n\nReturn JSON with English and Tiếng Việt.',...message},{},resolve)),message);
+}
+
+for(const host of ['chatgpt.com','gemini.google.com']){
+  test(host+' readiness waits for document completion and a stable editor without modifying it',async({page})=>{
+    const invoke=await chatgptFixture(page,'<main><div role="textbox" contenteditable="true">My draft</div></main>','https://'+host+'/');
+    await page.clock.install();
+    await page.evaluate(()=>{
+      (window as any).testReadyState='loading';(window as any).inputEvents=0;
+      Object.defineProperty(document,'readyState',{configurable:true,get:()=>(window as any).testReadyState});
+      document.addEventListener('input',()=>{(window as any).inputEvents++});
+    });
+    const ready=()=>invoke({action:'auto-ready'});
+    expect((await ready()).ready).toBe(false);
+    await page.clock.runFor(2500);expect((await ready()).ready).toBe(false);
+    await page.evaluate(()=>{(window as any).testReadyState='complete'});
+    expect((await ready()).ready).toBe(false);
+    await page.clock.runFor(1500);expect((await ready()).ready).toBe(false);
+    await page.locator('[contenteditable]').evaluate(el=>el.replaceWith(el.cloneNode(true)));
+    expect((await ready()).ready).toBe(false);
+    await page.clock.runFor(1500);expect((await ready()).ready).toBe(false);
+    await page.clock.runFor(500);expect((await ready()).ready).toBe(true);
+    await page.locator('[contenteditable]').evaluate(el=>el.setAttribute('aria-disabled','true'));
+    expect((await ready()).ready).toBe(false);
+    await page.locator('[contenteditable]').evaluate(el=>el.removeAttribute('aria-disabled'));
+    expect((await ready()).ready).toBe(false);
+    await page.clock.runFor(2000);expect((await ready()).ready).toBe(true);
+    await expect(page.locator('[contenteditable]')).toHaveText('My draft');
+    expect(await page.evaluate(()=>(window as any).inputEvents)).toBe(0);
+  });
 }
 
 for(const [name,editor] of [
