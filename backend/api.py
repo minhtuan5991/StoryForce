@@ -24,6 +24,7 @@ from sqlalchemy import desc, func, or_, text as sql_text
 from .config import *
 from .database import Database
 from .deletion import Deletions, DeletionRequest
+from .asset_management import delete_assets
 from .models import *
 from .schemas import ChannelCreate, SourceCreate, ProjectCreate, JobCreate, AnalyticsCreate, StoryDNA
 from .intelligence import duration_profile, channel_fit, novelty_check, words, digest, tokens, recommend_duration
@@ -464,6 +465,33 @@ def create_app(data_root: str | Path | None = None):
         if action!="cancel":workflow.executor.submit(workflow.run,id)
         return {"status":"cancelled" if action=="cancel" else "queued"}
 
+    @app.patch("/api/projects/{id}/render-options")
+    def update_render_options(id:str, body:dict=Body(...)):
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text("BEGIN IMMEDIATE"))
+            p=get(db,Project,id)
+            if db.query(Job).filter(Job.project_id==id, or_(Job.status.in_(['queued','running']),Job.id.in_(workflow.active_jobs))).count():
+                raise HTTPException(409, 'Wait for running jobs before changing render options')
+            options={"subtitles":True,"waveform":False,"overlay":False,"logo_asset_id":None,**((p.settings or {}).get('render_options') or {})}
+            if set(body)-set(options):raise ValueError('Unknown render option')
+            for key in ('subtitles','waveform','overlay'):
+                if key in body and not isinstance(body[key],bool):raise ValueError('Render options must be boolean')
+            options.update(body)
+            if options['subtitles'] and options['waveform']:raise ValueError('Choose subtitles or waveform, not both')
+            if options['logo_asset_id']:
+                asset=get(db,Asset,options['logo_asset_id'])
+                if asset.project_id!=id or asset.kind!='image':raise ValueError('Choose a logo image from this project')
+                if not safe_path(root,asset.path).is_file():raise ValueError('Logo file is missing')
+            if options['overlay'] and not options['logo_asset_id']:raise ValueError('Choose a logo image first')
+            p.settings={**(p.settings or {}),'render_options':options}
+            p.publish={**(p.publish or {}),'final_reviewed':False}
+            db.commit()
+            return options
+
+    @app.post("/api/projects/{id}/assets/delete")
+    def remove_assets(id:str, body:dict=Body(...)):
+        return delete_assets(database,workflow,id,body.get('ids'))
+
     @app.post("/api/projects/{id}/assets")
     async def upload_assets(id:str,files:list[UploadFile]=File(...)):
         items=[]
@@ -512,6 +540,7 @@ def create_app(data_root: str | Path | None = None):
                             else:scene.asset_id=asset.id
                             scene.status="ATTACHED";scene.story_version=p.story_version
                     items.append(serialize(asset))
+                    p.publish={**(p.publish or {}),'final_reviewed':False}
                 except Exception:
                     if temporary.exists():temporary.unlink()
                     raise
@@ -535,6 +564,9 @@ def create_app(data_root: str | Path | None = None):
                     target.fallback_asset_id=asset.id
                 else:target.asset_id=asset.id
                 target.status="ATTACHED"
+                project=get(db,Project,asset.project_id)
+                target.story_version=project.story_version
+                project.publish={**(project.publish or {}),'final_reviewed':False}
                 if model is Chunk:target.real_duration=asset.duration
             db.commit();return serialize(asset)
 

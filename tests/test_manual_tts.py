@@ -40,7 +40,7 @@ def test_missing_assets_preserves_waiting_even_if_placeholders_enabled(client,pr
     result=client.post('/api/jobs/'+jid+'/complete-resources').json()
     assert not result['completed']
     assert any('tts_' in m for m in result['validation']['missing'])
-    assert any('scene_' in m for m in result['validation']['missing'])
+    assert any('Scene ' in m for m in result['validation']['missing'])
     jobs=client.get('/api/jobs').json()['items']
     assert next(j for j in jobs if j['id']==jid)['status']=='waiting_user'
     assert not any(j['kind']=='sync' for j in jobs)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.6 — 2026-09-29
+
+- Render assigned images/videos regardless of filename or planned visual type. Loop short videos when no fallback image is assigned and sync narration timing before every render.
+- Add asset selection and confirmed single/bulk removal, preserving source files, shared imports and completed renders.
+- Add per-project subtitles, moving audio waveform and topmost channel-logo overlay options. Defaults preserve subtitle behavior; waveform replaces subtitles.
+- Retain Browser Bridge 1.1.10 and existing story workflows.
+
 ## 3.1.5 — 2026-09-28
 
 - Browser Bridge 1.1.10 waits at least five seconds after the provider tab finishes loading, then observes an editable composer stable for at least two seconds before filling a prompt.
