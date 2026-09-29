@@ -14,6 +14,21 @@ def picture(color='red'):
     data=io.BytesIO();Image.new('RGBA',(64,64),color).save(data,'PNG');return data.getvalue()
 
 
+def overlay_png(size=(1920,1080)):
+    from PIL import ImageDraw
+    data=io.BytesIO();im=Image.new('RGBA',size,(0,0,0,0))
+    ImageDraw.Draw(im).rectangle((40,10,70,40),fill='red');im.save(data,'PNG');return data.getvalue()
+
+
+def green_video(path, size='320x180'):
+    ffmpeg=find_binary('ffmpeg',DEFAULT_SETTINGS)
+    vf="drawbox=x=40:y=10:w=30:h=30:color=white:t=fill,drawbox=x=20:y=150:w=60:h=20:color=white:t=fill:enable='lt(t,0.25)',drawbox=x=120:y=150:w=60:h=20:color=white:t=fill:enable='gte(t,0.25)'"
+    run_process([ffmpeg,'-y','-f','lavfi','-i',f'color=c=0x00FF00:s={size}:r=12',
+                 '-f','lavfi','-i','sine=frequency=1000:sample_rate=48000','-vf',vf,
+                 '-t','0.5','-c:v','libx264','-c:a','aac',str(path)])
+    return path.read_bytes()
+
+
 def seed(client, project):
     with client.app.state.database.session() as db:
         p=db.get(Project,project['id']);p.locked=True;p.story_version=1
@@ -34,6 +49,8 @@ def test_arbitrary_named_video_is_sufficient_and_sync_uses_assigned_audio(client
     path=tmp_path/'clip.mp4'
     run_process([ffmpeg,'-y','-f','lavfi','-i','testsrc2=s=160x90:r=12','-t','0.4','-c:v','libx264',str(path)])
     video=upload(client,project,'my holiday.mp4',path.read_bytes())
+    ending=upload(client,project,'thumbnail.png',picture())
+    client.patch('/api/projects/'+project['id']+'/render-options',json={'ending_asset_id':ending['id']})
     audio=upload(client,project,'Narrator final.wav',wav_data(2.5))
     for item,target,kind in ((video,s,'scene'),(audio,c,'tts')):
         assert client.patch('/api/assets/'+item['id'],json={'target_id':target,'target_type':kind}).status_code==200
@@ -43,14 +60,15 @@ def test_arbitrary_named_video_is_sufficient_and_sync_uses_assigned_audio(client
     from conftest import job
     timeline=job(client,project,'sync')
     assert timeline['duration']==2.5
-    assert timeline['scenes'][0]['duration']==2.5
+    assert timeline['scenes'][0]['duration']==pytest.approx(video['metadata_json']['video_duration'])
+    assert timeline['scenes'][1]['ending_thumbnail']
     assert client.get(base).json()['next']=={'kind':'render'}
 
 
 def test_delete_assets_clears_maps_and_logo_keeps_shared_and_rendered_files(client,project):
     c,s=seed(client,project)
     audio=upload(client,project,'tts_001.wav',wav_data())
-    image=upload(client,project,'scene_001.png',picture())
+    image=upload(client,project,'scene_001.png',overlay_png())
     keep=upload(client,project,'keep.png',picture('blue'))
     base='/api/projects/'+project['id']
     assert client.patch(base+'/render-options',json={'overlay':True,'logo_asset_id':image['id']}).status_code==200
@@ -88,14 +106,15 @@ def test_delete_rejects_other_project_and_active_workers(client,project):
     assert client.get('/api/assets/'+a['id']+'/file').status_code==200
 
 
-def test_render_options_validate_logo_and_invalidate_review(client,project):
+def test_render_options_validate_logo_and_invalidate_review(client,project,tmp_path):
     seed(client,project)
     base='/api/projects/'+project['id']
     assert client.patch(base+'/render-options',json={'waveform':True}).status_code==422
     assert client.patch(base+'/render-options',json={'overlay':True}).status_code==422
-    image=upload(client,project,'logo.png',picture())
+    image=upload(client,project,'logo.png',overlay_png())
+    wave=upload(client,project,'wave.mp4',green_video(tmp_path/'wave.mp4','1920x1080'))
     client.patch(base,json={'publish':{'final_reviewed':True}})
-    r=client.patch(base+'/render-options',json={'subtitles':False,'waveform':True,'overlay':True,'logo_asset_id':image['id']})
+    r=client.patch(base+'/render-options',json={'subtitles':False,'waveform':True,'waveform_asset_id':wave['id'],'overlay':True,'logo_asset_id':image['id']})
     assert r.status_code==200,r.text
     p=client.get(base).json()
     assert p['settings']['render_options']['waveform'] and not p['publish']['final_reviewed']
@@ -104,22 +123,54 @@ def test_render_options_validate_logo_and_invalidate_review(client,project):
     assert render_inputs_hash(p,[],[],[image],DEFAULT_SETTINGS)!=h
 
 
+def test_waveform_selection_validation_and_deletion(client,project,tmp_path):
+    c,s=seed(client,project)
+    base='/api/projects/'+project['id']
+    client.patch('/api/settings',json={'render_width':320,'render_height':180})
+    upload(client,project,'tts_001.wav',wav_data())
+    image=upload(client,project,'scene_001.png',picture())
+    body={'subtitles':False,'waveform':True}
+    assert client.patch(base+'/render-options',json=body).status_code==422
+    assert client.patch(base+'/render-options',json={**body,'waveform_asset_id':image['id']}).status_code==422
+    wrong=upload(client,project,'wrong.mp4',green_video(tmp_path/'wrong.mp4','160x90'))
+    r=client.patch(base+'/render-options',json={**body,'waveform_asset_id':wrong['id']})
+    assert r.status_code==422 and 'dimensions' in r.text
+    other=client.post('/api/projects',json={'channel_id':project['channel_id'],'title':'Other'}).json()
+    foreign=upload(client,other,'foreign.mp4',green_video(tmp_path/'foreign.mp4'))
+    assert client.patch(base+'/render-options',json={**body,'waveform_asset_id':foreign['id']}).status_code==422
+    wave=upload(client,project,'wave.mp4',green_video(tmp_path/'wave.mp4'))
+    assert client.patch(base+'/render-options',json={**body,'waveform_asset_id':wave['id']}).status_code==200
+    assert client.get(base+'/validate').json()['valid']
+    p=client.get(base).json()
+    h=render_inputs_hash(p,[],[],[wave],DEFAULT_SETTINGS)
+    assert render_inputs_hash(p,[],[],[{**wave,'sha256':'changed'}],DEFAULT_SETTINGS)!=h
+    path=client.app.state.root/wave['path']
+    path.rename(path.with_suffix('.bak'))
+    assert not client.get(base+'/validate').json()['valid']
+    path.with_suffix('.bak').rename(path)
+    assert client.post(base+'/assets/delete',json={'ids':[wave['id']]}).status_code==200
+    options=client.get(base).json()['settings']['render_options']
+    assert not options['waveform'] and options['waveform_asset_id'] is None
+
+
 @pytest.mark.parametrize('options',[
     {'subtitles':False,'waveform':False,'overlay':False},
-    {'subtitles':False,'waveform':True,'overlay':True,'logo_asset_id':'logo'},
+    {'subtitles':False,'waveform':True,'waveform_asset_id':'wave','overlay':True,'logo_asset_id':'logo'},
     {'subtitles':True,'waveform':False,'overlay':True,'logo_asset_id':'logo'},
 ])
-def test_real_render_loops_short_video_and_composites_options(tmp_path,options):
+def test_real_render_preserves_short_video_and_composites_options(tmp_path,options):
     root=tmp_path;(root/'logs').mkdir()
     ffmpeg=find_binary('ffmpeg',DEFAULT_SETTINGS)
     video=root/'arbitrary.mp4'
     run_process([ffmpeg,'-y','-f','lavfi','-i','testsrc2=s=320x180:r=12','-t','0.4','-c:v','libx264',str(video)])
     (root/'audio.wav').write_bytes(wav_data(2.4))
     Image.new('RGB',(320,180),(20,90,50)).save(root/'still.png')
-    (root/'logo.png').write_bytes(picture())
+    (root/'logo.png').write_bytes(overlay_png((320,180)))
+    green_video(root/'wave.mp4')
     assets=[{'id':'a','path':'audio.wav','kind':'audio','duration':2.4,'metadata_json':probe(root/'audio.wav',DEFAULT_SETTINGS)},
             {'id':'v','path':video.name,'kind':'video','duration':.4},
-            {'id':'i','path':'still.png','kind':'image'}, {'id':'logo','path':'logo.png','kind':'image'}]
+            {'id':'i','path':'still.png','kind':'image'}, {'id':'logo','path':'logo.png','kind':'image'},
+            {'id':'wave','path':'wave.mp4','kind':'video'}]
     chunks=[{'id':'c','number':1,'asset_id':'a','real_duration':2.4,'text':'One two. Three four.','story_version':1,'status':'ATTACHED'}]
     scenes=[{'id':str(i),'number':i+1,'scene_key':str(i),'offset':1.2*i,'duration':1.2,'asset_id':'v' if i==0 else 'i',
              'visual_type':'IMAGE','story_version':1,'status':'ATTACHED'} for i in range(2)]
@@ -139,8 +190,21 @@ def test_real_render_loops_short_video_and_composites_options(tmp_path,options):
     # Last scene is green; no early video freeze or truncation.
     assert frames[0].getpixel((160,35))[1]>70
     if options['overlay']:
-        red=frames[0].getpixel((296,20));assert red[0]>180 and red[1]<50
+        red=frames[0].getpixel((55,20));assert red[0]>180 and red[1]<50
+        assert frames[0].getpixel((296,20))[1]>70
     if options['waveform']:
-        lower=frames[0].crop((20,150,300,174))
-        assert sum(1 for r,g,b in lower.getdata() if b>120 and r>60)>10
+        # Source is only .5 seconds; these later frames verify looping and motion.
+        assert min(frames[0].getpixel((40,160)))>210
+        assert min(frames[1].getpixel((140,160)))>210
+        assert frames[0].getpixel((100,160))[0]<60  # no stretching/repositioning
+        background=frames[0].getpixel((160,35))
+        assert background[0]<60 and 60<background[1]<120 and background[2]<90
         assert ImageChops.difference(frames[0].crop((20,150,300,174)),frames[1].crop((20,150,300,174))).getbbox()
+        # Uploaded overlay contains a loud 1 kHz tone; only narration (220 Hz) survives.
+        import cmath, math, struct
+        audio=root/'decoded.wav'
+        run_process([ffmpeg,'-y','-i',str(output),'-vn','-ar','16000','-ac','1',str(audio)])
+        import wave
+        with wave.open(str(audio)) as w:samples=struct.unpack('<16000h',w.readframes(16000))
+        def amplitude(hz):return abs(sum(value*cmath.exp(-2j*math.pi*hz*i/16000) for i,value in enumerate(samples)))
+        assert amplitude(1000)<amplitude(220)*.01

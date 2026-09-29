@@ -31,7 +31,7 @@ from .intelligence import duration_profile, channel_fit, novelty_check, words, d
 from .workflow import Workflow, settings_for, latest, set_draft, gate_lock, lock_story, active_issues
 from .production_extras import tts_scene_context, thumbnail_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
-from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets
+from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets, timeline_from_audio, render_options, validate_logo, validate_waveform_video
 from .portability import project_archive, inspect_database
 from .youtube_metadata import metadata_fingerprint, upload_text
 from launcher import updater
@@ -313,6 +313,9 @@ def create_app(data_root: str | Path | None = None):
             for a in db.query(Artifact).filter_by(project_id=id).order_by(Artifact.created_at).all():artifacts[a.kind]=serialize(a)
             chunks=[serialize(v) for v in db.query(Chunk).filter_by(project_id=id).order_by(Chunk.number)]
             scenes=[serialize(v) for v in db.query(Scene).filter_by(project_id=id).order_by(Scene.number)]
+            assets=[serialize(v) for v in db.query(Asset).filter_by(project_id=id).order_by(desc(Asset.created_at))]
+            try:render_timeline=timeline_from_audio(chunks,scenes,assets,render_options(serialize(p))['ending_asset_id'])
+            except ValueError as exc:render_timeline={'error':str(exc)}
             channel=serialize(db.get(Channel,p.channel_id))
             start=0
             for chunk in chunks:
@@ -327,7 +330,7 @@ def create_app(data_root: str | Path | None = None):
                     "versions":[serialize(v) for v in db.query(StoryVersion).filter_by(project_id=id).order_by(desc(StoryVersion.version))],
                     "chunks":chunks,
                     "scenes":[serialize(v) for v in db.query(Scene).filter_by(project_id=id).order_by(Scene.number)],
-                    "assets":[serialize(v) for v in db.query(Asset).filter_by(project_id=id).order_by(desc(Asset.created_at))],
+                    "assets":assets,"render_timeline":render_timeline,
                     "jobs":[serialize(v) for v in db.query(Job).filter_by(project_id=id).order_by(desc(Job.created_at)).limit(50)],
                     "lock_gate":gate_lock(db,p),"next":workflow.next_step(db,p),"profile":duration_profile(p.target_minutes,p.wpm),"word_count":len(words(p.draft)),"auto_duration":recommend_duration({})}
 
@@ -472,16 +475,27 @@ def create_app(data_root: str | Path | None = None):
             p=get(db,Project,id)
             if db.query(Job).filter(Job.project_id==id, or_(Job.status.in_(['queued','running']),Job.id.in_(workflow.active_jobs))).count():
                 raise HTTPException(409, 'Wait for running jobs before changing render options')
-            options={"subtitles":True,"waveform":False,"overlay":False,"logo_asset_id":None,**((p.settings or {}).get('render_options') or {})}
+            options={"subtitles":True,"waveform":False,"overlay":False,"logo_asset_id":None,"ending_asset_id":None,"waveform_asset_id":None,**((p.settings or {}).get('render_options') or {})}
             if set(body)-set(options):raise ValueError('Unknown render option')
             for key in ('subtitles','waveform','overlay'):
                 if key in body and not isinstance(body[key],bool):raise ValueError('Render options must be boolean')
             options.update(body)
             if options['subtitles'] and options['waveform']:raise ValueError('Choose subtitles or waveform, not both')
+            if options['waveform_asset_id']:
+                wave=get(db,Asset,options['waveform_asset_id'])
+                if wave.project_id!=id or wave.kind!='video':raise ValueError('Choose a green-screen video from this project')
+                if options['waveform']:
+                    if not safe_path(root,wave.path).is_file():raise ValueError('Choose an available green-screen video or turn off waveform')
+                    validate_waveform_video(safe_path(root,wave.path),settings_for(db,db.get(Channel,p.channel_id)))
+            if options['waveform'] and not options['waveform_asset_id']:raise ValueError('Choose a green-screen video first')
             if options['logo_asset_id']:
                 asset=get(db,Asset,options['logo_asset_id'])
                 if asset.project_id!=id or asset.kind!='image':raise ValueError('Choose a logo image from this project')
                 if not safe_path(root,asset.path).is_file():raise ValueError('Logo file is missing')
+                if options['overlay']:validate_logo(safe_path(root,asset.path),settings_for(db,db.get(Channel,p.channel_id)))
+            if options['ending_asset_id']:
+                ending=get(db,Asset,options['ending_asset_id'])
+                if ending.project_id!=id or ending.kind!='image':raise ValueError('Choose an ending thumbnail from this project')
             if options['overlay'] and not options['logo_asset_id']:raise ValueError('Choose a logo image first')
             p.settings={**(p.settings or {}),'render_options':options}
             p.publish={**(p.publish or {}),'final_reviewed':False}
@@ -581,7 +595,30 @@ def create_app(data_root: str | Path | None = None):
     def validation(id:str):
         with database.session() as db:
             p=get(db,Project,id)
-            return validate_assets([serialize(c) for c in db.query(Chunk).filter_by(project_id=id)],[serialize(s) for s in db.query(Scene).filter_by(project_id=id)],[serialize(a) for a in db.query(Asset).filter_by(project_id=id)],root,p.story_version,settings_for(db)["allow_visual_fallback"])
+            chunks=[serialize(c) for c in db.query(Chunk).filter_by(project_id=id)]
+            scenes=[serialize(s) for s in db.query(Scene).filter_by(project_id=id)]
+            assets=[serialize(a) for a in db.query(Asset).filter_by(project_id=id)]
+            config=settings_for(db,db.get(Channel,p.channel_id))
+            result=validate_assets(chunks,scenes,assets,root,p.story_version,config['allow_visual_fallback'])
+            if result['valid']:
+                try:
+                    options=render_options(serialize(p))
+                    timeline=timeline_from_audio(chunks,scenes,assets,options['ending_asset_id'])
+                    for row in timeline['scenes']:
+                        if row.get('ending_thumbnail'):
+                            ending=next(a for a in assets if a['id']==row['asset_id'])
+                            if not safe_path(root,ending['path']).is_file():raise ValueError('Ending thumbnail file is missing')
+                    if options['overlay']:
+                        logo=next((a for a in assets if a['id']==options['logo_asset_id']),None)
+                        if not logo or not safe_path(root,logo['path']).is_file():raise ValueError('Choose an available logo image or turn off overlay')
+                        validate_logo(safe_path(root,logo['path']),config)
+                    if options['waveform']:
+                        wave=next((a for a in assets if a['id']==options['waveform_asset_id']),None)
+                        if not wave or wave['kind']!='video' or not safe_path(root,wave['path']).is_file():raise ValueError('Choose an available green-screen video or turn off waveform')
+                        validate_waveform_video(safe_path(root,wave['path']),config)
+                except ValueError as exc:
+                    result['valid']=False;result['missing'].append(str(exc))
+            return result
 
     @app.get("/api/projects/{id}/download/{name}")
     def download_output(id:str,name:str):

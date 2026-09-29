@@ -15,7 +15,7 @@ from .intelligence import digest, words, tokens, novelty_check, duration_profile
 from .providers import MockProvider, BrowserBridgeProvider, PROVIDERS
 from .production_extras import outro_chunk
 from .youtube_metadata import YouTubeMetadata, metadata_context, metadata_fingerprint, upload_text
-from .media import project_folder, probe, timeline_from_audio, write_subtitles, render_project, safe_path, validate_assets, render_inputs_hash
+from .media import project_folder, probe, timeline_from_audio, write_subtitles, render_project, safe_path, validate_assets, render_inputs_hash, render_options
 
 STORY_STEPS = ["content_direction", "premise_generation", "premise_mini_test", "story_bible", "outline", "outline_audit", "outline_rewrite", "full_draft", "gemini_story_audit", "chatgpt_cross_review", "disagreement_resolver", "targeted_rewrite", "final_verify_gemini", "final_verify_chatgpt"]
 
@@ -577,7 +577,13 @@ class Workflow:
                         raise ValueError("Narration is not decodable audio")
                     c.real_duration = asset.duration = info["duration"]
                     asset.metadata_json = info
-                timeline = timeline_from_audio([serialize(c) for c in chunks], [serialize(s) for s in scenes])
+                for asset in assets:
+                    if asset.kind == 'video' and any(s.asset_id == asset.id for s in scenes):
+                        info = probe(safe_path(self.root,asset.path),config)
+                        if not info['has_video']:raise ValueError('Assigned video has no video stream')
+                        asset.duration = info.get('video_duration') or info['duration']
+                        asset.metadata_json = info
+                timeline = timeline_from_audio([serialize(c) for c in chunks], [serialize(s) for s in scenes], [serialize(a) for a in assets], render_options(serialize(p))['ending_asset_id'])
                 for c, t in zip(chunks, timeline["chunks"]):
                     c.offset = t["offset"]
                 for s, t in zip(scenes, timeline["scenes"]):
@@ -610,7 +616,10 @@ class Workflow:
             validation = validate_assets(chunks, scenes, assets, self.root, p.story_version, config.get("allow_visual_fallback", False))
             if not validation["valid"]:
                 return {"checkpoint": "Attach the missing resources to continue.", "validation": validation}
-            expected = timeline_from_audio(chunks, scenes)
+            try:
+                expected = timeline_from_audio(chunks, scenes, assets, render_options(serialize(p))['ending_asset_id'])
+            except ValueError as exc:
+                return {'checkpoint':str(exc)}
             if any(abs(c.get("offset", 0)-t["offset"])>.001 for c,t in zip(chunks, expected["chunks"])) or any(abs(s.get(key,0)-t[key])>.001 for s,t in zip(scenes, expected["scenes"]) for key in ("offset", "duration")):
                 return {"kind": "sync"}
             report = latest(db, p.id, "render_report")

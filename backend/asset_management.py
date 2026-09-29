@@ -46,8 +46,13 @@ def delete_assets(database, workflow, project_id, ids):
             publish.pop('thumbnail_asset_id')
         project.publish = publish
         options = (project.settings or {}).get('render_options') or {}
+        if options.get('waveform_asset_id') in ids:
+            project.settings = {**project.settings, 'render_options': {**options, 'waveform_asset_id': None, 'waveform': False}}
+            options = project.settings['render_options']
         if options.get('logo_asset_id') in ids:
             project.settings = {**project.settings, 'render_options': {**options, 'logo_asset_id': None, 'overlay': False}}
+        if options.get('ending_asset_id') in ids:
+            project.settings = {**project.settings, 'render_options': {**project.settings.get('render_options',{}), 'ending_asset_id':None}}
         for asset in assets:
             db.delete(asset)
         db.commit()

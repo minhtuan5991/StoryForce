@@ -125,7 +125,7 @@ def validate_assets(chunks: list[dict], scenes: list[dict], assets: list[dict], 
             "narration": [narration_ok, len(chunks)], "visuals": [visuals_ok, len(scenes)]}
 
 
-def timeline_from_audio(chunks: list[dict], scenes: list[dict]) -> dict:
+def timeline_from_audio(chunks: list[dict], scenes: list[dict], assets: list[dict] | None = None, ending_asset_id=None) -> dict:
     offset, word_offset = 0.0, 0
     timeline_chunks = []
     for chunk in sorted(chunks, key=lambda c: c["number"]):
@@ -153,8 +153,78 @@ def timeline_from_audio(chunks: list[dict], scenes: list[dict]) -> dict:
         if end <= start:
             raise ValueError("Visual plan contains an empty narration range")
         timeline_scenes.append({"id": scene["id"], "number": scene["number"], "offset": start, "duration": end-start})
+    if assets is not None:
+        timeline_scenes = fit_visual_timeline(ordered, timeline_scenes, assets, offset, ending_asset_id)
     return {"duration": round(offset, 6), "chunks": timeline_chunks, "scenes": timeline_scenes,
             "alignment": "Sentence-weighted within real audio chunks; not forced speech alignment"}
+
+
+def fit_visual_timeline(scenes, baseline, assets, total, ending_asset_id=None):
+    """Video starts are anchors; only the images between anchors absorb time."""
+    asset_map = {a['id']:a for a in assets}
+    result, pending, cursor = [], [], 0.0
+
+    def fill_images(end):
+        nonlocal cursor, pending
+        available = end - cursor
+        if available < -.001 or (pending and available <= 0):
+            raise ValueError('Video scenes overlap or leave no time for the images between them. Review the scene timing.')
+        if not pending:
+            if available > .001:
+                raise ValueError('An image is needed to cover the gap between fixed video scenes.')
+            return
+        weight = sum(row['duration'] for row in pending)
+        for i, row in enumerate(pending):
+            duration = end-cursor if i == len(pending)-1 else available*row['duration']/weight
+            result.append({**row,'offset':cursor,'duration':duration,'media_kind':'image'})
+            cursor += duration
+        pending = []
+
+    for scene, row in zip(scenes, baseline):
+        asset = asset_map.get(scene.get('asset_id'))
+        if not asset or asset['kind'] != 'video':
+            pending.append(row)
+            continue
+        # Preserve a previously synced start. Unsynced scenes use their original
+        # narration range; resizing adjacent images never moves this anchor.
+        start = scene.get('offset',0) if (scene.get('duration') or 0)>0 else row['offset']
+        duration = float(asset.get('metadata_json',{}).get('video_duration') or asset.get('duration') or 0)
+        if duration <= 0 or not math.isfinite(duration):
+            raise ValueError(f"Scene {scene['number']} has no playable video duration")
+        if start + duration > total + .001:
+            raise ValueError(f"Scene {scene['number']} extends beyond the narration. Add enough narration or revise its start; the video will not be cut.")
+        fill_images(start)
+        result.append({**row,'offset':start,'duration':duration,'media_kind':'video'})
+        cursor = start + duration
+    if not pending and total-cursor > .001:
+        ending = asset_map.get(ending_asset_id)
+        if not ending or ending['kind'] != 'image':
+            raise ValueError('Choose an ending thumbnail to cover the remaining audio after the last video.')
+        result.append({'id':'__ending_thumbnail__','number':max((s['number'] for s in scenes),default=0)+1,
+                       'scene_key':'ENDING_THUMBNAIL','asset_id':ending['id'],'fallback_asset_id':None,
+                       'offset':cursor,'duration':total-cursor,'media_kind':'image','ending_thumbnail':True})
+    else:
+        fill_images(total)
+    return result
+
+
+def validate_logo(path, settings):
+    from PIL import Image
+    with Image.open(path) as im:
+        if im.format != 'PNG' or im.convert('RGBA').getchannel('A').getextrema()[0] == 255:
+            raise ValueError('Overlay requires a transparent PNG canvas')
+        expected = (int(settings['render_width']), int(settings['render_height']))
+        if im.size != expected:
+            raise ValueError(f'Overlay PNG must match the video canvas: {expected[0]} x {expected[1]} px. The image will not be resized or repositioned.')
+
+
+def validate_waveform_video(path, settings):
+    metadata = probe(path, settings)
+    if not metadata['has_video'] or (metadata['video_duration'] or metadata['duration']) <= 0:
+        raise ValueError('Choose a playable green-screen video for waveform')
+    expected = (int(settings['render_width']), int(settings['render_height']))
+    if (metadata['width'], metadata['height']) != expected:
+        raise ValueError('Green-screen video must match the output video dimensions. It will not be resized or repositioned.')
 
 
 def timestamp(seconds, vtt=False):
@@ -188,12 +258,24 @@ def write_subtitles(chunks: list[dict], folder: Path):
 
 
 def build_render_plan(scenes, settings, total):
+    fps = int(settings['render_fps'])
     transition = max(0, min(1.5, float(settings.get("transition_seconds", .4))))
     for s in scenes:
         transition = min(transition, s["duration"] / 3)
+    transitions = [transition if i<len(scenes)-1 and s.get('media_kind')!='video' and scenes[i+1].get('media_kind')!='video' else 0 for i,s in enumerate(scenes)]
+    clips, cursor = [], 0.0
+    for i, s in enumerate(scenes):
+        start = s.get('offset',cursor)
+        end = start+s['duration']
+        frames = round(end*fps)-round(start*fps)
+        if frames < 1:raise ValueError('A scene is shorter than one output frame. Review scene timing.')
+        overlap_frames = round(transitions[i]*fps)
+        clips.append({**s,'render_offset':round(start*fps)/fps,'transition_after':overlap_frames/fps,
+                      'clip_frames':frames+overlap_frames,'clip_duration':(frames+overlap_frames)/fps})
+        cursor = end
     return {"width": int(settings["render_width"]), "height": int(settings["render_height"]), "fps": int(settings["render_fps"]),
             "duration": total, "transition": transition, "video_codec": "libx264", "audio_codec": "aac",
-            "scenes": [{**s, "clip_duration": s["duration"] + (transition if i<len(scenes)-1 else 0)} for i,s in enumerate(scenes)]}
+            "scenes": clips}
 
 
 def render_options(project):
@@ -201,22 +283,27 @@ def render_options(project):
     waveform = bool(saved.get("waveform", False))
     return {"subtitles": bool(saved.get("subtitles", True)) and not waveform,
             "waveform": waveform, "overlay": bool(saved.get("overlay", False)),
-            "logo_asset_id": saved.get("logo_asset_id") or None}
+            "waveform_asset_id": saved.get("waveform_asset_id") or None,
+            "logo_asset_id": saved.get("logo_asset_id") or None,
+            "ending_asset_id": saved.get("ending_asset_id") or (project.get('publish') or {}).get('thumbnail_asset_id') or None}
 
 
 def render_inputs_hash(project, chunks, scenes, assets, settings):
     """Track production inputs without treating unrelated uploads as render changes."""
     used = {c.get("asset_id") for c in chunks} | {s.get(k) for s in scenes for k in ("asset_id", "fallback_asset_id")}
     options = render_options(project)
+    used.add(options['ending_asset_id'])
+    if options['waveform']:
+        used.add(options['waveform_asset_id'])
     if options["overlay"]:
         used.add(options["logo_asset_id"])
     selected_assets = [a for a in assets if a["id"] in used or a["kind"] in ("music", "ambient", "sfx")]
     def fields(items, keys):
         return [{k: item.get(k) for k in keys} for item in sorted(items, key=lambda x:x["id"])]
     value = {
-        "renderer": 3, "version": project["story_version"], "render_options": options,
+        "renderer": 5, "version": project["story_version"], "render_options": options,
         "chunks": fields(chunks, ("id", "text", "asset_id", "real_duration")),
-        "scenes": fields(scenes, ("id", "number", "start_word", "end_word", "asset_id", "fallback_asset_id")),
+        "scenes": fields(scenes, ("id", "number", "start_word", "end_word", "offset", "duration", "asset_id", "fallback_asset_id")),
         "assets": fields(selected_assets, ("id", "sha256", "path", "duration", "metadata_json")),
         "settings": {k:settings.get(k) for k in ("render_width", "render_height", "render_fps", "transition_seconds", "music_db", "ambient_db", "narration_db", "allow_visual_fallback", "silence_threshold")},
     }
@@ -239,11 +326,27 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     log = root / "logs" / "ffmpeg.log"
     asset_map = {a["id"]: a for a in assets}
     total = sum(c["real_duration"] for c in chunks)
+    input_hash = render_inputs_hash(project, chunks, scenes, assets, settings)
+    baseline = [{k:s[k] for k in ('id','number','offset','duration')} for s in scenes]
+    options = render_options(project)
+    timing = fit_visual_timeline(scenes, baseline, assets, total, options['ending_asset_id'])
+    originals = {s['id']:s for s in scenes}
+    scenes = [{**originals.get(t['id'],{}),**t} for t in timing]
+    for s in scenes:
+        if s.get('ending_thumbnail') and not safe_path(root,asset_map[s['asset_id']]['path']).is_file():
+            raise ValueError('Ending thumbnail file is missing')
     plan = build_render_plan(scenes, settings, total)
     options = render_options(project)
     logo = asset_map.get(options["logo_asset_id"]) if options["overlay"] else None
     if options["overlay"] and (not logo or logo["kind"] != "image" or not safe_path(root, logo["path"]).is_file()):
         raise ValueError("Choose an available logo image or turn off overlay")
+    if logo:
+        validate_logo(safe_path(root,logo['path']),settings)
+    wave = asset_map.get(options['waveform_asset_id']) if options['waveform'] else None
+    if options['waveform'] and (not wave or wave['kind'] != 'video' or not safe_path(root,wave['path']).is_file()):
+        raise ValueError('Choose an available green-screen video or turn off waveform')
+    if wave:
+        validate_waveform_video(safe_path(root,wave['path']),settings)
     fps, width, height = plan["fps"], plan["width"], plan["height"]
     base = [binary, "-hide_banner", "-y", "-nostdin", "-threads", "2"]
     color_filter = "format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
@@ -261,11 +364,10 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     run_process(base + ["-f", "concat", "-safe", "1", "-i", "narration.txt", "-c:a", "pcm_s16le", str(master)], log, cwd=folder)
     write_subtitles(chunks, folder)
 
-    def still(image_path: Path, duration: float, output: Path, number: int):
-        frames = max(1, math.ceil(duration * fps))
+    def still(image_path: Path, duration: float, output: Path, number: int, frames: int):
         x = "iw/2-(iw/zoom/2)" if number % 2 else "(iw-iw/zoom)*on/" + str(frames)
         vf = f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase:out_range=tv:out_color_matrix=bt709,crop={width*2}:{height*2},zoompan=z='min(1.0+on*0.00015,1.08)':x='{x}':y='ih/2-(ih/zoom/2)':d={frames}:s={width}x{height}:fps={fps},setsar=1,{color_filter}"
-        run_process(base + ["-protocol_whitelist", "file,pipe", "-i", str(image_path), "-vf", vf, "-t", str(duration), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2"] + color_args + [str(output)], log)
+        run_process(base + ["-protocol_whitelist", "file,pipe", "-i", str(image_path), "-vf", vf, "-frames:v", str(frames), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2"] + color_args + [str(output)], log)
 
     placeholder = folder / "missing_visual.png"
     def placeholder_path():
@@ -289,26 +391,19 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         duration = scene["clip_duration"]
         if not asset or asset["kind"] == "image":
             path = safe_path(root, asset["path"]) if asset else placeholder_path()
-            still(path, duration, output, i)
+            if scene.get('ending_thumbnail'):
+                vf=f"scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv:out_color_matrix=bt709,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,{color_filter}"
+                run_process(base+["-loop","1","-i",str(path),"-vf",vf,"-r",str(fps),"-frames:v",str(scene['clip_frames']),"-an","-c:v","libx264","-preset","veryfast"]+color_args+[str(output)],log)
+            else:
+                still(path, duration, output, i, scene['clip_frames'])
         else:
             path = safe_path(root, asset["path"])
-            # Keep narration timing. Without an explicit fallback image, loop
-            # the assigned video to cover its full scene and transition.
-            loop = not fallback and (asset.get("duration") or 0) < duration
-            video_duration = duration if loop else min(duration, asset.get("duration") or duration)
-            part = folder / f"video_{i:03}.mp4"
-            vf = f"scale={width}:{height}:force_original_aspect_ratio=increase:out_range=tv:out_color_matrix=bt709,crop={width}:{height},fps={fps},setsar=1,{color_filter}"
-            run_process(base + (["-stream_loop", "-1"] if loop else []) + ["-protocol_whitelist", "file,pipe", "-i", str(path), "-t", str(video_duration), "-vf", vf, "-an", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2"] + color_args + [str(part)], log)
-            if video_duration < duration - .02:
-                tail = folder / f"tail_{i:03}.mp4"
-                still(safe_path(root, fallback["path"]) if fallback else placeholder_path(), duration-video_duration, tail, i)
-                # Re-encode a single stream: copying H.264 packets from a video
-                # and JPEG-derived tail can change pixel format/color metadata
-                # midstream and reset the later xfade graph at the splice.
-                join = f"[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]concat=n=2:v=1:a=0,{color_filter}[v]"
-                run_process(base + ["-i", str(part), "-i", str(tail), "-filter_complex", join, "-map", "[v]", "-an", "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2"] + color_args + [str(output)], log)
-            else:
-                shutil.copyfile(part, output)
+            # Decode the entire video once at normal speed. No looping,
+            # slow motion, image tail or transition overlap on dialogue clips.
+            # Snap endpoints to the output frame grid, never accumulating one
+            # rounding error per scene. At most one frame is held at the end.
+            vf = f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=increase:out_range=tv:out_color_matrix=bt709,crop={width}:{height},fps={fps},tpad=stop_mode=clone:stop_duration={1/fps},trim=end_frame={scene['clip_frames']},setsar=1,{color_filter}"
+            run_process(base + ["-protocol_whitelist", "file,pipe", "-i", str(path), "-vf", vf, "-an", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2"] + color_args + [str(output)], log)
         clips.append(output)
     progress(76, "Mixing audio with narration ducking")
     beds = [a for a in assets if a["kind"] in ("music", "ambient")][:2]
@@ -340,38 +435,40 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     args += ["-i", str(folder/"final_audio.wav")]
     if options["subtitles"]:
         args += ["-i", str(folder/"captions.srt")]
+    next_input = len(clips) + 1 + int(options['subtitles'])
+    if wave:
+        wave_index = next_input
+        next_input += 1
+        args += ['-stream_loop', '-1', '-noautorotate', '-protocol_whitelist', 'file,pipe', '-i', str(safe_path(root,wave['path']))]
     if logo:
-        logo_index = len(clips) + 1 + int(options["subtitles"])
+        logo_index = next_input
         args += ["-loop", "1", "-i", str(safe_path(root, logo["path"]))]
     graph = [f"[{i}:v]settb=AVTB,setpts=PTS-STARTPTS[v{i}]" for i in range(len(clips))]
     previous, offset = "v0", 0.0
-    transition = plan["transition"]
-    if transition > 0:
-        for i in range(1, len(clips)):
-            offset += scenes[i-1]["duration"]
+    for i in range(1, len(clips)):
+        offset = plan['scenes'][i]['render_offset']
+        transition = plan['scenes'][i-1]['transition_after']
+        if transition > 0:
             graph.append(f"[{previous}][v{i}]xfade=transition=fade:duration={transition}:offset={offset}[x{i}]")
-            previous = f"x{i}"
-    elif len(clips) > 1:
-        graph.append("".join(f"[v{i}]" for i in range(len(clips))) + f"concat=n={len(clips)}:v=1:a=0[joined]")
-        previous = "joined"
+        else:
+            graph.append(f"[{previous}][v{i}]concat=n=2:v=1:a=0[x{i}]")
+        previous = f"x{i}"
     output = folder/"final_video.mp4"
     # Relative subtitle path avoids Windows drive-colon/filter escaping issues.
     if options["subtitles"]:
         graph.append(f"[{previous}]subtitles=filename=captions.srt:force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00101010,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=24'[captioned]")
         previous = "captioned"
     audio_map = f"{len(clips)}:a"
-    if options["waveform"]:
-        wave_width, wave_height = max(2, int(width * .84)//2*2), max(16, int(height * .1)//2*2)
-        graph.append(f"[{len(clips)}:a]asplit=2[audioout][waveaudio]")
-        graph.append(f"[waveaudio]aformat=channel_layouts=mono,showwaves=s={wave_width}x{wave_height}:mode=cline:rate={fps}:colors=0x93c5fd:scale=sqrt,format=rgba[wave]")
-        graph.append(f"[{previous}][wave]overlay=x=(W-w)/2:y=H-h-{max(8,int(height*.025))}:shortest=1[waved]")
-        previous, audio_map = "waved", "[audioout]"
+    if wave:
+        # Preserve the uploaded canvas and animation speed. Loop only this overlay;
+        # its audio is never mapped into the narration mix.
+        graph.append(f'[{wave_index}:v]setpts=PTS-STARTPTS,format=yuva444p,chromakey=0x00FF00:0.12:0.05[wave]')
+        graph.append(f'[{previous}][wave]overlay=x=0:y=0:shortest=1[waved]')
+        previous = 'waved'
     if logo:
         # Logo is composed last so it is always above captions/waveform.
-        logo_w, logo_h = max(2, int(width*.14)//2*2), max(2, int(height*.18)//2*2)
-        margin = max(8, int(width*.02))
-        graph.append(f"[{logo_index}:v]scale={logo_w}:{logo_h}:force_original_aspect_ratio=decrease,format=rgba[logo]")
-        graph.append(f"[{previous}][logo]overlay=x=W-w-{margin}:y={margin}:shortest=1[branded]")
+        graph.append(f"[{logo_index}:v]format=rgba[logo]")
+        graph.append(f"[{previous}][logo]overlay=x=0:y=0:shortest=1[branded]")
         previous = "branded"
     subtitle_args = ["-map", f"{len(clips)+1}:s", "-c:s", "mov_text", "-disposition:s:0", "0", "-metadata:s:s:0", "language=eng"] if options["subtitles"] else []
     run_process(args + ["-filter_complex_threads", "1", "-filter_complex", ";".join(graph), "-map", f"[{previous}]", "-map", audio_map] + subtitle_args + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-r", str(fps), "-t", str(total), "-movflags", "+faststart", "-threads", "2", str(output)], log, timeout=14400, cwd=folder)
@@ -384,7 +481,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     report = final_qa(output, plan, binary, settings, log)
     report['captions_burned_in'] = options['subtitles']
     report['render_options'] = options
-    report['inputs_hash'] = render_inputs_hash(project, chunks, scenes, assets, settings)
+    report['inputs_hash'] = input_hash
     report["warnings"] += validation["warnings"]
     if report["warnings"] and report["status"] == "READY":
         report["status"] = "NEEDS REVIEW"
