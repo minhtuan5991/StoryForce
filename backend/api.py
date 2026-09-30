@@ -32,6 +32,7 @@ from .workflow import Workflow, settings_for, latest, set_draft, gate_lock, lock
 from .production_extras import tts_scene_context, thumbnail_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
 from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets, timeline_from_audio, render_options, validate_logo, validate_waveform_video
+from .visual_planning import visual_budget
 from .portability import project_archive, inspect_database
 from .youtube_metadata import metadata_fingerprint, upload_text
 from launcher import updater
@@ -313,6 +314,7 @@ def create_app(data_root: str | Path | None = None):
             for a in db.query(Artifact).filter_by(project_id=id).order_by(Artifact.created_at).all():artifacts[a.kind]=serialize(a)
             chunks=[serialize(v) for v in db.query(Chunk).filter_by(project_id=id).order_by(Chunk.number)]
             scenes=[serialize(v) for v in db.query(Scene).filter_by(project_id=id).order_by(Scene.number)]
+            for scene in scenes:scene['scene_key']=f"scene_{scene['number']:03}"
             assets=[serialize(v) for v in db.query(Asset).filter_by(project_id=id).order_by(desc(Asset.created_at))]
             try:render_timeline=timeline_from_audio(chunks,scenes,assets,render_options(serialize(p))['ending_asset_id'])
             except ValueError as exc:render_timeline={'error':str(exc)}
@@ -323,13 +325,14 @@ def create_app(data_root: str | Path | None = None):
                 start+=chunk['word_count']
             return {**serialize(p),"channel":serialize(db.get(Channel,p.channel_id)),"source":serialize(db.get(Source,p.source_id)) if p.source_id else None,
                     "thumbnail_prompt":thumbnail_prompt(serialize(p),scenes),
+                    "visual_budget":visual_budget(serialize(p),config),
                     "youtube_metadata_current":bool(artifacts.get('youtube_metadata') and artifacts['youtube_metadata']['content'].get('content_fingerprint')==metadata_fingerprint(db,p)),
                     "workflow_settings":{key:config[key] for key in ("pipeline_mode","default_premise_count")},
                     "artifacts":artifacts,"premises":[serialize(v) for v in db.query(Premise).filter_by(project_id=id)],
                     "issues":[serialize(v) for v in db.query(Issue).filter_by(project_id=id).order_by(desc(Issue.cycle))],
                     "versions":[serialize(v) for v in db.query(StoryVersion).filter_by(project_id=id).order_by(desc(StoryVersion.version))],
                     "chunks":chunks,
-                    "scenes":[serialize(v) for v in db.query(Scene).filter_by(project_id=id).order_by(Scene.number)],
+                    "scenes":scenes,
                     "assets":assets,"render_timeline":render_timeline,
                     "jobs":[serialize(v) for v in db.query(Job).filter_by(project_id=id).order_by(desc(Job.created_at)).limit(50)],
                     "lock_gate":gate_lock(db,p),"next":workflow.next_step(db,p),"profile":duration_profile(p.target_minutes,p.wpm),"word_count":len(words(p.draft)),"auto_duration":recommend_duration({})}
@@ -467,6 +470,20 @@ def create_app(data_root: str | Path | None = None):
             db.commit()
         if action!="cancel":workflow.executor.submit(workflow.run,id)
         return {"status":"cancelled" if action=="cancel" else "queued"}
+
+    @app.patch('/api/projects/{id}/visual-options')
+    def update_visual_options(id:str, body:dict=Body(...)):
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p=get(db,Project,id)
+            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise HTTPException(409,'Finish the active job first')
+            if set(body)-{'mode','image_count','video_count'}:raise ValueError('Unknown visual option')
+            options={**((p.settings or {}).get('visual_options') or {}),**body}
+            budget=visual_budget({**serialize(p),'settings':{**(p.settings or {}),'visual_options':options}},settings_for(db,db.get(Channel,p.channel_id)))
+            p.settings={**(p.settings or {}),'visual_options':{key:budget[key] for key in ('mode','image_count','video_count')}}
+            db.commit()
+            return budget
 
     @app.patch("/api/projects/{id}/render-options")
     def update_render_options(id:str, body:dict=Body(...)):
@@ -777,6 +794,7 @@ def create_app(data_root: str | Path | None = None):
                 if isinstance(DEFAULT_SETTINGS[key],bool) and not isinstance(value,bool):raise ValueError(f"{key} must be true or false")
                 if key=="provider_mode" and value not in ("mock","browser"):raise ValueError("Use mock or browser mode")
                 if key=="pipeline_mode" and value not in ("manual","assisted","auto"):raise ValueError("Use manual, assisted or auto pipeline mode")
+                if key=='render_encoder' and value not in ('auto','cpu'):raise ValueError('Choose automatic GPU or CPU encoding')
                 if key in ("ffmpeg_path","ffprobe_path") and value and (not Path(value).is_file() or Path(value).name.lower() not in ("ffmpeg.exe","ffprobe.exe","ffmpeg","ffprobe")):raise ValueError("Choose a valid FFmpeg/ffprobe executable")
                 setting=db.get(Setting,key)
                 if setting:setting.value=value

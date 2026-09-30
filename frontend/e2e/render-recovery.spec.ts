@@ -1,4 +1,31 @@
 import {test,expect} from '@playwright/test';
+test('visual director saves minimum counts before generation and shows scene filenames',async({page})=>{
+  const p:any={id:'p',title:'Visual budget',channel_id:'c',channel:{name:'Channel',color:'blue'},target_minutes:10,wpm:150,story_version:1,locked:true,
+    jobs:[],issues:[],publish:{},settings:{},chunks:[],artifacts:{},assets:[],
+    visual_budget:{mode:'standard',image_count:10,video_count:3,standard:{image_count:10,video_count:3},minimum:{image_count:5,video_count:2}},
+    scenes:[{id:'s',number:1,scene_key:'scene_001',visual_type:'IMAGE',prompt:'A keeper in a station',negative_prompt:'No text',continuity:{},start_word:0,end_word:50}]};
+  let generated=0;
+  await page.addInitScript(()=>localStorage.setItem('storyforge-interface-language','vi'));
+  await page.route('**/api/**',async route=>{
+    const path=new URL(route.request().url()).pathname;let result:any={items:[],total:0};
+    if(path==='/api/dashboard')result={settings:{provider_mode:'browser'},active_jobs:0,sources:0};
+    if(path==='/api/session')result={token:'test'};
+    if(path==='/api/projects/p')result=p;
+    if(path.endsWith('/visual-options')){p.settings.visual_options=route.request().postDataJSON();result=p.settings.visual_options}
+    if(path==='/api/jobs'&&route.request().method()==='POST'){
+      expect(p.settings.visual_options.mode).toBe('minimum');expect(route.request().postDataJSON().kind).toBe('visual_director');generated++;result={id:'j'};
+    }
+    await route.fulfill({json:result});
+  });
+  await page.goto('/#/projects/p/visuals');
+  await expect(page.getByRole('heading',{name:'scene_001',exact:true})).toBeVisible();
+  await page.getByRole('combobox',{name:'Chế độ tài nguyên hình ảnh'}).selectOption('minimum');
+  await expect(page.getByRole('spinbutton',{name:'Số lượng ảnh',exact:true})).toHaveValue('5');
+  await expect(page.getByRole('spinbutton',{name:'Số lượng video',exact:true})).toHaveValue('2');
+  await page.screenshot({path:'../.runtime/visual-budget-ui.png',fullPage:true});
+  await page.getByRole('button',{name:'Tạo kế hoạch hình ảnh',exact:true}).click();
+  await expect.poll(()=>generated).toBe(1);
+});
 test('missing WAV is named and a rebuilt video reloads even in the same story version',async({page})=>{
   let renderRequests=0;
   const validation={valid:false,narration:[3,4],visuals:[8,8],missing:['tts_004.wav'],warnings:[]};

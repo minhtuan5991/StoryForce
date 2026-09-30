@@ -1476,5 +1476,22 @@
   "Render options saved": "Đã lưu tùy chọn dựng video",
   "Saving…": "Đang lưu…",
   "Subtitle timing is estimated within each audio segment. Review the final video before publishing.": "Thời điểm phụ đề được ước tính trong từng đoạn âm thanh. Xem lại video trước khi xuất bản.",
-  "Rendering uses assigned resources and automatically syncs the timeline to narration. Short videos loop unless a fallback image is assigned.": "Dùng tài nguyên đã gán và tự đồng bộ timeline theo lời đọc. Video ngắn được lặp đủ thời lượng scene; nếu có ảnh dự phòng thì dùng ảnh cho phần còn lại."
+  "Rendering uses assigned resources and automatically syncs the timeline to narration. Short videos loop unless a fallback image is assigned.": "Dùng tài nguyên đã gán và tự đồng bộ timeline theo lời đọc. Video ngắn được lặp đủ thời lượng scene; nếu có ảnh dự phòng thì dùng ảnh cho phần còn lại.",
+  "Image and video count": "Số lượng ảnh và video",
+  "Visual plan mode": "Chế độ tài nguyên hình ảnh",
+  "Standard": "Tiêu chuẩn",
+  "Minimum · about 50% fewer visuals": "Tối thiểu · giảm khoảng 50% ảnh/video",
+  "Custom counts": "Tự chọn số lượng",
+  "Image count": "Số lượng ảnh",
+  "Video count": "Số lượng video",
+  "Minimum mode uses about half the standard images and videos, rounded up, and focuses on key story beats. Images hold longer; scene videos never loop.": "Chế độ tối thiểu dùng khoảng một nửa số ảnh và video tiêu chuẩn, làm tròn lên, tập trung vào các diễn biến chính. Ảnh hiển thị lâu hơn; video scene không lặp.",
+  "Creating a new plan replaces scene assignments. Uploaded resource files are kept.": "Tạo lại kế hoạch sẽ thay thế danh sách scene và liên kết tài nguyên. Các file đã tải lên được giữ lại.",
+  "Choose at least one image, zero or more videos, and at most 200 visuals": "Chọn ít nhất 1 ảnh, từ 0 video trở lên và tối đa 200 ảnh/video tổng cộng",
+  "Visual options saved": "Đã lưu số lượng ảnh/video",
+  "Visual plan must match the selected image and video counts": "Kế hoạch hình ảnh phải có đúng số lượng ảnh và video đã chọn",
+  "Choose standard, minimum or custom visual count": "Chọn chế độ tiêu chuẩn, tối thiểu hoặc tự chọn số lượng",
+  "Render acceleration": "Tăng tốc dựng video",
+  "Automatic GPU · CPU fallback": "Tự động dùng GPU · dự phòng bằng CPU",
+  "CPU only": "Chỉ dùng CPU",
+  "H.264: target 5 Mbps with GPU, quality-based VBR with CPU; AAC 160 kbps. Unchanged scenes are reused when rendering again.": "H.264: mục tiêu 5 Mbps khi dùng GPU, VBR theo chất lượng khi dùng CPU; AAC 160 kbps. Scene không thay đổi được dùng lại khi dựng lần sau."
 }

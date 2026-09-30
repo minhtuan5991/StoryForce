@@ -87,7 +87,9 @@ class MockProvider(LLMProvider):
             return {"passed": not unresolved, "critical": sum(i["severity"] == "CRITICAL" for i in unresolved), "high": sum(i["severity"] == "HIGH" for i in unresolved), "summary": "Mock verification; both providers must verify the exact draft hash."}
         if kind == "visual_director":
             n = context.get("payload", {}).get("count", round(sum(profile["scenes"])/2))
-            return {"scenes": [{"scene_id": f"S{i+1:03}", "visual_type": "VIDEO" if i < int(n * context.get('video_ratio', .15)) else "IMAGE", "prompt": f"Cinematic 16:9 still. Scene {i+1}: Mara, a 34-year-old radio archivist in a weathered navy jacket, at a coastal radio station at night. Cool moonlight, amber instrument lights, atmospheric fog, grounded realism. Unique angle {i+1}.", "negative_prompt": "Text, logos, extra fingers, changed character appearance", "continuity_references": ["Mara: navy jacket", "Station: amber dial lights"], "camera": "Slow push in", "motion": "Subtle light and fog"} for i in range(n)]}
+            count = context.get('payload',{}).get('video_count',int(n*context.get('video_ratio',.15)))
+            video_indices = {max(1,min(n-1,round((i+1)*n/(count+1)))) for i in range(count)}
+            return {"scenes": [{"scene_id": f"scene_{i+1:03}", "visual_type": "VIDEO" if i in video_indices else "IMAGE", "prompt": f"Cinematic 16:9 still. Scene {i+1}: Mara, a 34-year-old radio archivist in a weathered navy jacket, at a coastal radio station at night. Cool moonlight, amber instrument lights, atmospheric fog, grounded realism. Unique angle {i+1}.", "negative_prompt": "Text, logos, extra fingers, changed character appearance", "continuity_references": ["Mara: navy jacket", "Station: amber dial lights"], "camera": "Slow push in", "motion": "Subtle light and fog"} for i in range(n)]}
         if kind in ("tts_context", "image_generation", "video_generation"):
             return {"manual_media_required": True, "message": "Mock mode does not generate production audio or images. Attach local media."}
         raise ValueError(f"No mock fixture for {kind}")

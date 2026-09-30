@@ -83,6 +83,12 @@ def test_mixed_videos_and_images_reach_all_eight_scenes_and_rerender(tmp_path):
     assert result['file']!=rerender['file']
     assert (root/result['file']).read_bytes()==old
     assert rerender['inputs_hash']==result['inputs_hash']
+    assert rerender['render_performance']['cached_scenes']==8
+    # Updating one input rebuilds only that scene, preserving all other cache entries.
+    Image.new('RGB',(320,180),'white').save(root/'scene7.jpg')
+    changed=render_project(root,project,chunks,scenes,assets,settings,lambda *args:None)
+    assert changed['render_performance']['rendered_scenes']==1
+    assert changed['render_performance']['cached_scenes']==7
 
 
 def test_qa_rejects_short_video_stream_even_when_container_matches(tmp_path,monkeypatch):

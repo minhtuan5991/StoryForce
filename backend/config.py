@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-VERSION = "3.1.7"
+VERSION = "3.1.9"
 APP_ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", APP_ROOT))
 CONFIG_FILE = APP_ROOT / "storyforge.config.json"
@@ -26,6 +26,7 @@ DEFAULT_SETTINGS = {
     "default_premise_count": 10, "visual_video_ratio": 0.15,
     "ffmpeg_path": "", "ffprobe_path": "", "browser": "edge",
     "render_width": 1920, "render_height": 1080, "render_fps": 30,
+    "render_encoder": "auto",
     "music_db": -28, "ambient_db": -32, "narration_db": 0,
     "max_audit_cycles": 3, "browser_timeout": 180, "silence_threshold": 3,
     "auto_select_premise": False, "auto_lock": False,

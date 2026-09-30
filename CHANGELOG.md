@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.1.9 — 2026-09-30
+
+- Sample the uploaded waveform video's actual green background instead of assuming pure #00FF00. Preserve its native canvas, speed, loop and position below the logo.
+- Compose scenes in groups of at most six inputs, preserving frame-aligned video positions and transitions between groups. Apply captions/waveform/logo once to the assembled video.
+- Replace fixed render deadlines with a progress watchdog: keep advancing renders running, stop after 15 minutes without frame/time advancement, and retain useful failure details and the previous completed video.
+- Keep GPU final encoding and scene cache; use a fast CPU intermediate to avoid Quick Sync chroma changes during concat/xfade. Remove completed temporary join files after technical QA.
+
+## 3.1.8 — 2026-09-30 (local only)
+
+- Add per-project standard, half-count minimum and custom image/video budgets; validate AI counts before replacing the plan and prioritize main story beats.
+- Display visual scenes as scene_001, scene_002, etc., retaining existing IDs and assets.
+- Probe hardware encoding, use NVENC/Quick Sync when available and fall back to CPU. Encode final H.264 at 5 Mbps target with hardware, quality-based VBR with CPU, AAC 160 kbps.
+- Prepare up to two scenes concurrently and reuse validated scene cache on rerenders while preserving fixed video timing and all existing overlays.
+
 ## 3.1.7 — 2026-09-29
 
 - Preserve video starts and native duration; resize only image scene timing. Use frame-aligned cuts around videos, with transitions retained between images.

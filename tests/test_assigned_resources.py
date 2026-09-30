@@ -183,7 +183,8 @@ def test_real_render_preserves_short_video_and_composites_options(tmp_path,optio
     streams=json.loads(run_process([find_binary('ffprobe',config),'-v','error','-show_streams','-of','json',str(output)]).stdout)['streams']
     assert any(s['codec_type']=='subtitle' for s in streams)==options['subtitles']
     frames=[]
-    for n,at in enumerate((1.7,1.9)):
+    # Sample inside each animation half, away from an input-seek frame boundary.
+    for n,at in enumerate((1.55,1.9)):
         f=root/f'frame{n}.png'
         run_process([ffmpeg,'-y','-ss',str(at),'-i',str(output),'-frames:v','1',str(f)])
         with Image.open(f) as image:frames.append(image.convert('RGB').copy())
