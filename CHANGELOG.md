@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.10 — 2026-10-02
+
+- Add an optional Vietnamese reading pane in Source material, supporting English and Chinese transcripts. Keep the original JSON editor, source fields, analysis prompts and adaptation workflows unchanged.
+- Translate visible chunks on the device with one background queue; cache display translations separately by source language and reuse them across reloads. No workflow jobs or translated source data are saved to the backend.
+- Retain all settings, render behavior and Browser Bridge 1.1.10.
+
 ## 3.1.9 — 2026-09-30
 
 - Sample the uploaded waveform video's actual green background instead of assuming pure #00FF00. Preserve its native canvas, speed, loop and position below the logo.

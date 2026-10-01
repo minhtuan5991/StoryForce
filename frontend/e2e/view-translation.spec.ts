@@ -15,8 +15,8 @@ async function setup(page:Page,mode:'mock'|'missing'|'native'='mock'){
   const p=project(),mutations:{path:string,body:any}[]=[];
   await page.addInitScript(({mode})=>{
     localStorage.setItem('storyforge-interface-language','vi');
-    (window as any).translationCalls=[];
-    if(mode==='mock')Object.defineProperty(window,'Translator',{value:{create:async()=>({translate:async(text:string)=>{(window as any).translationCalls.push(text);return 'Bản dịch: '+text}})},configurable:true});
+    (window as any).translationCalls=[];(window as any).translationLanguages=[];
+    if(mode==='mock')Object.defineProperty(window,'Translator',{value:{create:async(options:any)=>{(window as any).translationLanguages.push(options.sourceLanguage);return {translate:async(text:string)=>{(window as any).translationCalls.push(text);return 'Bản dịch: '+text}}}},configurable:true});
     if(mode==='missing')Object.defineProperty(window,'Translator',{value:undefined,configurable:true});
   },{mode});
   await page.route('**/api/**',async route=>{
@@ -74,6 +74,7 @@ test('draft, audio and visual actions retain English payloads; collapsed content
   await page.getByRole('button',{name:'Đưa vào hàng đợi Bridge',exact:true}).click();
   await expect.poll(()=>mutations.at(-1)?.body.payload).toMatchObject({text:narration,scene,chunk_id:'chunk',voice:{style:'Warm and natural'}});
   await page.locator('.studio-nav a[href$="/visuals"]').click();
+  await page.locator('.visual-card-body>p').first().scrollIntoViewIfNeeded();
   await expect(page.getByText('Bản dịch: '+prompt,{exact:true})).toBeVisible();
   await page.getByRole('button',{name:'Đưa vào hàng đợi Bridge',exact:true}).click();
   await expect.poll(()=>mutations.at(-1)?.body.payload).toEqual({prompt,negative_prompt:'No text or logos',scene_id:'sc'});
@@ -137,4 +138,87 @@ test('Comet built-in translator produces real Vietnamese without any workflow re
   const result=await text.textContent();expect(result).not.toBe(direction);expect(result).toMatch(/[àáạảãâăèéêìíòóôơùúưỳýđ]/i);
   expect(mutations).toEqual([]);
   await page.screenshot({path:'../.runtime/view-translation/vietnamese-direction.png',fullPage:true});
+});
+
+const chineseSource={id:'source',title:'校园里的秘密',url:'https://example.com/story',transcript:'今天的故事发生在一所学校。学生发现了一封神秘的信。老师说不要打开那扇门。',summary:'学生必须决定是否相信老师。',notes:'保持故事原来的结局。',tags:['学校','秘密'],language:'English',channel_id:'c',dna:{},fits:[]};
+async function sourcePage(page:Page,mode:'mock'|'missing'|'native'='mock',source={...chineseSource}){
+  const state=await setup(page,mode);
+  await page.route('**/api/sources/source',async route=>{
+    if(route.request().method()==='GET')await route.fulfill({json:source});else await route.fallback();
+  });
+  await page.goto('/#/inbox/source');await page.waitForTimeout(2200);
+  await expect(page.getByRole('group',{name:'Ngôn ngữ nội dung'})).toBeVisible();
+  return {...state,source};
+}
+
+test('source translations are read-only; original JSON and analysis requests remain unchanged',async({page})=>{
+  const {source,mutations}=await sourcePage(page);await vi(page);
+  const preview=page.getByRole('region',{name:'Bản dịch tư liệu nguồn'});
+  await expect(preview.getByText('Bản dịch: '+source.transcript,{exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>(window as any).translationLanguages)).toEqual(['zh']);
+  await expect(preview.locator('textarea,input,[contenteditable=true]')).toHaveCount(0);
+  expect(mutations).toEqual([]);
+  await page.getByRole('button',{name:'Sửa JSON',exact:true}).click();
+  const {id,dna,fits,...original}=source;
+  expect(JSON.parse(await page.locator('.code-editor').inputValue())).toEqual(original);
+  await page.getByRole('button',{name:'Lưu thay đổi',exact:true}).click();
+  await expect.poll(()=>mutations.at(-1)).toEqual({path:'/api/sources/source',body:original});
+  await page.getByRole('button',{name:'Phân tích DNA truyện',exact:true}).click();
+  await expect.poll(()=>mutations.at(-1)).toEqual({path:'/api/jobs',body:{kind:'story_dna',source_id:'source'}});
+  await page.getByRole('button',{name:'Bản gốc',exact:true}).click();
+  await expect(preview).toHaveCount(0);
+  await expect(page.locator('.readable-value').filter({hasText:source.transcript})).toContainText(source.transcript);
+});
+
+test('source reading caches translation, refreshes changed content and keeps source tabs isolated',async({page})=>{
+  const {source,mutations}=await sourcePage(page);await vi(page);
+  const preview=page.getByRole('region',{name:'Bản dịch tư liệu nguồn'});
+  await expect(preview.getByText('Bản dịch: '+source.transcript,{exact:true})).toBeVisible();
+  await page.waitForTimeout(700);await page.reload();await vi(page);
+  await expect(preview.getByText('Bản dịch: '+source.transcript,{exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>(window as any).translationCalls)).toEqual([]);
+  source.transcript+=' 最后学生找到了答案。';
+  await expect(preview.getByText('Bản dịch: '+source.transcript,{exact:true})).toBeVisible({timeout:10000});
+  await page.getByRole('button',{name:'DNA truyện',exact:true}).click();
+  await expect(page.getByRole('group',{name:'Ngôn ngữ nội dung'})).toHaveCount(0);
+  await expect(page.getByRole('heading',{name:source.title,exact:true})).toBeVisible();
+  expect(mutations).toEqual([]);
+});
+
+test('English source translates; a long Chinese source only translates visible chunks',async({page})=>{
+  const {source}=await sourcePage(page,'mock',{...chineseSource,title:'A quiet school',transcript:direction,summary:'',notes:'',tags:[]});
+  await vi(page);await expect(page.getByRole('region',{name:'Bản dịch tư liệu nguồn'}).getByText('Bản dịch: '+direction,{exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>(window as any).translationLanguages)).toEqual(['en']);
+  source.transcript=Array.from({length:20},(_,i)=>`${i}：`+'学生发现了一封神秘的信。'.repeat(110)).join('\n');
+  // Changing source language resets the view; the next click starts the correct language pack.
+  await expect(page.getByRole('button',{name:'Bản gốc',exact:true})).toHaveAttribute('aria-pressed','true',{timeout:10000});
+  await vi(page);
+  const preview=page.getByRole('region',{name:'Bản dịch tư liệu nguồn'});
+  await expect(preview.locator('[data-view-translated]').first()).toBeVisible();
+  const firstCalls=await page.evaluate(()=>(window as any).translationCalls.filter((t:string)=>t.includes('学生发现')).length);
+  expect(firstCalls).toBeGreaterThan(0);expect(firstCalls).toBeLessThan(20);
+  await preview.locator('.view-text').last().scrollIntoViewIfNeeded();
+  await expect(preview.locator('.view-text').last()).toHaveAttribute('lang','vi');
+});
+
+test('unavailable source translator leaves originals and analysis usable',async({page})=>{
+  const {mutations}=await sourcePage(page,'missing');await vi(page);
+  await expect(page.getByRole('status')).toContainText('Trình duyệt chưa hỗ trợ');
+  await expect(page.locator('.readable-value').filter({hasText:chineseSource.transcript})).toContainText(chineseSource.transcript);
+  await page.getByRole('button',{name:'Phân tích DNA truyện',exact:true}).click();
+  await expect.poll(()=>mutations.at(-1)?.body).toEqual({kind:'story_dna',source_id:'source'});
+});
+
+test('Comet translates a Chinese source into real Vietnamese without changing source data',async({page})=>{
+  test.setTimeout(150000);
+  const {mutations}=await sourcePage(page,'native');
+  test.skip(!await page.evaluate(()=>'Translator' in window),'This browser has no native Translator API');
+  await vi(page);
+  const preview=page.getByRole('region',{name:'Bản dịch tư liệu nguồn'});
+  const transcript=preview.locator('.source-translation-field').nth(1).locator('.view-text');
+  await expect(transcript).toHaveAttribute('lang','vi',{timeout:125000});
+  expect(await transcript.textContent()).toMatch(/[àáạảãâăèéêìíòóôơùúưỳýđ]/i);
+  await expect(preview.locator('[data-view-translated]')).toHaveCount(5,{timeout:30000});
+  expect(mutations).toEqual([]);
+  await page.screenshot({path:'../.runtime/view-translation/vietnamese-source.png',fullPage:true});
 });

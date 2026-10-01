@@ -5,7 +5,7 @@ const CACHE_VERSION='en-vi-display-v1';
 const cache=new Map<string,string>();
 let cacheSize=0, saveTimer:ReturnType<typeof setTimeout>|undefined;
 let database:Promise<IDBDatabase|null>|undefined, loaded:Promise<void>|undefined;
-let translator:Promise<TranslatorInstance>|undefined;
+const translators=new Map<string,Promise<TranslatorInstance>>();
 let queue:Promise<unknown>=Promise.resolve();
 
 function db(){
@@ -43,29 +43,42 @@ function persist(){
 }
 
 // Call directly from the language button: installing a language pack needs a user gesture.
-export function startViewTranslator(progress:(percent:number)=>void){
-  if(translator)return translator;
+export function startViewTranslator(progress:(percent:number)=>void,sourceLanguage='en'){
+  if(sourceLanguage==='vi')return Promise.resolve({translate:async(text:string)=>text});
+  const existing=translators.get(sourceLanguage);if(existing)return existing;
   const native=(globalThis as typeof globalThis & {Translator?:TranslatorAPI}).Translator;
   if(!native)return Promise.reject(new Error('Trình duyệt chưa hỗ trợ dịch trên máy. Hãy mở trang này bằng Comet hoặc Chrome phiên bản mới.'));
   const controller=new AbortController();
   const timer=setTimeout(()=>controller.abort(),120000);
-  translator=native.create({sourceLanguage:'en',targetLanguage:'vi',signal:controller.signal,monitor(m){
+  const translator=native.create({sourceLanguage,targetLanguage:'vi',signal:controller.signal,monitor(m){
     m.addEventListener('downloadprogress',event=>progress(Math.round((event as Event & {loaded:number}).loaded*100)));
-  }}).catch(()=>{translator=undefined;throw new Error('Chưa tải được bộ dịch Anh–Việt. Kiểm tra kết nối rồi bấm Thử dịch lại; bản gốc vẫn sử dụng bình thường.')}).finally(()=>clearTimeout(timer));
+  }}).catch(()=>{translators.delete(sourceLanguage);throw new Error(`Chưa tải được bộ dịch ${sourceLanguage==='zh'?'Trung':sourceLanguage==='en'?'Anh':sourceLanguage}–Việt. Kiểm tra kết nối rồi bấm Thử dịch lại; bản gốc vẫn sử dụng bình thường.`)}).finally(()=>clearTimeout(timer));
+  translators.set(sourceLanguage,translator);
   return translator;
 }
 
-export function shouldTranslate(text:string){
+export function shouldTranslate(text:string,sourceLanguage='en'){
   const value=text.trim();
-  return /[a-zA-Z]/.test(value)&&!/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(value)
+  const readable=sourceLanguage==='zh'?/\p{Script=Han}/u.test(value):sourceLanguage==='vi'?false:/[a-zA-Z]/.test(value)&&!/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(value);
+  return readable
     && !/^(?:https?:\/\/|[A-Z]:[\\/]|[\w.-]+\.(?:wav|mp3|mp4|png|jpe?g|webp|json|srt|vtt|csv|txt)$|[a-f\d]{12,}$|(?:scene|tts)[_-]?\d+$)/i.test(value);
 }
-export function splitTranslationText(text:string):string[]{
+// Imports can retain the default English metadata even when their transcript is Chinese.
+export function sourceViewLanguage(text:string,declared=''):'en'|'zh'|'vi'{
+  const han=(text.match(/\p{Script=Han}/gu)||[]).length;
+  if(han>0&&han>=(text.match(/[a-zA-Z]/g)||[]).length)return 'zh';
+  const language=declared.trim().toLowerCase();
+  if(/^(?:zh(?:[-_].*)?|chinese|tiếng trung|中文)$/.test(language))return 'zh';
+  if(/^(?:vi(?:[-_].*)?|vietnamese|tiếng việt)$/.test(language))return 'vi';
+  return 'en';
+}
+export function splitTranslationText(text:string,sourceLanguage='en'):string[]{
   const parts:string[]=[];let remaining=text;
   while(remaining.length>1600){
     const head=remaining.slice(0,1600);
     let end=head.lastIndexOf('\n');
     if(end<500)end=Math.max(head.lastIndexOf('. '),head.lastIndexOf('! '),head.lastIndexOf('? '));
+    if(end<500&&sourceLanguage==='zh')end=Math.max(head.lastIndexOf('。'),head.lastIndexOf('！'),head.lastIndexOf('？'));
     if(end<500)end=head.lastIndexOf(' ');
     if(end<1)end=1599;
     parts.push(remaining.slice(0,end+1));remaining=remaining.slice(end+1);
@@ -73,12 +86,15 @@ export function splitTranslationText(text:string):string[]{
   if(remaining)parts.push(remaining);return parts;
 }
 function cancelled(signal:AbortSignal){if(signal.aborted)throw new DOMException('Cancelled','AbortError')}
-async function translatePart(source:string,signal:AbortSignal){
+async function translatePart(source:string,signal:AbortSignal,sourceLanguage:string){
   await loadCache();cancelled(signal);
-  const cached=cache.get(source);if(cached!==undefined)return cached;
+  // Preserve the existing English cache, and isolate other language pairs.
+  const key=sourceLanguage==='en'?source:`\0${sourceLanguage}\0${source}`;
+  const cached=cache.get(key);if(cached!==undefined)return cached;
   const work=queue.catch(()=>{}).then(async()=>{
     cancelled(signal);
-    const existing=cache.get(source);if(existing!==undefined)return existing;
+    const existing=cache.get(key);if(existing!==undefined)return existing;
+    const translator=translators.get(sourceLanguage);
     if(!translator)throw new Error('Bấm Thử dịch lại để khởi động bộ dịch.');
     const engine=await translator;cancelled(signal);
     // One small translation at a time, yielding between pieces for normal interaction.
@@ -90,17 +106,17 @@ async function translatePart(source:string,signal:AbortSignal){
       const result=await engine.translate(source,{signal:controller.signal});
       cancelled(signal);
       if(!result.trim())throw new Error('Empty translation');
-      remember(source,result);persist();return result;
+      remember(key,result);persist();return result;
     } finally {clearTimeout(timer);signal.removeEventListener('abort',abort)}
   });
   queue=work;return work;
 }
-export async function translateForView(text:string,signal:AbortSignal){
+export async function translateForView(text:string,signal:AbortSignal,sourceLanguage='en'){
   const translated:string[]=[];
-  for(const part of splitTranslationText(text)){
+  for(const part of splitTranslationText(text,sourceLanguage)){
     cancelled(signal);
     const source=part.trim();
-    translated.push(shouldTranslate(source)?part.slice(0,part.indexOf(source))+await translatePart(source,signal)+part.slice(part.indexOf(source)+source.length):part);
+    translated.push(shouldTranslate(source,sourceLanguage)?part.slice(0,part.indexOf(source))+await translatePart(source,signal,sourceLanguage)+part.slice(part.indexOf(source)+source.length):part);
   }
   return translated.join('');
 }
