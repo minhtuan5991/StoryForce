@@ -26,9 +26,11 @@ function paintAuto(state){
   document.querySelectorAll('[data-action],#manual').forEach(button=>button.disabled=!!state.enabled);
 }
 async function loadAuto(){
-  try{const response=await chrome.runtime.sendMessage({action:'auto-status'});if(response.ok)paintAuto(response.auto)}catch{}
+  try{const response=await chrome.runtime.sendMessage({action:'auto-status'});if(response.ok){paintAuto(response.auto);paintMedia(response.media)}}catch{}
 }
+function paintMedia(state){$('mediaStatus').textContent=state?.message||'';$('mediaResume').hidden=state?.phase!=='paused'}
+$('mediaResume').onclick=()=>send('media-resume');
 $('autoEnabled').onchange=()=>send('auto-toggle',{enabled:$('autoEnabled').checked});
 $('autoResume').onclick=()=>send('auto-resume');
-chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&changes.autoBridge)paintAuto(changes.autoBridge.newValue)});
+chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'){if(changes.autoBridge)paintAuto(changes.autoBridge.newValue);if(changes.mediaBridge)paintMedia(changes.mediaBridge.newValue)}});
 loadAuto();

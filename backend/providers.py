@@ -16,7 +16,7 @@ PROVIDERS = {
     "tts_context": "aistudio", "image_generation": "gemini", "video_generation": "flow", "youtube_metadata": "chatgpt",
 }
 PROVIDER_URLS = {"chatgpt": "https://chatgpt.com/", "gemini": "https://gemini.google.com/app",
-                 "aistudio": "https://aistudio.google.com/generate-speech", "flow": "https://labs.google/fx/tools/flow"}
+                 "aistudio": "https://aistudio.google.com/generate-speech", "flow": "https://flow.google.com/"}
 
 
 class LLMProvider(ABC):

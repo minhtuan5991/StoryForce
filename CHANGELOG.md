@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.12 — 2026-10-03 (local only)
+
+- Add sequential resource generation/download through Browser Bridge 1.1.11, with one reusable AI Studio, Gemini and Flow tab. Wait for page load and stable controls before filling or submitting.
+- Start missing narration immediately with AI Studio Create new dialog, Enzo and Friendly. Download tts_001.wav, etc. into Downloads/<project title> and attach each completed file to its exact chunk.
+- Require explicit confirmation of the current image/video plan counts before creating any visual resource. Create the thumbnail first, then scene_001.png/mp4, etc. in order. Verify Flow Video / Ingredients / 16:9 / Omni 1.1 Flash / 720p / 10 seconds / x1, without silently selecting another model.
+- Add the Bridge downloads permission, track completed download IDs and use saveAs:false to avoid per-file pickers. Keep existing resources by default; allow regeneration and stopping a batch. Recovery never resubmits an uncertain generation.
+- Preserve manual workflows, native CapCut export, rendering and other settings. No GitHub publication in this update.
+
 ## 3.1.11 — 2026-10-02 (local only)
 
 - Replace the CSV/media CapCut handoff with native CapCut Desktop project export, tested with CapCut International 9.5 on Windows.

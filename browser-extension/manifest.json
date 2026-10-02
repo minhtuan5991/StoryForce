@@ -1,10 +1,10 @@
 {
-  "manifest_version":3,"name":"StoryForge US Browser Bridge","version":"1.1.10","minimum_chrome_version":"120",
+  "manifest_version":3,"name":"StoryForge US Browser Bridge","version":"1.1.11","minimum_chrome_version":"120",
   "description":"User-controlled local bridge for StoryForge. Fill prompts and capture results in your signed-in provider tabs.",
-  "permissions":["storage","tabs","scripting","alarms"],
-  "host_permissions":["http://127.0.0.1:8787/*","https://chatgpt.com/*","https://gemini.google.com/*","https://aistudio.google.com/*","https://labs.google/*"],
+  "permissions":["storage","tabs","scripting","alarms","downloads"],
+  "host_permissions":["http://127.0.0.1:8787/*","https://chatgpt.com/*","https://gemini.google.com/*","https://aistudio.google.com/*","https://labs.google/*","https://flow.google.com/*"],
   "background":{"service_worker":"background.js","type":"module"},
   "icons":{"16":"icons/icon-16.png","32":"icons/icon-32.png","48":"icons/icon-48.png","128":"icons/icon-128.png"},
   "action":{"default_popup":"popup.html","default_title":"StoryForge Browser Bridge","default_icon":{"16":"icons/icon-16.png","32":"icons/icon-32.png","48":"icons/icon-48.png"}},
-  "content_scripts":[{"matches":["https://chatgpt.com/*","https://gemini.google.com/*","https://aistudio.google.com/*","https://labs.google/*"],"js":["adapters.js","content.js"],"run_at":"document_idle"}]
+  "content_scripts":[{"matches":["https://chatgpt.com/*","https://gemini.google.com/*","https://aistudio.google.com/*","https://labs.google/*","https://flow.google.com/*"],"js":["adapters.js","media-content.js","content.js"],"run_at":"document_idle"}]
 }

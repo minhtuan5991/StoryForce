@@ -25,6 +25,7 @@ from .config import *
 from .database import Database
 from .deletion import Deletions, DeletionRequest
 from .asset_management import delete_assets
+from .media_automation import MediaAutomation
 from .models import *
 from .schemas import ChannelCreate, SourceCreate, ProjectCreate, JobCreate, AnalyticsCreate, StoryDNA
 from .intelligence import duration_profile, channel_fit, novelty_check, words, digest, tokens, recommend_duration
@@ -56,6 +57,7 @@ def create_app(data_root: str | Path | None = None):
                 sidecar.unlink()
     database = Database(root)
     workflow = Workflow(database,root)
+    media_automation = MediaAutomation(workflow)
     csrf = secrets.token_urlsafe(32)
     deletions = Deletions(database, workflow, csrf)
     log_handlers=[]
@@ -866,7 +868,28 @@ def create_app(data_root: str | Path | None = None):
 
     @app.get("/api/bridge/jobs")
     def bridge_jobs():
-        with database.session() as db:return {"items":[{"id":j.id,"kind":j.kind,"provider":j.provider,"prompt":j.prompt,"url":PROVIDER_URLS.get(j.provider),"step":j.step,"attempt":j.attempts,"auto_claim":j.payload.get("_bridge_auto",{}),"timeout":settings_for(db)["browser_timeout"]} for j in db.query(Job).filter_by(status="waiting_user").filter(~Job.provider.like("mock:%")).order_by(Job.created_at).limit(20)]}
+        with database.session() as db:return {"items":[{"id":j.id,"kind":j.kind,"provider":j.provider,"prompt":j.prompt,"url":PROVIDER_URLS.get(j.provider),"step":j.step,"attempt":j.attempts,"auto_claim":j.payload.get("_bridge_auto",{}),"media":j.payload.get("_media"),"media_claim":j.payload.get("_media_claim",{}),"timeout":settings_for(db)["browser_timeout"]} for j in db.query(Job).filter_by(status="waiting_user").filter(~Job.provider.like("mock:%")).order_by(Job.created_at).limit(20)]}
+
+    @app.get('/api/projects/{id}/media-automation/preview')
+    def preview_media(id:str):
+        with database.session() as db:
+            return media_automation.preview(db,media_automation.project(db,id))
+
+    @app.post('/api/projects/{id}/media-automation/start')
+    def start_media(id:str,body:dict=Body(...)):
+        return media_automation.start(id,body)
+
+    @app.post('/api/projects/{id}/media-automation/stop')
+    def stop_media(id:str):
+        return media_automation.stop(id)
+
+    @app.post('/api/bridge/media/{id}/claim')
+    def claim_media(id:str,body:dict=Body(...)):
+        return media_automation.claim(id,body)
+
+    @app.post('/api/bridge/media/{id}/result')
+    def complete_media(id:str,body:dict=Body(...)):
+        return media_automation.complete(id,body)
 
     @app.post("/api/bridge/jobs/{id}/claim")
     def bridge_claim(id:str,body:dict=Body(...)):

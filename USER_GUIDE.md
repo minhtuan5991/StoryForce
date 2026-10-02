@@ -49,11 +49,21 @@ Sửa draft tạo version mới và mở khóa. Cần kiểm định lại; TTS/
 5. Đăng nhập vào các provider bằng browser thông thường.
 6. Chạy một workflow step. Job sẽ waiting_user. Trong extension: chọn job, Open tab, Fill, kiểm tra prompt, Send/Run, Wait/Capture.
 
-Nếu selector không còn đúng: dùng Copy prompt, mở provider, paste result JSON trong Activity & jobs. TTS và hình/video tải về thủ công rồi import Assets. Chọn giọng ở AI Studio và dùng nút Copy voice profile/Sample context; bridge chỉ điền phần narration vào ô text để không đọc phần context.
+Nếu selector không còn đúng: dùng Copy prompt, mở provider, paste result JSON trong Activity & jobs. Các nút tạo/import tài nguyên thủ công vẫn dùng được. Từ bản 3.1.12, dùng Bridge 1.1.11 để tự tạo, tải và gán tài nguyên theo hướng dẫn bên dưới. Khi cập nhật Bridge, Reload tiện ích trong trang Extensions; chấp thuận quyền tải xuống nếu trình duyệt yêu cầu.
 
 Không bypass đăng nhập, CAPTCHA, quota hay paywall. Đóng popup trong lúc Wait có thể mất thông báo; job vẫn tồn tại và có thể Capture lại. Trang AI thực có thể yêu cầu bạn mở đúng chế độ sinh ảnh, speech hay video trước khi Fill.
 
 ## 6. TTS, hình ảnh và tài nguyên
+
+### Tự động tạo và tải tài nguyên (3.1.12)
+
+- Mở app và Bridge đã ghép nối, bật chế độ tự động của Bridge và đăng nhập AI Studio, Gemini, Flow bằng trình duyệt thông thường. Bridge cần quyền **Downloads / Tải xuống**; bản Bridge cũ chưa tự tải media.
+- Trong **Xưởng giọng đọc**, sau khi đã khóa truyện và chia đoạn, bấm **Tạo và tải giọng đọc**. Không cần xác nhận số lượng âm thanh. Bridge chờ AI Studio tải xong, mở Create new dialog, chọn **Enzo / Friendly**, tạo từng đoạn và tải `tts_001.wav`, `tts_002.wav`... Dùng lại một tab, chỉ thay phần lời kể do Bridge nhập.
+- Trong **Đạo diễn hình ảnh**, chọn số lượng ảnh/video và tạo kế hoạch cảnh trước. Bấm **Xem và xác nhận số ảnh/video**, xem số lượng cuối cùng rồi bấm **Xác nhận số lượng và tạo tài nguyên**. Chưa xác nhận thì không tạo cả thumbnail lẫn scene. Sau xác nhận, Bridge tạo thumbnail trước, tiếp tục các scene theo thứ tự, dùng một tab Gemini và một tab Flow.
+- Cài đặt Flow: **Video / Thành phần / 16:9 / Omni 1.1 Flash / 720p / 10 giây / x1**. Flow trừ tín dụng theo mức đang hiển thị trên trang. Nếu không tìm được model/cài đặt hoặc xuất hiện CAPTCHA/đăng nhập, Bridge tạm dừng để bạn xử lý.
+- File tải vào **Downloads / tên dự án**, với tên `thumbnail.png`, `scene_001.png`, `scene_002.mp4`... Sau khi trình duyệt báo tải hoàn tất, app kiểm tra file và tự gán đúng đoạn/cảnh; mới chuyển sang mục tiếp theo. App lưu một bản media riêng trong dữ liệu dự án để dùng cho timeline và CapCut.
+- Mặc định bỏ qua file đã gán còn hợp lệ. Muốn làm lại, chọn **Tạo lại cả tài nguyên đã gán** trước khi bắt đầu. File trùng tên trong Downloads được thêm số `(1)`, `(2)` để giữ bản trước.
+- Có thể **Dừng tự động tạo tài nguyên** để ngừng hàng đợi. Những file đã hoàn tất vẫn được giữ. Khi tạm dừng do kết nối/giao diện, kiểm tra tab rồi dùng **Tiếp tục** trong popup Bridge. Yêu cầu đã gửi không được gửi lại để tránh tạo trùng/tốn tín dụng. Không đóng app hoặc các tab đang tạo tài nguyên.
 
 Sau Story Lock: **TTS studio → Build semantic chunks**. Chunker không cắt giữa câu, ưu tiên đoạn, kết thúc thoại, đổi thời gian/địa điểm. Mục tiêu khoảng 3 phút, hard max 4 phút. Một câu đơn lẻ dài quá giới hạn cần sửa thủ công.
 
