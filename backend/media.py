@@ -308,7 +308,7 @@ def render_inputs_hash(project, chunks, scenes, assets, settings):
     def fields(items, keys):
         return [{k: item.get(k) for k in keys} for item in sorted(items, key=lambda x:x["id"])]
     value = {
-        "renderer": 7, "version": project["story_version"], "render_options": options,
+        "renderer": 8, "version": project["story_version"], "render_options": options,
         "chunks": fields(chunks, ("id", "text", "asset_id", "real_duration")),
         "scenes": fields(scenes, ("id", "number", "start_word", "end_word", "offset", "duration", "asset_id", "fallback_asset_id")),
         "assets": fields(selected_assets, ("id", "sha256", "path", "duration", "metadata_json")),
@@ -318,12 +318,24 @@ def render_inputs_hash(project, chunks, scenes, assets, settings):
 
 
 def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[dict], assets: list[dict], settings: dict, progress):
-    from .render_acceleration import choose_encoder, video_encoding, cpu_threads
+    from .render_acceleration import choose_encoder, video_encoding, cpu_threads, render_binary, cuda_compositing
+    from .render_cache import RenderCache, file_signature, reuse_file
+    from .render_composite import delivery_graph
     from .render_pipeline import compose_clips, wave_key_color
     started = time.monotonic()
     binary = find_binary("ffmpeg", settings)
     if not binary:
         raise ValueError("FFmpeg not found. Configure it in Settings.")
+    original_binary = binary
+    binary = render_binary(binary, settings)
+    performance = {'compatible_runtime': binary != original_binary}
+    stage_times = {}
+    stage_started = started
+    def stage_done(name):
+        nonlocal stage_started
+        now = time.monotonic()
+        stage_times[name] = round(now - stage_started, 2)
+        stage_started = now
     validation = validate_assets(chunks, scenes, assets, root, project["story_version"], settings.get("allow_visual_fallback", False))
     if not validation["valid"]:
         raise ValueError("Missing assets: " + ", ".join(validation["missing"]))
@@ -333,6 +345,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     # Keep the previous playable render intact until this attempt has finished.
     folder = folder / f"v{project['story_version']}" / uuid4().hex[:16]
     folder.mkdir(parents=True, exist_ok=True)
+    processing_cache = RenderCache(project_folder(root, project['id'])/'render'/'processing_cache', probe, settings)
     log = root / "logs" / "ffmpeg.log"
     asset_map = {a["id"]: a for a in assets}
     total = sum(c["real_duration"] for c in chunks)
@@ -357,12 +370,13 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         raise ValueError('Choose an available green-screen video or turn off waveform')
     if wave:
         wave_metadata = validate_waveform_video(safe_path(root,wave['path']),settings)
-        wave_color = wave_key_color(binary,safe_path(root,wave['path']),wave_metadata['video_duration'] or wave_metadata['duration'])
+        wave_color = wave_key_color(original_binary,safe_path(root,wave['path']),wave_metadata['video_duration'] or wave_metadata['duration'])
     fps, width, height = plan["fps"], plan["width"], plan["height"]
     encoder = choose_encoder(binary,settings)
     plan['video_codec'] = encoder
     workers = 2 if (os.cpu_count() or 1) >= 6 else 1
     base = [binary, "-hide_banner", "-y", "-nostdin", "-threads", "1"]
+    source_base = [original_binary, *base[1:]]
     color_filter = "format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
     color_args = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
     def encode_scene(inputs, output, force_cpu=False):
@@ -370,25 +384,47 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         try:
             run_process(inputs+video_encoding(stage_encoder,True)+color_args+[str(output)],log,idle_timeout=900)
         except ValueError:
-            if stage_encoder=='libx264':raise
-            run_process(inputs+video_encoding('libx264',True)+color_args+[str(output)],log,idle_timeout=900)
+            if stage_encoder=='libx264' and binary==original_binary:raise
+            try:
+                run_process(inputs+video_encoding('libx264',True)+color_args+[str(output)],log,idle_timeout=900)
+            except ValueError:
+                if binary==original_binary:raise
+                # Preserve source-format support when the compatibility renderer
+                # cannot decode a newer media format. The latest main FFmpeg
+                # prepares a standard H.264 clip for the following GPU stages.
+                run_process([original_binary,*inputs[1:]]+video_encoding('libx264',True)+color_args+[str(output)],log,idle_timeout=900)
+            stage_encoder = 'libx264'
+        return stage_encoder
+    stage_done('initialization')
     progress(4, "Normalizing narration")
     # Normalize each chunk before concatenation; imported sample formats may differ.
-    concat = []
-    for chunk in sorted(chunks, key=lambda c: c["number"]):
-        path = safe_path(root, asset_map[chunk["asset_id"]]["path"])
-        output = folder / f"normalized_{chunk['number']:03}.wav"
-        run_process(base + ["-protocol_whitelist", "file,pipe", "-i", str(path), "-vn", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(output)], log)
-        concat.append(f"file '{output.name}'")
-    (folder / "narration.txt").write_text("\n".join(concat), encoding="utf-8")
     master = folder / "master_narration.wav"
-    run_process(base + ["-f", "concat", "-safe", "1", "-i", "narration.txt", "-c:a", "pcm_s16le", str(master)], log, cwd=folder)
+    ordered_chunks = sorted(chunks, key=lambda c: c['number'])
+    narration_key = {'renderer':1, 'audio': [file_signature(safe_path(root, asset_map[c['asset_id']]['path'])) for c in ordered_chunks],
+                     'format': 'pcm_s16le/48000/2', 'duration':total}
+    cached_master = processing_cache.path('narration', narration_key, '.wav')
+    performance['narration_cached'] = processing_cache.valid(cached_master, duration=total)
+    if not performance['narration_cached']:
+        concat = []
+        for chunk in ordered_chunks:
+            path = safe_path(root, asset_map[chunk['asset_id']]['path'])
+            output = folder / f"normalized_{chunk['number']:03}.wav"
+            run_process(source_base + ['-protocol_whitelist', 'file,pipe', '-i', str(path), '-vn', '-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le', str(output)], log)
+            concat.append(f"file '{output.name}'")
+        (folder/'narration.txt').write_text('\n'.join(concat), encoding='utf-8')
+        pending = folder/'pending_narration.wav'
+        run_process(source_base + ['-f', 'concat', '-safe', '1', '-i', 'narration.txt', '-c:a', 'pcm_s16le', str(pending)], log, cwd=folder)
+        processing_cache.publish(pending, cached_master)
+        for chunk in ordered_chunks:
+            (folder / f"normalized_{chunk['number']:03}.wav").unlink(missing_ok=True)
+    reuse_file(cached_master, master)
     write_subtitles(chunks, folder)
+    stage_done('narration')
 
     def still(image_path: Path, duration: float, output: Path, number: int, frames: int):
         x = "iw/2-(iw/zoom/2)" if number % 2 else "(iw-iw/zoom)*on/" + str(frames)
         vf = f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase:out_range=tv:out_color_matrix=bt709,crop={width*2}:{height*2},zoompan=z='min(1.0+on*0.00015,1.08)':x='{x}':y='ih/2-(ih/zoom/2)':d={frames}:s={width}x{height}:fps={fps},setsar=1,{color_filter}"
-        encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(image_path), "-vf", vf, "-frames:v", str(frames), "-an"],output)
+        return encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(image_path), "-vf", vf, "-frames:v", str(frames), "-an"],output)
 
     placeholder = folder / "missing_visual.png"
     def placeholder_path():
@@ -400,7 +436,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         return placeholder
 
     cache = project_folder(root,project['id'])/'render'/'scene_cache'
-    cache.mkdir(exist_ok=True)
+    scene_cache = RenderCache(cache, probe, settings)
     def render_scene(i, scene):
         asset = asset_map.get(scene.get("asset_id"))
         fallback = asset_map.get(scene.get("fallback_asset_id"))
@@ -410,26 +446,22 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
             asset = fallback
         source = safe_path(root,asset['path']) if asset else placeholder_path()
         info=source.stat()
-        key = {'renderer':2,'path':str(source),'sha256':asset.get('sha256') if asset else None,'size':info.st_size,'mtime':info.st_mtime_ns,
+        key = {'renderer':3,'path':str(source),'sha256':asset.get('sha256') if asset else None,'size':info.st_size,'mtime':info.st_mtime_ns,
                'width':width,'height':height,'fps':fps,'frames':scene['clip_frames'],'ending':bool(scene.get('ending_thumbnail')),
-               'kind':asset['kind'] if asset else 'image','motion':i%2,'encoder':encoder}
+               'kind':asset['kind'] if asset else 'image','motion':i,'encoder':encoder}
         name=hashlib.sha256(json.dumps(key,sort_keys=True).encode()).hexdigest()
         output=cache/(name+'.mp4')
-        if output.is_file():
-            try:
-                meta=probe(output,settings)
-                if meta['width']==width and meta['height']==height and abs(meta['video_duration']-scene['clip_duration'])<1/fps+.001:
-                    return i,output,True
-            except ValueError:pass
+        if scene_cache.valid(output, duration=scene['clip_duration'], width=width, height=height, fps=fps):
+            return i,output,True,scene_cache.metadata(output).get('render_encoder','unknown')
         pending=cache/(name+'.'+uuid4().hex[:8]+'.mp4')
         duration = scene["clip_duration"]
         if not asset or asset["kind"] == "image":
             path = safe_path(root, asset["path"]) if asset else placeholder_path()
             if scene.get('ending_thumbnail'):
                 vf=f"scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv:out_color_matrix=bt709,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,{color_filter}"
-                encode_scene(base+["-loop","1","-i",str(path),"-vf",vf,"-r",str(fps),"-frames:v",str(scene['clip_frames']),"-an"],pending)
+                used_encoder = encode_scene(base+["-loop","1","-i",str(path),"-vf",vf,"-r",str(fps),"-frames:v",str(scene['clip_frames']),"-an"],pending)
             else:
-                still(path, duration, pending, i, scene['clip_frames'])
+                used_encoder = still(path, duration, pending, i, scene['clip_frames'])
         else:
             path = safe_path(root, asset["path"])
             # Decode the entire video once at normal speed. No looping,
@@ -437,21 +469,24 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
             # Snap endpoints to the output frame grid, never accumulating one
             # rounding error per scene. At most one frame is held at the end.
             vf = f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=increase:out_range=tv:out_color_matrix=bt709,crop={width}:{height},fps={fps},tpad=stop_mode=clone:stop_duration={1/fps},trim=end_frame={scene['clip_frames']},setsar=1,{color_filter}"
-            encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(path), "-vf", vf, "-an"],pending)
-        pending.replace(output)
-        return i,output,False
+            used_encoder = encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(path), "-vf", vf, "-an"],pending)
+        scene_cache.publish(pending, output, render_encoder=used_encoder)
+        return i,output,False,used_encoder
     clips = [None]*len(scenes)
     reused = 0
+    scene_encoders = set()
     # Only two scene workers, keeping decoder/encoder memory bounded on laptops.
     with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='render-scene') as executor:
         futures=[executor.submit(render_scene,i,s) for i,s in enumerate(plan['scenes'])]
         for done,future in enumerate(as_completed(futures),1):
-            i,output,cached=future.result();clips[i]=output;reused+=int(cached)
+            i,output,cached,used_encoder=future.result();clips[i]=output;reused+=int(cached);scene_encoders.add(used_encoder)
             progress(10+int(60*done/len(scenes)),f"Preparing scenes {done}/{len(scenes)} ({reused} reused)")
+    plan['stream_copy_compatible'] = len(scene_encoders) == 1 and 'unknown' not in scene_encoders
+    stage_done('scenes')
     progress(76, "Mixing audio with narration ducking")
     beds = [a for a in assets if a["kind"] in ("music", "ambient")][:2]
     effects = [a for a in assets if a["kind"] == "sfx"][:30]
-    audio_args = base + ["-i", str(master)]
+    audio_args = source_base + ["-i", str(master)]
     filters = [f"[0:a]volume={float(settings.get('narration_db',0))}dB[n]"]
     if beds:
         filters.append(f"[n]asplit={len(beds)+1}[main]" + "".join(f"[sc{i}]" for i in range(len(beds))))
@@ -470,48 +505,46 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         filters.append(f"[{1+len(beds)+i}:a]volume={volume}dB,adelay={delay}:all=1[e{i}]")
         labels.append(f"[e{i}]")
     filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0,alimiter=limit=0.95[out]")
-    run_process(audio_args + ["-filter_complex", ";".join(filters), "-map", "[out]", "-t", str(total), "-ar", "48000", "-ac", "2", str(folder/"final_audio.wav")], log)
+    audio_key = {'renderer':1, 'master':file_signature(cached_master), 'duration':total,
+                 'beds':[[file_signature(safe_path(root,a['path'])), a['kind'], settings.get(f"{a['kind']}_db", -28)] for a in beds],
+                 'effects':[[file_signature(safe_path(root,a['path'])), a.get('metadata_json',{}).get('offset',0), a.get('metadata_json',{}).get('volume_db',-18)] for a in effects],
+                 'narration_db':settings.get('narration_db',0)}
+    cached_audio = processing_cache.path('mixed-audio', audio_key, '.wav')
+    performance['audio_cached'] = processing_cache.valid(cached_audio, duration=total)
+    if not performance['audio_cached']:
+        pending = folder/'pending_audio.wav'
+        run_process(audio_args + ['-filter_complex', ';'.join(filters), '-map', '[out]', '-t', str(total), '-ar', '48000', '-ac', '2', str(pending)], log)
+        processing_cache.publish(pending, cached_audio)
+    reuse_file(cached_audio, folder/'final_audio.wav')
+    stage_done('audio_mix')
     progress(78, "Joining scene groups")
     # Some Quick Sync drivers change chroma on frames produced by concat/xfade.
-    # Use the fast CPU intermediate for these small graphs; final encoding still
-    # uses the chosen GPU. Keep the original color and timestamp of every frame.
+    # NVIDIA intermediates can stay on hardware encoding. Keep Quick Sync's
+    # proven CPU join workaround and bound all transition graphs to six inputs.
     joined, join_groups, join_files = compose_clips(clips,plan,folder,base,
-        lambda inputs,output:encode_scene(inputs,output,force_cpu=True),progress)
+        lambda inputs,output:encode_scene(inputs,output,force_cpu=encoder!='h264_nvenc'),progress,
+        cache=processing_cache, remux=lambda args:run_process(args,log,idle_timeout=900), stats=performance)
+    stage_done('timeline')
     progress(86, "Compositing waveform, logo and captions")
-    args = base + ['-i',str(joined)]
-    args += ["-i", str(folder/"final_audio.wav")]
-    if options["subtitles"]:
-        args += ["-i", str(folder/"captions.srt")]
-    next_input = 2 + int(options['subtitles'])
+    keyed_wave = None
     if wave:
-        wave_index = next_input
-        next_input += 1
-        args += ['-stream_loop', '-1', '-noautorotate', '-protocol_whitelist', 'file,pipe', '-i', str(safe_path(root,wave['path']))]
-    if logo:
-        logo_index = next_input
-        args += ["-loop", "1", "-i", str(safe_path(root, logo["path"]))]
-    graph = ["[0:v]settb=AVTB,setpts=PTS-STARTPTS[v0]"]
-    previous = "v0"
+        keyed_wave = processing_cache.path('wave', {'renderer':2, 'source':file_signature(safe_path(root,wave['path'])),
+                'color':wave_color, 'key':'0.12:0.05', 'pixel_format':'yuva420p'}, '.mkv')
+        performance['waveform_cached'] = processing_cache.valid(keyed_wave,
+                duration=wave_metadata['video_duration'] or wave_metadata['duration'], width=width, height=height, fps=wave_metadata['fps'])
+        if not performance['waveform_cached']:
+            pending = folder/'pending_wave.mkv'
+            run_process(source_base+['-noautorotate','-protocol_whitelist','file,pipe','-i',str(safe_path(root,wave['path'])),
+                '-vf',f'format=yuva444p,chromakey={wave_color}:0.12:0.05,scale=out_range=tv:out_color_matrix=bt709,'
+                      'format=yuva420p,setparams=range=limited:colorspace=bt709:color_primaries=bt709:color_trc=bt709',
+                '-an','-c:v','ffv1','-threads',str(min(4,cpu_threads())),*color_args,str(pending)],log,idle_timeout=900)
+            processing_cache.publish(pending,keyed_wave)
+    stage_done('waveform_key')
     output = folder/"final_video.mp4"
-    # Relative subtitle path avoids Windows drive-colon/filter escaping issues.
-    if options["subtitles"]:
-        graph.append(f"[{previous}]subtitles=filename=captions.srt:force_style='FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00101010,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=24'[captioned]")
-        previous = "captioned"
-    audio_map = '1:a'
-    if wave:
-        # Preserve the uploaded canvas and animation speed. Loop only this overlay;
-        # its audio is never mapped into the narration mix.
-        graph.append(f'[{wave_index}:v]setpts=PTS-STARTPTS,format=yuva444p,chromakey={wave_color}:0.12:0.05[wave]')
-        graph.append(f'[{previous}][wave]overlay=x=0:y=0:shortest=1[waved]')
-        previous = 'waved'
-    if logo:
-        # Logo is composed last so it is always above captions/waveform.
-        graph.append(f"[{logo_index}:v]format=rgba[logo]")
-        graph.append(f"[{previous}][logo]overlay=x=0:y=0:shortest=1[branded]")
-        previous = "branded"
-    subtitle_args = ["-map", '2:s', "-c:s", "mov_text", "-disposition:s:0", "0", "-metadata:s:s:0", "language=eng"] if options["subtitles"] else []
-    final_args=args+["-filter_complex_threads",str(min(4,cpu_threads())),"-filter_complex",";".join(graph),"-map",f"[{previous}]","-map",audio_map]+subtitle_args
-    suffix=["-pix_fmt","yuv420p","-c:a","aac","-b:a","160k","-r",str(fps),"-t",str(total),"-movflags","+faststart",str(output)]
+    logo_path = safe_path(root,logo['path']) if logo else None
+    use_cuda = encoder=='h264_nvenc' and not options['subtitles'] and cuda_compositing(binary)
+    final_args = delivery_graph(base,joined,folder/'final_audio.wav',options,keyed_wave,logo_path,cuda=use_cuda,width=width,height=height)
+    suffix=['-c:a','aac','-b:a','160k','-r',str(fps),'-t',str(total),'-movflags','+faststart',str(output)]
     last_percent = 86
     def final_progress(seconds, frames):
         nonlocal last_percent
@@ -519,12 +552,23 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         if percent > last_percent:
             last_percent = percent
             progress(percent,f'Compositing video {min(seconds,total):.0f}/{total:.0f}s')
-    try:
-        run_process(final_args+video_encoding(encoder)+suffix,log,idle_timeout=900,on_progress=final_progress,cwd=folder)
-    except ValueError:
-        if encoder=='libx264':raise
-        encoder='libx264'
-        run_process(final_args+video_encoding(encoder)+suffix,log,idle_timeout=900,on_progress=final_progress,cwd=folder)
+    performance['cuda_compositing'] = use_cuda
+    if use_cuda:
+        try:
+            run_process(final_args+video_encoding(encoder)+color_args+suffix,log,idle_timeout=900,on_progress=final_progress,cwd=folder)
+        except ValueError:
+            performance['cuda_compositing'] = False
+            performance['cuda_fallback'] = True
+            use_cuda = False
+    if not use_cuda:
+        final_args = delivery_graph(base,joined,folder/'final_audio.wav',options,keyed_wave,logo_path)
+        try:
+            run_process(final_args+video_encoding(encoder)+color_args+suffix,log,idle_timeout=900,on_progress=final_progress,cwd=folder)
+        except ValueError:
+            if encoder=='libx264':raise
+            encoder='libx264'
+            run_process(final_args+video_encoding(encoder)+color_args+suffix,log,idle_timeout=900,on_progress=final_progress,cwd=folder)
+    stage_done('compositing')
     with (folder/"timeline.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["scene", "offset", "duration", "story_version"])
         writer.writeheader()
@@ -532,14 +576,17 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     (folder/"thumbnail_prompt.txt").write_text(project.get("publish", {}).get("thumbnail_concept") or f"Cinematic thumbnail for {project['title']}. One clear focal subject, strong contrast, no misleading imagery.", encoding="utf-8")
     progress(96, "Final technical QA")
     report = final_qa(output, plan, binary, settings, log)
+    stage_done('qa')
     report['captions_burned_in'] = options['subtitles']
     report['render_options'] = options
     report['inputs_hash'] = input_hash
-    report['render_performance']={'encoder':encoder,'scene_workers':workers,'cached_scenes':reused,'rendered_scenes':len(scenes)-reused,
+    report['render_performance']={**performance,'encoder':encoder,'scene_workers':workers,'cached_scenes':reused,'rendered_scenes':len(scenes)-reused,
                                   'elapsed_seconds':round(time.monotonic()-started,2),'target_video_mbps':5,'audio_kbps':160,
-                                  'join_groups':join_groups,'wave_key_color':wave_color if wave else None}
+                                  'join_groups':join_groups,'wave_key_color':wave_color if wave else None,'stages_seconds':stage_times}
     if report['status']=='READY':
         for intermediate in join_files: intermediate.unlink(missing_ok=True)
+        processing_cache.prune()
+        scene_cache.prune()
     report["warnings"] += validation["warnings"]
     if report["warnings"] and report["status"] == "READY":
         report["status"] = "NEEDS REVIEW"

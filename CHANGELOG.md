@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.13 — 2026-10-03 (local only)
+
+- Reuse validated narration, audio mixes, composed timelines and lossless keyed waveform cycles. Rebuild only stages affected by source, timing, format or audio-gain changes; keep previous completed outputs intact.
+- Use a pinned, separately bundled FFmpeg compatibility renderer when it restores working NVIDIA encoding on the installed driver. Preserve explicit FFmpeg paths and CPU mode, and retain hardware/CPU fallback.
+- Accelerate waveform/logo composition with CUDA where available, encode scene groups with NVENC, and join compatible cuts by packet copy. Retain bounded transition graphs, original video anchors/durations, image motion, captions and exact logo/waveform canvas.
+- Add cache invalidation/recovery, GPU fallback and real pixel/timing regression coverage, plus stage timings in render diagnostics. Successful attempts prune only obsolete, marked cache entries.
+- Keep all other features/settings and Browser Bridge 1.1.11 unchanged. Installer built locally; not published to GitHub.
+
 ## 3.1.12 — 2026-10-03 (local only)
 
 - Add sequential resource generation/download through Browser Bridge 1.1.11, with one reusable AI Studio, Gemini and Flow tab. Wait for page load and stable controls before filling or submitting.

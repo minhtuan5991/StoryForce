@@ -107,13 +107,51 @@ def _wave_key_color(binary, path, modified, size, duration):
     return '0x'+''.join(f'{v:02X}' for v in rgb)
 
 
-def compose_clips(clips, plan, folder, base, encode, notify, group_size=6):
+def compose_clips(clips, plan, folder, base, encode, notify, group_size=6, *, cache=None, remux=None, stats=None):
     """Keep at most six decoders/transition inputs active, including long stories.
 
     Every intermediate carries its outgoing transition. All durations/offsets
     stay on the same frame grid, including transitions at group boundaries.
     """
     fps = plan['fps']
+    cached = None
+    if cache and len(clips) > 1:
+        from .render_cache import file_signature
+        cached = cache.path('timeline', {'renderer':3, 'clips':[file_signature(p) for p in clips],
+            'frames':[s['clip_frames'] for s in plan['scenes']],
+            'transitions':[s['transition_after'] for s in plan['scenes']],
+            'fps':fps, 'width':plan['width'], 'height':plan['height'],
+            'encoder':plan['video_codec']}, '.mp4')
+        if cache.valid(cached, duration=round(plan['duration']*fps)/fps,
+                       width=plan['width'], height=plan['height'], fps=fps):
+            if stats is not None: stats['timeline_cached'] = True
+            notify(85, 'Reusing composed timeline')
+            return cached, 0, set()
+    if stats is not None: stats['timeline_cached'] = False
+    if stats is not None: stats['timeline_stream_copy'] = False
+    # Normalized clips with cuts only already share our output canvas/fps.
+    # Copy packets without a decoder/encoder graph; the final effects/encoding
+    # pass still produces the requested delivery bitrate.
+    if len(clips) > 1 and remux and plan.get('stream_copy_compatible', True) and not any(s['transition_after'] for s in plan['scenes']):
+        listing = folder/'scene-concat.txt'
+        listing.write_text('\n'.join("file '" + str(Path(p).resolve()).replace('\\','/').replace("'", "'\\''") + "'" for p in clips), encoding='utf-8')
+        output = folder/'joined-copy.mp4'
+        try:
+            remux([*base, '-protocol_whitelist','file,pipe','-f','concat','-safe','0','-i',str(listing),
+                   '-map','0:v','-an','-c:v','copy','-frames:v',str(round(plan['duration']*fps)),str(output)])
+            if cached:
+                cache.publish(output, cached)
+                output = cached
+                if not cache.valid(cached, duration=round(plan['duration']*fps)/fps,
+                                   width=plan['width'], height=plan['height'], fps=fps):
+                    cached.with_suffix('.mp4.json').unlink(missing_ok=True)
+                    cache.used.discard(cached)
+                    raise ValueError('Stream-copy timeline does not match the frame grid')
+            if stats is not None: stats['timeline_stream_copy'] = True
+            notify(85, 'Joined scene cuts without re-encoding')
+            return output, 0, set() if cached else {output}
+        except ValueError:
+            output.unlink(missing_ok=True)
     nodes = [{'path': p, 'frames': s['clip_frames'],
               'transition': round(s['transition_after']*fps)} for p,s in zip(clips,plan['scenes'])]
     total, count = 0, len(nodes)
@@ -130,14 +168,16 @@ def compose_clips(clips, plan, folder, base, encode, notify, group_size=6):
                 continue
             args = list(base)
             for node in group: args += ['-threads','1','-i',str(node['path'])]
-            graph = [f'[{i}:v]settb=AVTB,setpts=PTS-STARTPTS[v{i}]' for i in range(len(group))]
+            graph = [f'[{i}:v]setpts=PTS-STARTPTS,fps={fps},settb=AVTB[v{i}]' for i in range(len(group))]
             label, frames = 'v0', group[0]['frames']
             for i in range(1,len(group)):
                 overlap = group[i-1]['transition']
                 if overlap:
                     graph.append(f'[{label}][v{i}]xfade=transition=fade:duration={overlap/fps}:offset={(frames-overlap)/fps}[x{i}]')
                 else:
-                    graph.append(f'[{label}][v{i}]concat=n=2:v=1:a=0[x{i}]')
+                    # Older driver-compatible FFmpeg reports concat as VFR.
+                    # Restore the existing frame grid before a following fade.
+                    graph.append(f'[{label}][v{i}]concat=n=2:v=1:a=0,fps={fps},settb=AVTB[x{i}]')
                 frames += group[i]['frames']-overlap
                 label = f'x{i}'
             # xfade promotes chroma to 4:4:4. Specify the conversion matrix;
@@ -158,4 +198,9 @@ def compose_clips(clips, plan, folder, base, encode, notify, group_size=6):
             notify(78+int(7*done/max(1,total)),f'Joining scene groups {done}/{total}')
         nodes = next_nodes
         level += 1
-    return nodes[0]['path'], done, created
+    output = nodes[0]['path']
+    if cached:
+        cache.publish(output, cached)
+        created.discard(output)
+        output = cached
+    return output, done, created

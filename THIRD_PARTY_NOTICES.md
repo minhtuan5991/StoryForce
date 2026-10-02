@@ -12,4 +12,14 @@ This build bundles FFmpeg/ffprobe from the Gyan Windows essentials distribution,
 - Corresponding upstream source: https://github.com/FFmpeg/FFmpeg/tree/bf1b838f2a
 - Build configuration can be inspected with `ffmpeg -buildconf`.
 
+The installer also includes Gyan's FFmpeg 7.1.1 essentials build as
+`ffmpeg-compatible.exe`, used only by the renderer when it restores supported
+NVIDIA acceleration. It is an unmodified, separate GPLv3 executable; the main
+FFmpeg/ffprobe remain unchanged for other operations.
+
+- Compatibility build archive: https://github.com/GyanD/codexffmpeg/releases/tag/7.1.1
+- Corresponding upstream source: https://github.com/FFmpeg/FFmpeg/tree/n7.1.1
+- License and build configuration notices: `docs/FFmpeg-compatible-LICENSE` and `docs/FFmpeg-compatible-README.txt`.
+- Pinned provenance/checksums: `docs/render-runtime.json`. Downloaded and verified during packaging, never downloaded by a running app.
+
 Third-party provider names are text labels only. No provider logos, credentials or private browser sessions are bundled. Landscape illustrations, brand mark, story fixtures and demo images were created for this project.

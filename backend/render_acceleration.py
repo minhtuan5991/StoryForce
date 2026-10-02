@@ -4,6 +4,7 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 from .media import run_process
+from .config import APP_ROOT, RESOURCE_ROOT
 
 
 def cpu_threads():
@@ -26,6 +27,36 @@ def detect_encoder(binary, modified):
 def choose_encoder(binary, settings):
     if settings.get('render_encoder','auto') == 'cpu':return 'libx264'
     return detect_encoder(binary,Path(binary).stat().st_mtime_ns)
+
+
+def render_binary(binary, settings):
+    """Use the compatibility renderer only if it restores NVIDIA acceleration.
+
+    Imports/probing keep the latest bundled FFmpeg. Explicit user paths and CPU
+    mode are respected. No driver installation or external download at runtime.
+    """
+    if settings.get('render_encoder','auto') == 'cpu' or settings.get('ffmpeg_path'):
+        return binary
+    if choose_encoder(binary, settings) == 'h264_nvenc':
+        return binary
+    for root in (RESOURCE_ROOT, APP_ROOT):
+        compatible = root/'tools/ffmpeg-compatible.exe'
+        if compatible.is_file() and choose_encoder(str(compatible), settings) == 'h264_nvenc':
+            return str(compatible)
+    return binary
+
+
+def cuda_compositing(binary):
+    return _cuda_compositing(binary, Path(binary).stat().st_mtime_ns)
+
+
+@lru_cache(maxsize=8)
+def _cuda_compositing(binary, modified):
+    try:
+        output = run_process([binary,'-hide_banner','-filters'], timeout=15).stdout
+        return all(name in output for name in ('scale_cuda', 'overlay_cuda', 'hwupload'))
+    except (ValueError, subprocess.TimeoutExpired):
+        return False
 
 
 def video_encoding(encoder, intermediate=False):

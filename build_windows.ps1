@@ -24,10 +24,13 @@ if (-not $SkipTests) {
 }
 $taskBuildArgs = @('-m','PyInstaller','--noconfirm','--clean','--onedir','--windowed','--name','StoryForge','--distpath',$ReleaseDirectory,'--workpath','build\pyinstaller','--specpath','build','--paths',$taskRoot,'--icon',(Join-Path $taskRoot 'installer\storyforge.ico'),'--add-data',"$taskRoot\frontend\dist;frontend\dist",'--add-data',"$taskRoot\prompts;prompts",'--add-data',"$taskRoot\fixtures;fixtures",'--add-data',"$taskRoot\browser-extension;browser-extension",'--collect-all','uvicorn','--hidden-import','sqlalchemy.dialects.sqlite','--hidden-import','PIL.Image','--hidden-import','PIL.ImageDraw')
 if (-not $WithoutFFmpeg) {
+    & $taskPython scripts\prepare_render_runtime.py
+    if ($LASTEXITCODE -ne 0) { throw 'Compatibility render runtime preparation failed' }
     $taskFFmpeg = Get-ChildItem -LiteralPath (Join-Path $taskRoot 'tools') -Recurse -Filter ffmpeg.exe | Select-Object -First 1
     $taskFFprobe = Get-ChildItem -LiteralPath (Join-Path $taskRoot 'tools') -Recurse -Filter ffprobe.exe | Select-Object -First 1
     if (-not $taskFFmpeg -or -not $taskFFprobe) { throw 'Place FFmpeg and ffprobe in tools, or pass -WithoutFFmpeg.' }
     $taskBuildArgs += @('--add-binary',"$($taskFFmpeg.FullName);tools",'--add-binary',"$($taskFFprobe.FullName);tools")
+    $taskBuildArgs += @('--add-binary',"$taskRoot\tools\ffmpeg-compatible.exe;tools")
 }
 $taskBuildArgs += @('--add-data',"$taskRoot\launcher\install_update.ps1;launcher",'launcher\main.py')
 & $taskPython @taskBuildArgs

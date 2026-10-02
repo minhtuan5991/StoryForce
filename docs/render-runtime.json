@@ -1,0 +1,8 @@
+{
+  "version": "7.1.1",
+  "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip",
+  "archive_sha256": "04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4",
+  "binary_sha256": "b90225987bdd042cca09a1efb5e34e9848f2d1dbf5fbcd388753a44145522997",
+  "binary": "ffmpeg-7.1.1-essentials_build/bin/ffmpeg.exe",
+  "source": "https://github.com/FFmpeg/FFmpeg/tree/n7.1.1"
+}

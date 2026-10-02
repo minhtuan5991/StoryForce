@@ -85,9 +85,13 @@ Assets hỗ trợ drag/drop hoặc browse, bulk import, hash duplicate detection
 
 **Timeline → Sync to real audio** dùng ffprobe đọc WAV thực. Phụ đề SRT/VTT được chia theo câu và phân bổ trong chunk theo số từ. Đây không phải forced alignment; kiểm tra lại phụ đề khi giọng đọc có nhiều khoảng nghỉ.
 
-**Render & QA → Preflight → Render first cut**. Thiếu narration, file không hợp lệ hoặc thiếu hình sẽ chặn mặc định. Có thể bật placeholder fallback trong Settings; báo cáo khi đó NEEDS REVIEW. Video ngắn dùng ảnh fallback cho phần còn lại.
+**Render & QA → Preflight → Render first cut**. Thiếu narration, file không hợp lệ hoặc thiếu hình sẽ chặn mặc định. Có thể bật placeholder fallback trong Settings; báo cáo khi đó NEEDS REVIEW. Scene video giữ vị trí bắt đầu và độ dài thực; scene ảnh điều chỉnh theo âm thanh và thumbnail cuối phủ phần thời gian còn thiếu.
 
-Render gồm ảnh pan/zoom, crossfade, video, narration chuẩn hóa 48 kHz stereo, music/ambient ducking, SFX và subtitle track. Subtitles được mux dạng bật/tắt trong MP4 và xuất file riêng; chưa burn-in chữ vào hình.
+Render gồm ảnh pan/zoom, crossfade, video, narration chuẩn hóa 48 kHz stereo, music/ambient ducking và SFX. Khi chọn **Thêm phụ đề**, chữ hiển thị trực tiếp trên hình, kèm subtitle track trong MP4 và file phụ đề riêng. **Sóng nhạc** thay phụ đề bằng video nền xanh đã tách nền và lặp đúng tốc độ. Logo PNG nằm trên cùng; kích thước và vị trí lớp phủ giữ nguyên.
+
+Từ **3.1.13**, chế độ render tự động kiểm tra bộ mã hóa thật trên máy, dùng bản FFmpeg tương thích kèm theo nếu giúp NVIDIA hoạt động, và chuyển về CPU khi cần. Nền xanh được xử lý một lần; máy hỗ trợ CUDA dùng GPU ghép sóng nhạc và logo. Không cần đổi driver hoặc thay các thiết lập hiện có. Đường dẫn FFmpeg tự cấu hình và lựa chọn CPU vẫn được giữ nguyên.
+
+App lưu cache cho scene, timeline, narration, âm thanh đã trộn và một chu kỳ sóng nhạc. Dựng lại sau khi đổi logo/phụ đề sẽ tái sử dụng phần còn phù hợp; thay tài nguyên, timing hoặc âm lượng sẽ làm lại đúng phần bị ảnh hưởng. Cache nằm trong thư mục dữ liệu dự án, cần thêm dung lượng đĩa. Sau lần dựng thành công, app dọn các cache cũ do phiên bản này tạo và không còn dùng; tài nguyên gốc và video đã hoàn thành được giữ lại. Báo cáo render ghi thời gian từng bước và số mục tái sử dụng. Xem kết quả đo và giới hạn ở `docs/RENDER_PERFORMANCE_3.1.13.md`.
 
 Kiểm tra cuối gồm duration, resolution, FPS, audio, subtitle, scene coverage, thumbnail prompt và khoảng lặng narration. Video thử được đánh dấu synthetic. Luôn xem video và tick xác nhận review trước khi xuất bản.
 

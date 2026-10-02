@@ -7,6 +7,7 @@ import pytest
 from PIL import Image, ImageDraw
 from backend import media, render_pipeline as pipeline
 from backend.config import DEFAULT_SETTINGS
+from backend.render_acceleration import choose_encoder, render_binary, cuda_compositing
 from test_media import wav_data
 
 
@@ -89,3 +90,41 @@ def test_dark_green_waveform_loops_under_logo_and_group_boundaries_keep_video_ti
             assert min(image.convert('RGB').getpixel((70,135))) > 225  # wave at original position, after multiple loops
             red=image.convert('RGB').getpixel((100,135))
             assert red[0]>220 and max(red[1:])<30  # logo above wave, no scaling or movement
+
+
+def test_cuda_waveform_and_logo_keep_native_canvas_colors_and_video_anchor(tmp_path):
+    binary=media.find_binary('ffmpeg',DEFAULT_SETTINGS)
+    binary=render_binary(binary,DEFAULT_SETTINGS)
+    if choose_encoder(binary,DEFAULT_SETTINGS)!='h264_nvenc' or not cuda_compositing(binary):
+        pytest.skip('Working NVIDIA CUDA/NVENC unavailable')
+    (tmp_path/'logs').mkdir()
+    config={**DEFAULT_SETTINGS,'ffmpeg_path':binary,'render_width':320,'render_height':180,'render_fps':12}
+    media.run_process([binary,'-v','error','-y','-f','lavfi','-i','color=c=0x2DA63B:s=320x180:r=30',
+        '-vf','drawbox=x=60:y=130:w=100:h=10:color=white:t=fill','-t','0.4','-an','-c:v','libx264',str(tmp_path/'wave.mp4')])
+    media.run_process([binary,'-v','error','-y','-f','lavfi','-i','color=c=blue:s=320x180:r=24',
+        '-t','0.5','-an','-c:v','libx264',str(tmp_path/'video.mp4')])
+    logo=Image.new('RGBA',(320,180),(0,0,0,0));ImageDraw.Draw(logo).rectangle((90,130,110,140),fill='red');logo.save(tmp_path/'logo.png')
+    Image.new('RGB',(320,180),(180,60,20)).save(tmp_path/'image0.png')
+    Image.new('RGB',(320,180),(140,20,100)).save(tmp_path/'image2.png')
+    (tmp_path/'voice.wav').write_bytes(wav_data(3))
+    assets=[{'id':'voice','path':'voice.wav','kind':'audio','duration':3,'metadata_json':media.probe(tmp_path/'voice.wav',config)},
+            {'id':'wave','path':'wave.mp4','kind':'video','duration':.4},
+            {'id':'logo','path':'logo.png','kind':'image'},{'id':'s0','path':'image0.png','kind':'image'},
+            {'id':'s1','path':'video.mp4','kind':'video','duration':.5},{'id':'s2','path':'image2.png','kind':'image'}]
+    scenes=[{'id':str(i),'number':i+1,'scene_key':f'scene_{i+1:03}','asset_id':f's{i}','offset':i,'duration':1} for i in range(3)]
+    chunks=[{'id':'c','number':1,'text':'Test narration.','asset_id':'voice','real_duration':3}]
+    for item in chunks+scenes:item.update(story_version=1,status='ATTACHED')
+    project={'id':'cuda','title':'CUDA','story_version':1,'settings':{'render_options':{'subtitles':False,'waveform':True,
+               'waveform_asset_id':'wave','overlay':True,'logo_asset_id':'logo'}}}
+    result=media.render_project(tmp_path,project,chunks,scenes,assets,config,lambda *args:None)
+    assert all(result['checks'].values()),result
+    assert result['render_performance']['cuda_compositing'],result['render_performance']
+    for point,expected in ((.5,(180,60,20)),(1.2,(0,0,255)),(1.8,(140,20,100)),(2.8,(140,20,100))):
+        path=tmp_path/f'frame-{point}.png'
+        media.run_process([binary,'-v','error','-y','-ss',str(point),'-i',str(tmp_path/result['file']),'-frames:v','1',str(path)])
+        with Image.open(path) as picture:
+            pixel=picture.convert('RGB').getpixel((160,70))
+            assert max(abs(a-b) for a,b in zip(pixel,expected))<20,(point,pixel,expected)
+            assert min(picture.convert('RGB').getpixel((70,135)))>225
+            red=picture.convert('RGB').getpixel((100,135))
+            assert red[0]>225 and max(red[1:])<25
