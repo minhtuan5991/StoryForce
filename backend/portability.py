@@ -9,12 +9,12 @@ from .config import safe_path
 from .youtube_metadata import upload_text, metadata_fingerprint
 
 
-def project_archive(db, root: Path, project, include_media=False, capcut=False):
+def project_archive(db, root: Path, project, include_media=False):
     related = {}
     for model in (Artifact, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics):
         related[model.__tablename__] = [serialize(item) for item in db.query(model).filter_by(project_id=project.id).all()]
     metadata = {"format": "storyforge-project", "version": 1, "project": serialize(project), "channel": serialize(db.get(Channel,project.channel_id)), **related}
-    output = root / "exports" / f"{project.id}-{'capcut' if capcut else 'project'}-v{project.story_version}.zip"
+    output = root / "exports" / f"{project.id}-project-v{project.story_version}.zip"
     with zipfile.ZipFile(output,"w",zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("project.json", json.dumps(metadata,ensure_ascii=False,indent=2))
         archive.writestr("story/story.txt",project.draft)
@@ -48,7 +48,7 @@ def project_archive(db, root: Path, project, include_media=False, capcut=False):
             path = render/name
             if path.is_file():
                 archive.write(path,name)
-        if include_media or capcut:
+        if include_media:
             for asset in related["assets"]:
                 path = safe_path(root,asset["path"])
                 if path.is_file():

@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.11 — 2026-10-02 (local only)
+
+- Replace the CSV/media CapCut handoff with native CapCut Desktop project export, tested with CapCut International 9.5 on Windows.
+- Copy assigned media into a new, independent draft. Re-probe narration/video durations and use the existing video anchors, image coverage and ending thumbnail without rendering the complete video in StoryForge.
+- Create editable scene/narration tracks, background audio/SFX, selected subtitles, native-size green-screen waveform loops with sampled chroma key, and the topmost transparent PNG logo.
+- Show export progress and the resulting project folder. Preserve existing project/archive exports, settings, workflows and Browser Bridge 1.1.10.
+
 ## 3.1.10 — 2026-10-02
 
 - Add an optional Vietnamese reading pane in Source material, supporting English and Chinese transcripts. Keep the original JSON editor, source fields, analysis prompts and adaptation workflows unchanged.

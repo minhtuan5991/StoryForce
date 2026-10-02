@@ -662,9 +662,28 @@ def create_app(data_root: str | Path | None = None):
 
     @app.get("/api/projects/{id}/export")
     def export_project(id:str,media:bool=False,capcut:bool=False):
+        if capcut:
+            raise HTTPException(410, 'Use Export CapCut project on the Publish page')
         with database.session() as db:
-            output=project_archive(db,root,get(db,Project,id),media,capcut)
+            output=project_archive(db,root,get(db,Project,id),media)
             return FileResponse(output,filename=output.name)
+
+    @app.get("/api/capcut")
+    def capcut_location():
+        from .capcut import default_drafts_folder
+        return {'drafts_folder': default_drafts_folder(), 'schema': 'CapCut International 9.5 Windows'}
+
+    @app.post("/api/projects/{id}/export-capcut")
+    def export_capcut(id:str,body:dict=Body(...)):
+        from .capcut import drafts_folder
+        destination = drafts_folder(str(body.get('drafts_folder', '')))
+        return workflow.submit('capcut_export', project_id=id,
+                               payload={'drafts_folder': str(destination), 'auto_continue': False})
+
+    @app.get("/api/jobs/{id}")
+    def job_detail(id:str):
+        with database.session() as db:
+            return serialize(get(db,Job,id))
 
     @app.get("/api/channels/{id}/export")
     def export_channel(id:str):

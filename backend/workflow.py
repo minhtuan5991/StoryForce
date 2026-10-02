@@ -179,7 +179,7 @@ class Workflow:
                 "duration_profile": duration_profile(project.target_minutes, project.wpm) if project else {}}
 
     def validate_step(self, db, job):
-        if job.kind not in PROVIDERS and job.kind not in ("chunk_tts", "sync", "render"):
+        if job.kind not in PROVIDERS and job.kind not in ("chunk_tts", "sync", "render", "capcut_export"):
             raise ValueError("Unknown workflow step")
         p = db.get(Project, job.project_id) if job.project_id else None
         if job.kind == "story_dna":
@@ -206,7 +206,7 @@ class Workflow:
             raise ValueError(f"Complete {required[job.kind]} first")
         if job.kind in ("gemini_story_audit", "chatgpt_cross_review", "targeted_rewrite", "final_verify_gemini", "final_verify_chatgpt") and not p.draft:
             raise ValueError("Create a draft first")
-        if job.kind in ("chunk_tts", "visual_director", "sync", "render", "tts_context", "image_generation", "video_generation") and not p.locked:
+        if job.kind in ("chunk_tts", "visual_director", "sync", "render", "capcut_export", "tts_context", "image_generation", "video_generation") and not p.locked:
             raise ValueError("Lock the story before production")
         if job.kind == "targeted_rewrite":
             settings = settings_for(db)
@@ -292,7 +292,7 @@ class Workflow:
                 context = self.context(db, job)
                 channel_id=context["channel"].get("id")
                 config = settings_for(db, db.get(Channel, channel_id) if channel_id else None)
-                if job.kind in ("chunk_tts", "sync", "render"):
+                if job.kind in ("chunk_tts", "sync", "render", "capcut_export"):
                     job.provider = "local"
                     db.commit()
                     result = self.local_job(job_id, job.kind, job.project_id, config)
@@ -550,6 +550,22 @@ class Workflow:
         return Issue(project_id=p.id, issue_key=data["issue_id"], scope=scope, cycle=p.audit_cycle, severity=data["severity"], type=data["type"], location=data["location"], evidence=data["evidence"], explanation=data["explanation"], repair=data["suggested_repair"], gemini_claim=data["explanation"], bible_references=data.get("bible_references", []), final_status="CONFIRMED" if scope == "outline" else "PENDING")
 
     def local_job(self, job_id, kind, project_id, config):
+        if kind == "capcut_export":
+            from .capcut import export_project
+            with self.database.session() as db:
+                p = db.get(Project, project_id)
+                job = db.get(Job, job_id)
+                inputs = (serialize(p),
+                          [serialize(c) for c in db.query(Chunk).filter_by(project_id=project_id)],
+                          [serialize(s) for s in db.query(Scene).filter_by(project_id=project_id)],
+                          [serialize(a) for a in db.query(Asset).filter_by(project_id=project_id)])
+                destination = job.payload.get('drafts_folder', '')
+            def cancelled():
+                with self.database.session() as db:
+                    record = db.get(Job, job_id)
+                    return not record or record.status == 'cancelled'
+            return export_project(self.root, *inputs, config, destination,
+                                  lambda percent, step: self.log_progress(job_id, percent, step), cancelled)
         if kind == "render":
             # Uploaded/replaced WAVs may change timing without a story revision.
             # Rendering always uses a fresh timeline instead of stale durations.
