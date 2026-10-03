@@ -8,27 +8,27 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, text
 
-from .models import Artifact, Job, Novelty, Project, Source, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, CalendarEntry
+from .models import Artifact, Job, Novelty, Project, Source, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, CalendarEntry, Channel, DNAVersion
 from .providers import PROVIDERS
 from .project_files import private_file_plan, remove_planned_files
 
 
 class DeletionRequest(BaseModel):
-    kind: Literal["sources", "novelty", "jobs", "projects"]
+    kind: Literal["sources", "novelty", "jobs", "projects", "channels"]
     ids: list[str] = Field(min_length=1, max_length=100)
     confirmation: str = ""
     delete_files: bool = False
 
 
 class Deletions:
-    models = {"sources": Source, "novelty": Novelty, "jobs": Job, "projects": Project}
+    models = {"sources": Source, "novelty": Novelty, "jobs": Job, "projects": Project, "channels": Channel}
     active_statuses = ("queued", "running", "waiting_user")
 
     def __init__(self, database, workflow, secret):
         self.database, self.workflow, self.secret = database, workflow, secret.encode()
 
     def report(self, db, request):
-        if request.delete_files and request.kind!='projects':
+        if request.delete_files and request.kind not in ('projects', 'channels'):
             raise ValueError('File cleanup is only available for project deletion')
         ids = sorted(set(request.ids))
         records = [db.get(self.models[request.kind], id) for id in ids]
@@ -42,6 +42,11 @@ class Deletions:
             channel_ids.update(s.channel_id for s in records if s.channel_id)
             if any(not s.dna for s in records):
                 warnings.add("Some sources have not finished analysis.")
+        elif request.kind == "channels":
+            channel_ids.update(ids)
+            project_ids.update(p.id for p in db.query(Project).filter(Project.channel_id.in_(ids)))
+            warnings.add("Deleting channels also deletes all their projects, stories, versions, analyses, job history, asset records, calendar entries and novelty memory. Sources will remain in the library without their channel link.")
+            warnings.add("Private project files will be permanently deleted. Shared files, exports outside the project folder and original imports elsewhere will remain." if request.delete_files else "Media files and exported files on disk will be kept.")
         elif request.kind == "projects":
             project_ids.update(ids)
             warnings.add("Deleting projects removes their stories, versions, analyses, job history, asset records and novelty memory. Channels and sources will remain.")
@@ -64,7 +69,7 @@ class Deletions:
             warnings.add("Only job history will be deleted. Generated results, projects and media will remain.")
 
         # A cancelled worker can still be unwinding; keep its inputs until it exits.
-        removes_memory = request.kind == "projects" and db.query(Novelty).filter(Novelty.project_id.in_(ids)).count() > 0
+        removes_memory = request.kind in ("projects", "channels") and db.query(Novelty).filter(or_(Novelty.project_id.in_(project_ids), Novelty.channel_id.in_(channel_ids))).count() > 0
         candidates = db.query(Job).filter(or_(Job.status.in_(self.active_statuses), Job.id.in_(self.workflow.active_jobs))).order_by(Job.id).all()
         blockers = []
         for job in candidates:
@@ -86,25 +91,33 @@ class Deletions:
                                  "worker_active": job.id in self.workflow.active_jobs})
         affected = {}
         children = {}
-        if request.kind == "projects":
+        if request.kind in ("projects", "channels"):
             # Include dependent changes in the confirmation fingerprint, even if
             # editing a child record did not update the project's timestamp.
             for model in (Artifact, Job, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, Novelty, CalendarEntry):
-                rows = db.query(model).filter(model.project_id.in_(ids)).order_by(model.id).all()
+                condition = model.project_id.in_(project_ids)
+                if request.kind == "channels" and hasattr(model, 'channel_id'):
+                    condition = or_(condition, model.channel_id.in_(channel_ids))
+                rows = db.query(model).filter(condition).order_by(model.id).all()
+                children[model.__tablename__] = [(row.id, row.updated_at) for row in rows]
+                affected[model.__tablename__] = len(rows)
+        if request.kind == "channels":
+            for model in (Project, DNAVersion, Source):
+                rows = db.query(model).filter(model.channel_id.in_(ids)).order_by(model.id).all()
                 children[model.__tablename__] = [(row.id, row.updated_at) for row in rows]
                 affected[model.__tablename__] = len(rows)
         if request.kind == "sources":
             for model, key in ((Job, "source_jobs"), (Artifact, "source_artifacts")):
                 affected[key] = db.query(model).filter(model.source_id.in_(ids), model.project_id.is_(None), model.channel_id.is_(None)).count()
         report = {"kind": request.kind, "ids": ids,
-                  "items": [{"id": r.id, "title": r.kind if request.kind == "jobs" else r.title,
+                  "items": [{"id": r.id, "title": r.kind if request.kind == "jobs" else r.name if request.kind == "channels" else r.title,
                              "updated_at": r.updated_at} for r in records],
                   "warnings": sorted(warnings), "blockers": blockers, "blocked": bool(blockers),
                   "projects": [{"id": p.id, "title": p.title, "stage": p.stage} for p in projects],
                   "affected": affected}
         report['delete_files']=request.delete_files
-        if request.kind=='projects' and request.delete_files:
-            report['file_cleanup']=private_file_plan(db,self.workflow.root,ids)
+        if request.delete_files:
+            report['file_cleanup']=private_file_plan(db,self.workflow.root,sorted(project_ids))
         report["confirmation"] = hmac.new(self.secret, json.dumps(report, sort_keys=True).encode(), hashlib.sha256).hexdigest()
         if children:
             report["confirmation"] = hmac.new(self.secret, json.dumps([report, children], sort_keys=True).encode(), hashlib.sha256).hexdigest()
@@ -129,6 +142,17 @@ class Deletions:
                 # analysis is removed by the existing source foreign-key cascade.
                 for model in (Job, Artifact):
                     db.query(model).filter(model.source_id.in_(report["ids"]), or_(model.project_id.is_not(None), model.channel_id.is_not(None))).update({model.source_id: None}, synchronize_session=False)
+            if request.kind == "channels":
+                # Project.channel_id deliberately uses RESTRICT. Remove owned
+                # projects before the channel, letting their FK cascades run.
+                for project in report['projects']:
+                    db.delete(db.get(Project, project['id']))
+                db.flush()
+                # A shared output may also refer to another channel/project.
+                # Keep it and detach only the channel being removed.
+                for model in (Job, Artifact):
+                    db.query(model).filter(model.channel_id.in_(report['ids']),
+                        or_(model.project_id.is_not(None), model.source_id.is_not(None))).update({model.channel_id: None}, synchronize_session=False)
             for id in report["ids"]:
                 db.delete(db.get(self.models[request.kind], id))
             db.commit()
@@ -136,5 +160,5 @@ class Deletions:
             if request.delete_files:
                 # Database removal is confirmed before cleanup. File errors are
                 # returned explicitly; never claim that locked files were removed.
-                result['file_cleanup']=remove_planned_files(self.workflow.root,report['ids'],report['file_cleanup'])
+                result['file_cleanup']=remove_planned_files(self.workflow.root,[p['id'] for p in report['projects']],report['file_cleanup'])
             return result

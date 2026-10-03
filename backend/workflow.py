@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -229,6 +230,67 @@ class Workflow:
         self.executor.submit(self.run, result["id"])
         return result
 
+    def premise_reuse(self, db, project):
+        """An approved current render can seed another project without resetting it."""
+        if not project.selected_premise_id:
+            return {"ready": False, "reason": "Select a premise first."}
+        if db.query(Job).filter(Job.project_id == project.id,
+                (Job.status.in_(['queued', 'running', 'waiting_user'])) | (Job.id.in_(self.active_jobs))).count():
+            return {"ready": False, "reason": "Finish the active project job first."}
+        report = latest(db, project.id, 'render_report')
+        if not report or report.story_version != project.story_version or report.content.get('story_version') != project.story_version:
+            return {"ready": False, "reason": "Render the current story version first."}
+        if report.content.get('status') == 'BLOCKED' or not all(report.content.get('checks', {}).values()):
+            return {"ready": False, "reason": "Resolve the final technical QA failures first."}
+        config = settings_for(db, db.get(Channel, project.channel_id))
+        rows = [[serialize(r) for r in db.query(model).filter_by(project_id=project.id)] for model in (Chunk, Scene, Asset)]
+        if report.content.get('inputs_hash') != render_inputs_hash(serialize(project), *rows, config):
+            return {"ready": False, "reason": "Render again to apply the latest changes."}
+        try:
+            present = bool(report.content.get('file')) and safe_path(self.root, report.content['file']).is_file()
+        except ValueError:
+            present = False
+        if not present:
+            return {"ready": False, "reason": "The final video is missing. Render it again."}
+        if not project.publish.get('final_reviewed'):
+            return {"ready": False, "reason": "Watch and approve the final video in Render & QA first."}
+        return {"ready": True, "reason": "Choose another premise to create a new project. Your finished project and video will be kept."}
+
+    def branch_premise(self, db, original, premise):
+        # BEGIN IMMEDIATE in select_premise serializes retries/double clicks.
+        origin = {'project_id': original.id, 'premise_id': premise.id}
+        for existing in db.query(Project).filter_by(channel_id=original.channel_id):
+            if (existing.settings or {}).get('premise_origin') == origin:
+                return existing, None
+        gate = self.premise_reuse(db, original)
+        if not gate['ready']:
+            raise ValueError(gate['reason'])
+        settings = {'premise_origin': origin}
+        if 'visual_options' in (original.settings or {}):
+            settings['visual_options'] = deepcopy(original.settings['visual_options'])
+        p = Project(channel_id=original.channel_id, source_id=original.source_id,
+                    title=premise.title, duration_mode=original.duration_mode,
+                    target_minutes=original.target_minutes, wpm=original.wpm, settings=settings)
+        db.add(p)
+        db.flush()
+        selected = None
+        for candidate in db.query(Premise).filter_by(project_id=original.id).all():
+            data = deepcopy(serialize(candidate))
+            for key in ('id', 'created_at', 'updated_at', 'project_id'):
+                data.pop(key)
+            copy = Premise(project_id=p.id, **data)
+            db.add(copy)
+            if candidate.id == premise.id:
+                selected = copy
+        direction = latest(db, original.id, 'content_direction')
+        if direction:
+            db.add(Artifact(project_id=p.id, kind=direction.kind, provider=direction.provider,
+                            content=deepcopy(direction.content), raw_result=direction.raw_result,
+                            template_version=direction.template_version, inputs_hash=direction.inputs_hash,
+                            output_hash=direction.output_hash, story_version=0))
+        db.flush()
+        return p, selected
+
     def select_premise(self, project_id, premise_id):
         job_id = None
         with self.database.session() as db:
@@ -236,10 +298,12 @@ class Workflow:
             p, pr = db.get(Project, project_id), db.get(Premise, premise_id)
             if not p or not pr or pr.project_id != project_id:
                 raise ValueError("Premise does not belong to this project")
-            if p.selected_premise_id and p.selected_premise_id != pr.id:
-                raise ValueError("A premise is already selected; create a separate project for another premise")
             if any(w.get("level") == "BLOCK" for w in pr.warnings):
                 raise ValueError("This premise failed a similarity or duration gate. Regenerate it.")
+            if p.selected_premise_id and p.selected_premise_id != pr.id:
+                p, pr = self.branch_premise(db, p, pr)
+                if pr is None:
+                    return serialize(p)
             active = db.query(Job).filter(Job.project_id == p.id, Job.status.in_(["queued", "running", "waiting_user"])).all()
             if not p.selected_premise_id and any(j.kind != "premise_mini_test" for j in active):
                 raise ValueError("Finish the active project job before selecting a premise")
@@ -267,6 +331,7 @@ class Workflow:
             result = serialize(p)
         if job_id:
             self.executor.submit(self.run, job_id)
+        project_folder(self.root, result['id'])
         return result
 
     def log_progress(self, job_id, amount, step):

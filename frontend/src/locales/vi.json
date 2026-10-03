@@ -1536,5 +1536,22 @@
   "images": "ảnh",
   "videos": "video",
   "thumbnail": "thumbnail",
-  "seconds": "giây"
+  "seconds": "giây",
+  "Delete channel": "Xóa kênh",
+  "Delete channel and its projects": "Xóa kênh và các dự án thuộc kênh",
+  "Channel deletion finished": "Đã xóa kênh",
+  "Deleting channels also deletes all their projects, stories, versions, analyses, job history, asset records, calendar entries and novelty memory. Sources will remain in the library without their channel link.": "Xóa kênh sẽ xóa toàn bộ dự án thuộc kênh, truyện, phiên bản, phân tích, lịch sử tác vụ, bảng tài nguyên, lịch nội dung và bộ nhớ ý tưởng. Tư liệu nguồn vẫn được giữ trong thư viện và bỏ liên kết với kênh.",
+  "Media files and exported files on disk will be kept.": "Các file media và file đã xuất trên ổ đĩa sẽ được giữ lại.",
+  "Select a premise first.": "Hãy chọn một ý tưởng trước.",
+  "Render the current story version first.": "Hãy dựng video cho phiên bản truyện hiện tại trước.",
+  "Render again to apply the latest changes.": "Hãy dựng lại video để áp dụng các thay đổi mới nhất.",
+  "The final video is missing. Render it again.": "Không tìm thấy video final. Hãy dựng lại video.",
+  "Resolve the final technical QA failures first.": "Hãy xử lý các lỗi kiểm tra kỹ thuật của video final trước.",
+  "Watch and approve the final video in Render & QA first.": "Hãy xem và tích xác nhận video final trong Dựng & kiểm tra trước.",
+  "Choose another premise to create a new project. Your finished project and video will be kept.": "Bạn có thể chọn ý tưởng khác để tạo dự án mới. Dự án và video đã hoàn thành được giữ nguyên.",
+  "Create a new project from this premise": "Tạo dự án mới từ ý tưởng này",
+  "Create new project": "Tạo dự án mới",
+  "New project created from premise": "Đã tạo dự án mới từ ý tưởng",
+  "Download your final video, then choose another premise to start a new project.": "Tải video final, sau đó chọn ý tưởng khác để bắt đầu dự án mới.",
+  "Choose another premise": "Chọn ý tưởng khác"
 }

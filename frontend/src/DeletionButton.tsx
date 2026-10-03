@@ -5,7 +5,7 @@ import type { Row } from './api';
 import { Button, Modal, Status } from './components';
 import { tr } from './i18n';
 
-type Kind = 'sources' | 'novelty' | 'jobs' | 'projects';
+type Kind = 'sources' | 'novelty' | 'jobs' | 'projects' | 'channels';
 type Props = {kind:Kind, ids:string[], title?:string, caption?:string, onDeleted:()=>void};
 
 export function DeletionButton({kind, ids, title, caption, onDeleted}:Props) {
@@ -30,14 +30,14 @@ function DeletionDialog({kind, ids, onClose, onDeleted}:{kind:Kind,ids:string[],
     catch(e){setError((e as Error).message);setReport(null);try{setReport(await api('/deletions/preview','POST',{kind,ids,delete_files:deleteFiles}))}catch{/* Keep the deletion error visible; allow retry or close. */}}
     finally{setBusy(false)}
   };
-  if(removed)return <Modal title={tr('Project deletion finished')} onClose={onDeleted}>
+  if(removed)return <Modal title={tr(kind==='channels'?'Channel deletion finished':'Project deletion finished')} onClose={onDeleted}>
     <p>{tr('Files removed')}: {removed.removed_files} · {tr('Space freed')}: {bytes(removed.freed_bytes)}</p>
     {removed.failed_files.length>0&&<div role="alert" className="notice error"><div><strong>{tr('Some files could not be removed. Close apps using them, then remove these files manually:')}</strong><ul>{removed.failed_files.map((path:string)=><li key={path}>{path}</li>)}</ul></div></div>}
     {!!removed.kept_files.length&&<p>{tr('Shared files and linked folders were kept.')}</p>}
     <div className="modal-actions"><Button primary onClick={onDeleted}>{tr('Close')}</Button></div>
   </Modal>;
-  return <Modal title={tr('Review deletion')} onClose={()=>{if(!busy)onClose()}}>
-    {kind==='projects'&&<label className="check-field"><input type="checkbox" checked={deleteFiles} disabled={busy} onChange={e=>{setReport(null);setDeleteFiles(e.target.checked)}}/>{tr('Delete private project media and generated files from disk')}</label>}
+  return <Modal title={tr(kind==='channels'?'Delete channel and its projects':'Review deletion')} onClose={()=>{if(!busy)onClose()}}>
+    {(kind==='projects'||kind==='channels')&&<label className="check-field"><input type="checkbox" checked={deleteFiles} disabled={busy} onChange={e=>{setReport(null);setDeleteFiles(e.target.checked)}}/>{tr('Delete private project media and generated files from disk')}</label>}
     {!report&&!error&&<p role="status"><Loader2 className="spin" size={16}/> {tr('Checking related work…')}</p>}
     {error&&<p role="alert" className="notice error">{tr(error)}</p>}
     {report&&<>

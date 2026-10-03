@@ -331,6 +331,7 @@ def create_app(data_root: str | Path | None = None):
                     "visual_budget":visual_budget(serialize(p),config),
                     "youtube_metadata_current":bool(artifacts.get('youtube_metadata') and artifacts['youtube_metadata']['content'].get('content_fingerprint')==metadata_fingerprint(db,p)),
                     "workflow_settings":{key:config[key] for key in ("pipeline_mode","default_premise_count")},
+                    "premise_reuse":workflow.premise_reuse(db,p),
                     "artifacts":artifacts,"premises":[serialize(v) for v in db.query(Premise).filter_by(project_id=id)],
                     "issues":[serialize(v) for v in db.query(Issue).filter_by(project_id=id).order_by(desc(Issue.cycle))],
                     "versions":[serialize(v) for v in db.query(StoryVersion).filter_by(project_id=id).order_by(desc(StoryVersion.version))],

@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.17 — 2026-10-03 (local only)
+
+- Add Delete channel on channel cards and in the channel studio. Preview all owned projects before confirming deletion, preserve library sources, and optionally remove private project media using the existing shared-file protections. Active work and stale confirmations block deletion.
+- After approving the current final video, choose another candidate premise to create a separate project with the same source, content direction, duration and candidate evaluations. Keep the finished story, assets and video unchanged; repeated clicks open the existing new project.
+- Preserve the selected production mode and existing quality gates. Include Vietnamese controls and help. Install locally; not published to GitHub.
+
 ## 3.1.16 — 2026-10-03 (local only)
 
 - Ignore Gemini's internal offscreen Quill clipboard when finding the prompt editor. Capture its full-resolution PNG download from the provider's sandbox message instead of saving a preview or leaving the file outside the project folder.
