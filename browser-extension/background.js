@@ -1,4 +1,4 @@
-import {createAutomaticBridge,parseResult} from './automatic.js';
+import {createAutomaticBridge,parseBridgeResult} from './automatic.js';
 import {withTabReadDeadline} from './transport.js';
 import {copyResponseSource} from './raw-response.js';
 import {createMediaBridge} from './media-automatic.js';
@@ -21,7 +21,7 @@ async function open(job) {
   return tab;
 }
 async function capture(job, text) {
-  const result=parseResult(text);
+  const result=await parseBridgeResult(text,request,job);
   return request('/jobs/'+job.id+'/result','POST',{result});
 }
 async function handle(message) {

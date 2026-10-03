@@ -8,6 +8,16 @@ export function parseResult(text) {
   throw new Error('Câu trả lời chưa phải JSON hợp lệ. Kiểm tra tab AI rồi tiếp tục lấy kết quả; không gửi lại prompt.');
 }
 
+export async function parseBridgeResult(text,request,job) {
+  try{return parseResult(text)}catch{
+    // The app owns conservative syntax recovery and still validates the result
+    // contract on completion. Valid JSON never needs this extra request.
+    const response=await request('/jobs/'+job.id+'/parse-result','POST',{result:text,attempt:job.attempt});
+    if(!response.result||typeof response.result!=='object'||Array.isArray(response.result))throw new Error('Câu trả lời chưa phải JSON hợp lệ.');
+    return response.result;
+  }
+}
+
 export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,now=()=>Date.now(),readTimeoutMs=12000,pageSettleMs=5000}) {
   let busy=false,storageQueue=Promise.resolve();
   const read=async()=> (await chrome.storage.local.get('autoBridge')).autoBridge||{enabled:false,phase:'idle',message:'Tự động đang tắt.'};
@@ -207,11 +217,11 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
             let output;
             try{
               try{output=parseResult(result.text)}catch(error){
-                if(!captureRaw||!result.copyTarget)throw error;
-                // Use the provider's source text when markdown rendering has
-                // consumed JSON escapes. Never "repair" or invent story content.
-                const raw=await captureRaw(state.tabId,result.copyTarget);
-                output=parseResult(raw.text);
+                let text=result.text;
+                // Prefer the provider's source text when rendering consumed
+                // escapes. A failed/stale Copy still stops this collection.
+                if(captureRaw&&result.copyTarget)text=(await captureRaw(state.tabId,result.copyTarget)).text;
+                output=await parseBridgeResult(text,request,{id:job.id,attempt:state.attempt});
               }
             }catch(error){
               const jsonChecks=(state.jsonChecks||0)+1;

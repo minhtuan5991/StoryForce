@@ -1,5 +1,7 @@
 # Hướng dẫn StoryForge US
 
+Từ **3.1.14**, app có thể xử lý dấu ngoặc kép chưa escape trong lời thoại trích dẫn của JSON kiểm định, giữ nguyên nội dung và mức độ từng lỗi. Dán lại toàn bộ câu trả lời vào tác vụ đang chờ; không cần tạo lại kiểm định nếu bản nháp chưa đổi. Để Bridge tự lấy kết quả theo cách này, cài app mới và Reload extension **1.1.12** tại trang Extensions của trình duyệt. JSON bị cắt dở, thiếu dấu phân cách hoặc trường bắt buộc vẫn bị từ chối để tránh mất dữ liệu.
+
 ## 1. Bắt đầu
 
 Mở **Start StoryForge**. Ứng dụng mở browser local ở cổng 8787. Có thể làm việc offline trong **Mock provider**. Bấm **New channel**, đặt tên, audience, ngôn ngữ và độ dài mặc định. Chọn **I know my niche** hoặc **Help me discover it**.

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createAutomaticBridge,parseResult} from '../browser-extension/automatic.js';
+import {createAutomaticBridge,parseResult,parseBridgeResult} from '../browser-extension/automatic.js';
 import {withTabReadDeadline} from '../browser-extension/transport.js';
 
 function fixture(options={pageSettleMs:0}){
@@ -22,6 +22,13 @@ function fixture(options={pageSettleMs:0}){
   }}};
   const request=async(path,method,body)=>{
     if(path==='/jobs')return {items:state.jobs};
+    if(path.endsWith('/parse-result')){
+      state.parseReads=(state.parseReads||0)+1;
+      assert.equal(body.attempt,state.jobs[0].attempt);
+      if(!state.parsedResult)throw Error('Invalid JSON syntax');
+      assert.equal(body.result,state.rawText||state.poll.text);
+      return {result:state.parsedResult};
+    }
     if(path.endsWith('/claim')){
       if(claim&&claim.owner!==body.owner)throw Error('Another browser claimed this job');
       claim??={owner:body.owner,attempt:body.attempt,phase:'claimed'};
@@ -173,6 +180,28 @@ test('valid rendered JSON does not use Copy and failed Copy never saves invalid 
   const g=fixture(),b=g.create();g.state.poll={text:'Invalid JSON',busy:false,copyTarget:{messageId:'reply'}};g.state.rawError='Response changed before copy';
   await b.setEnabled(true);for(let i=0;i<7;i++)await b.tick();
   assert.ok(g.state.rawReads>0);assert.deepEqual(g.counts(),{sent:1,saved:0});assert.deepEqual(g.closed,[]);
+});
+
+test('stable malformed source quotes use app recovery once and never resend the prompt',async()=>{
+  for(const copy of [false,true]){
+    const f=fixture(),a=f.create();
+    f.state.poll={text:'{"answer":"new response","evidence":"He said "hello"."}',busy:false};
+    if(copy){f.state.poll.copyTarget={messageId:'reply'};f.state.rawText=f.state.poll.text;}
+    f.state.parsedResult={answer:'new response',evidence:'He said "hello".'};
+    await a.setEnabled(true);for(let i=0;i<9;i++)await a.tick();
+    assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.state.parseReads,1);
+    assert.equal(f.state.rawReads||0,copy?1:0);assert.equal(f.state.retries,0);
+    assert.deepEqual(f.closed,[9]);
+  }
+});
+
+test('manual Bridge capture uses the same recovery; valid JSON needs no extra app request',async()=>{
+  const expected={issues:[],summary:'He said "hello".'};let calls=0;
+  const request=async(path,method,body)=>{calls++;assert.equal(path,'/jobs/audit/parse-result');assert.equal(method,'POST');assert.equal(body.attempt,2);return {result:expected}};
+  assert.deepEqual(await parseBridgeResult(JSON.stringify(expected),request,{id:'audit',attempt:2}),expected);
+  assert.equal(calls,0);
+  assert.deepEqual(await parseBridgeResult('{"issues":[],"summary":"He said "hello"."}',request,{id:'audit',attempt:2}),expected);
+  assert.equal(calls,1);
 });
 
 test('new request retry persists across restarts, then completes with one send per attempt',async()=>{

@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-VERSION = "3.1.13"
+VERSION = "3.1.14"
 APP_ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", APP_ROOT))
 CONFIG_FILE = APP_ROOT / "storyforge.config.json"

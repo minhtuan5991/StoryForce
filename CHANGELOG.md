@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.14 — 2026-10-03 (local only)
+
+- Recover unescaped quoted dialogue and literal line breaks inside otherwise complete AI JSON strings without changing evidence, issues, severity or references. Continue rejecting missing separators, incomplete structure and ambiguous quoting; keep existing schema and draft/attempt checks.
+- Use the same reader for manual paste and Bridge results. Bridge 1.1.12 prefers the provider's raw Copy source and asks the app for read-only syntax recovery only when normal JSON parsing fails. Valid JSON takes the existing fast path; successful recovery never resends the prompt.
+- Clarify JSON escaping in the Gemini story audit prompt. Preserve all other features/settings and render optimizations. Local installer and extension only; not published to GitHub.
+
 ## 3.1.13 — 2026-10-03 (local only)
 
 - Reuse validated narration, audio mixes, composed timelines and lossless keyed waveform cycles. Rebuild only stages affected by source, timing, format or audio-gain changes; keep previous completed outputs intact.

@@ -32,6 +32,7 @@ from .intelligence import duration_profile, channel_fit, novelty_check, words, d
 from .workflow import Workflow, settings_for, latest, set_draft, gate_lock, lock_story, active_issues
 from .production_extras import tts_scene_context, thumbnail_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
+from .ai_result import parse_ai_result
 from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets, timeline_from_audio, render_options, validate_logo, validate_waveform_video
 from .visual_planning import visual_budget
 from .portability import project_archive, inspect_database
@@ -448,8 +449,7 @@ def create_app(data_root: str | Path | None = None):
     def paste_result(id:str,body:dict=Body(...)):
         result=body.get("result",body)
         if isinstance(result,str):
-            result=re.sub(r"^```(?:json)?\s*|\s*```$","",result.strip())
-            result=json.loads(result)
+            result=parse_ai_result(result)
         workflow.complete_ai(id,result)
         logging.getLogger("browser_bridge").info("Job %s: result accepted via manual paste",id)
         return {"accepted":True}
@@ -958,10 +958,22 @@ def create_app(data_root: str | Path | None = None):
             logging.getLogger("browser_bridge").info("Job %s: %s",id,job.step)
             return {"updated":True}
 
+    @app.post("/api/bridge/jobs/{id}/parse-result")
+    def bridge_parse_result(id:str,body:dict=Body(...)):
+        # Read-only recovery: the normal completion route still validates schema,
+        # input hashes and attempt ownership before storing anything.
+        with database.session() as db:
+            job=get(db,Job,id)
+            if job.status!="waiting_user":raise ValueError("Job is not waiting for the bridge")
+            if body.get("attempt") is not None and job.attempts!=body["attempt"]:
+                raise ValueError("The attempt changed; discard the old browser response")
+        if not isinstance(body.get("result"),str):raise ValueError("AI result must be text")
+        return {"result":parse_ai_result(body["result"])}
+
     @app.post("/api/bridge/jobs/{id}/result")
     def bridge_result(id:str,body:dict=Body(...)):
         result=body.get("result")
-        if isinstance(result,str):result=json.loads(re.sub(r"^```(?:json)?\s*|\s*```$","",result.strip()))
+        if isinstance(result,str):result=parse_ai_result(result)
         workflow.complete_ai(id,result,expected_attempt=body.get("attempt"))
         logging.getLogger("browser_bridge").info("Job %s: result accepted via %s",id,
             "automatic collection" if body.get("attempt") is not None else "manual bridge capture")
