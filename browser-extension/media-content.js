@@ -13,7 +13,7 @@
   function find(pattern,root=document){return [...root.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],a,[role="tab"]')].filter(enabled).find(e=>pattern.test(label(e)))}
   function exact(text,root=document){
     const texts=Array.isArray(text)?text:[text];
-    const control=controls().find(e=>root.contains(e)&&texts.includes(label(e)));
+    const control=controls().find(e=>root.contains(e)&&(texts.includes(label(e))||texts.includes(caption(e))));
     if(control)return control;
     // Some voice/style cards use nested text spans instead of button roles.
     const candidates=[...root.querySelectorAll('span,div,p')].filter(e=>visible(e)&&texts.includes(norm(e.textContent)));
@@ -21,7 +21,7 @@
   }
   function editor(){
     const fields=[...document.querySelectorAll('textarea,[contenteditable="true"]')].filter(e=>visible(e)&&!e.disabled&&!e.readOnly&&
-      !e.closest('nav,aside,[role="search"]')&&!/search|tìm kiếm/i.test(e.getAttribute('placeholder')||e.getAttribute('aria-label')||''));
+      !e.closest('.ql-clipboard,nav,aside,[role="search"]')&&!/search|tìm kiếm/i.test(e.getAttribute('placeholder')||e.getAttribute('aria-label')||''));
     const top=fields.filter(e=>!fields.some(parent=>parent!==e&&parent.contains(e)));
     if(top.length!==1)throw Object.assign(new Error('Chưa có một ô nhập media duy nhất khả dụng'),{code:'INPUT_NOT_READY'});
     return top[0];

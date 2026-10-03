@@ -133,6 +133,53 @@ test('resume is a no-op during an active download',async()=>{
   assert.deepEqual(await engine.read(),before);
 });
 
+test('resume retries a timed-out Download click with no matching file, without sending the generation again',async()=>{
+  const f=fixture();
+  const send=f.chrome.tabs.sendMessage;
+  f.chrome.tabs.sendMessage=async(id,m)=>m.action==='media-download-info'?{ok:true,url:'blob:output',direct:false}:send(id,m);
+  const engine=f.create();for(let i=0;i<10;i++)await f.tick(engine);
+  f.advance(151000);await f.tick(engine);
+  assert.equal((await engine.read()).phase,'paused');
+  await engine.resume();
+  assert.equal((await engine.read()).phase,'download_ready');
+  await f.tick(engine);
+  assert.equal(f.messages.filter(m=>m==='media-download-click').length,2);
+  assert.equal(f.counts().runs,1);
+});
+
+test('resume finds the exact completed download after its ID was lost and imports it once',async()=>{
+  const f=fixture(),engine=f.create();for(let i=0;i<10;i++)await f.tick(engine);
+  f.downloads[0].state='complete';
+  f.storage.mediaBridge={...f.storage.mediaBridge,phase:'paused',resumePhase:'downloading',downloadId:undefined};
+  await engine.resume();
+  assert.equal((await engine.read()).downloadId,1);
+  await f.tick(engine);
+  assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,1);assert.equal(f.counts().imports,1);
+});
+
+test('offline app polls preserve the saved resume stage of a paused media job',async()=>{
+  const f=fixture(),engine=createMediaBridge({chrome:f.chrome,request:async()=>{throw Error('Failed to fetch')},ensureContent:async()=>{},now:()=>100000});
+  f.storage.mediaBridge={phase:'paused',resumePhase:'submitted',jobId:'media1',sentAt:1234,errors:9,message:'Failed to fetch'};
+  const before=await engine.read();
+  for(let i=0;i<4;i++)await engine.tick();
+  assert.deepEqual(await engine.read(),before);
+  await engine.resume();
+  assert.equal((await engine.read()).phase,'submitted');
+  assert.equal(f.counts().runs,0);
+});
+
+test('resume repairs legacy paused resumePhase for an idle queue and for an existing download without resending',async()=>{
+  const idle=fixture(),idleEngine=idle.create();
+  idle.storage.mediaBridge={phase:'paused',resumePhase:'paused',tabs:{},message:'Failed to fetch'};
+  await idleEngine.resume();assert.equal((await idleEngine.read()).phase,'idle');
+  await idle.tick(idleEngine);assert.equal((await idleEngine.read()).jobId,'media1');
+  const f=fixture(),engine=f.create();for(let i=0;i<10;i++)await f.tick(engine);
+  f.storage.mediaBridge={...f.storage.mediaBridge,phase:'paused',resumePhase:'paused'};
+  f.downloads[0].state='complete';await engine.resume();
+  assert.equal((await engine.read()).phase,'downloading');
+  await f.tick(engine);assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,1);assert.equal(f.counts().imports,1);
+});
+
 test('download recovery reconnects the content script and remembers this tab prompt for the next scene across restarts',async()=>{
   const f=fixture();let connected=true;
   const send=f.chrome.tabs.sendMessage;
@@ -148,4 +195,36 @@ test('download recovery reconnects the content script and remembers this tab pro
   assert.equal(f.state.lastMessage.action,'media-prepare');
   assert.equal(f.state.lastMessage.previousPrompt,'Audio 1');
   assert.equal(f.counts().tabCount,1);
+});
+
+test('closed unsent tab reopens its saved provider project, waits for loading and sends once',async()=>{
+  const f=fixture(),engine=f.create();
+  f.state.jobs[0]={...f.state.jobs[0],provider:'flow',url:'https://flow.google.com/'};
+  const page='https://flow.google.com/project/our-project';
+  f.storage.mediaBridge={phase:'opening',jobId:'media1',attempt:1,owner:'our-owner',provider:'flow',prompt:'Audio 1',
+    media:f.state.jobs[0].media,tabId:9,tabs:{flow:9},folders:{flow:'Project'},pages:{flow:page},
+    deadline:1000000,preparationDeadline:1000000,pageReadyAt:100};
+  f.chrome.tabs.get=async id=>{if(id===9)throw Error('No tab with id: 9.');return {id,url:page,status:'complete'}};
+  const create=f.chrome.tabs.create;
+  let opened;
+  f.chrome.tabs.create=async options=>{opened=options.url;return {...await create(options),url:options.url}};
+  await f.tick(engine);
+  assert.equal(opened,page);assert.deepEqual(f.messages,[]);
+  for(let i=0;i<6;i++)await f.tick(engine);
+  assert.equal(f.counts().tabCount,1);assert.equal(f.counts().runs,1);
+});
+
+test('closed submitted tab and claimed-sent setup cannot reopen a page or send another request',async()=>{
+  const f=fixture(),engine=f.create();for(let i=0;i<5;i++)await f.tick(engine);
+  assert.equal((await engine.read()).phase,'submitted');
+  f.chrome.tabs.sendMessage=async()=>{throw Error('No tab with id: 1.')};
+  await f.tick(engine);await engine.resume();await f.tick(engine);
+  assert.equal(f.counts().tabCount,1);assert.equal(f.counts().runs,1);
+  const g=fixture();
+  g.storage.mediaBridge={phase:'opening',jobId:'media1',attempt:1,owner:'our-owner',provider:'aistudio',
+    media:g.state.jobs[0].media,deadline:1000000,preparationDeadline:1000000};
+  const guarded=createMediaBridge({chrome:g.chrome,request:async(path,...rest)=>path.endsWith('/claim')?
+    {claim:{phase:'sent'}}:g.request(path,...rest),ensureContent:async()=>{},now:()=>100000});
+  await guarded.tick();
+  assert.equal((await guarded.read()).phase,'paused');assert.equal(g.counts().tabCount,0);assert.deepEqual(g.messages,[]);
 });

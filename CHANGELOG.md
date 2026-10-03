@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.16 — 2026-10-03 (local only)
+
+- Ignore Gemini's internal offscreen Quill clipboard when finding the prompt editor. Capture its full-resolution PNG download from the provider's sandbox message instead of saving a preview or leaving the file outside the project folder.
+- Read Flow's selected model from its visible caption even when its accessible label is generic. Verify Omni 1.1 Flash, Video / Ingredients, 16:9, 720p, 10 seconds and x1 before Send.
+- Preserve the media resume stage while the app is offline. Recover an exact completed download when its ID was not saved, and retry an interrupted/missing download of the existing result without regenerating it.
+- Remember the Flow project URL during setup and reopen a closed unsent tab only after checking its backend claim. Already-sent jobs never reopen generation or send again.
+- Validate actual downloads and imports using two Enzo/Friendly TTS clips plus a confirmed visual batch of one thumbnail, one scene image and two videos. Include Browser Bridge 1.1.14. Preserve other features/settings; not published to GitHub.
+
 ## 3.1.15 — 2026-10-03 (local only)
 
 - Fix AI Studio's Enzo voice picker staying open and Friendly style being repeatedly selected because its accessible name remains Style. Verify the selected voice and close the actual picker before filling narration.

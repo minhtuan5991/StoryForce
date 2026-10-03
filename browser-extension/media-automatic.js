@@ -19,9 +19,21 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
   async function resume(){
     const s=await read();
     if(s.phase!=='paused')return s;
-    let phase=s.resumePhase||'opening',download=s;
-    if(phase==='downloading'&&s.downloadId){
-      const [item]=await chrome.downloads.search({id:s.downloadId});
+    const stages=['idle','opening','prepared','submitted','download_ready','downloading'];
+    // Older workers overwrote resumePhase with "paused" when the local app
+    // stayed offline. Recover from durable evidence without granting a new Send.
+    let phase=stages.includes(s.resumePhase)?s.resumePhase:
+      s.downloadAt||s.downloadId?'downloading':s.result?'download_ready':s.sentAt?'submitted':s.jobId?'opening':'idle';
+    let download=s;
+    if(phase==='downloading'){
+      let item;
+      if(s.downloadId)[item]=await chrome.downloads.search({id:s.downloadId});
+      else if(s.downloadAt){
+        const candidates=(await chrome.downloads.search({startedAfter:new Date(s.downloadAt-1000).toISOString(),limit:50}))
+          .filter(item=>matchesDownload({...s,phase:'downloading'},item));
+        if(candidates.length===1){item=candidates[0];download={...s,downloadId:item.id}}
+        else if(candidates.length>1)throw new Error('Có nhiều lượt tải cho kết quả này. Kiểm tra các lượt tải trước khi tiếp tục.');
+      }
       if(!item||item.state==='interrupted'){
         // Retry only the existing output. Reusing the interrupted ID would
         // pause forever, while reopening preparation could spend credits twice.
@@ -51,14 +63,18 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       }
       const permit={owner:state.owner,attempt:state.attempt};
       // Validate the batch, scene and explicit approval before every UI action.
-      await request('/media/'+job.id+'/claim','POST',permit);
+      const {claim}=await request('/media/'+job.id+'/claim','POST',permit);
+      if(['opening','prepared'].includes(state.phase)&&(claim.phase==='sent'||state.sentAt))
+        throw new Error('Yêu cầu này đã được gửi. Kiểm tra tab lấy kết quả; không mở lại bước tạo media.');
       if(now()>state.deadline)throw new Error('Đã hết thời gian chờ media. Kiểm tra tab rồi bấm Tiếp tục; không tạo lại yêu cầu.');
       if(['opening','prepared'].includes(state.phase)&&now()>state.preparationDeadline)throw new Error('Chưa chuẩn bị được tab media sau 3 phút. Kiểm tra cài đặt rồi tiếp tục; chưa tạo yêu cầu mới.');
       if(state.phase==='opening'){
         let tab;
         const key=state.provider;
-        if(state.tabId){tab=await chrome.tabs.get(state.tabId)}
-        else{
+        if(state.tabId){try{tab=await chrome.tabs.get(state.tabId)}catch(error){
+          if(!/No tab with id|Invalid tab ID/i.test(error.message||''))throw error;
+        }}
+        if(!tab){
           const saved=state.tabs[key]||state.tabs[state.media.batch_id+':'+state.provider];
           if(saved){try{tab=await chrome.tabs.get(saved)}catch{}}
           if(tab&&state.provider==='flow'){
@@ -68,13 +84,24 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
             if(state.folders.flow!==state.media.folder)tab=await chrome.tabs.update(tab.id,{url:job.url,active:true});
             else if(page&&tab.url?.startsWith(page+'/edit/'))tab=await chrome.tabs.update(tab.id,{url:page,active:true});
           }
-          if(!tab)tab=await chrome.tabs.create({url:job.url,active:true});
-          state=await write({...state,tabId:tab.id,tabs:{...state.tabs,[key]:tab.id},folders:{...state.folders,[key]:state.media.folder}});
+          if(!tab){
+            const savedPage=state.folders[key]===state.media.folder&&state.pages[key];
+            // Only reopen a page we recorded for this project before Send.
+            // A submitted job always stays on its original result-collection path.
+            const hosts={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],flow:['flow.google.com','labs.google']}[key];
+            let url=job.url;
+            try{if(savedPage&&hosts.includes(new URL(savedPage).hostname))url=savedPage}catch{}
+            tab=await chrome.tabs.create({url,active:true});
+          }
+          state=await write({...state,tabId:tab.id,pageReadyAt:0,tabs:{...state.tabs,[key]:tab.id},folders:{...state.folders,[key]:state.media.folder}});
         }
         const host=new URL(tab.url||job.url).hostname;
         const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],flow:['flow.google.com','labs.google']}[state.provider];
         if(!allowed.includes(host))throw new Error('Tab media đã chuyển sang trang khác. Mở lại dịch vụ để tiếp tục.');
         if(tab.status!=='complete'||tab.pendingUrl){await write({...state,pageReadyAt:0});return}
+        // Setup may create a Flow project before it finishes selecting options.
+        // Save that URL now so closing the browser does not lose the project.
+        if(state.pages?.[key]!==tab.url)state=await write({...state,pages:{...state.pages,[key]:tab.url}});
         if(!state.pageReadyAt){await write({...state,pageReadyAt:now()});return}
         if(now()-state.pageReadyAt<pageSettleMs)return;
         await ensureContent(state.tabId);
@@ -122,7 +149,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         }else{
           if(armCapture){
             state=await write({...state,downloadTicket:crypto.randomUUID().replaceAll('-','')});
-            await armCapture(state.tabId,state.downloadTicket);
+            await armCapture(state.tabId,state.downloadTicket,state.provider);
           }
           await call(state,'download-click',{result:state.result});
         }
@@ -144,7 +171,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
           const candidates=(await chrome.downloads.search({startedAfter:new Date(state.downloadAt-1000).toISOString(),limit:50}))
             .filter(item=>matchesDownload(state,item));
           if(candidates.length===1)state=await write({...state,downloadId:candidates[0].id});
-          else if(now()-state.downloadAt>90000)throw new Error('Chưa nhận được file tải về. Kiểm tra nút tải trong tab; không tạo lại media.');
+          else if(now()-state.downloadAt>150000)throw new Error('Chưa nhận được file tải về. Kiểm tra nút tải trong tab; không tạo lại media.');
           else return;
         }
         const [item]=await chrome.downloads.search({id:state.downloadId});
@@ -160,6 +187,9 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       }
     }catch(error){
       state=await read();
+      // Polling an offline app while already paused must not replace the
+      // saved stage with "paused" and make the Continue button a permanent no-op.
+      if(state.phase==='paused')return;
       const errors=(state.errors||0)+1;
       const transient=['TAB_READ_TIMEOUT','INPUT_NOT_READY'].includes(error.code)||/message.*closed|Receiving end does not exist|Could not establish connection|Failed to fetch/i.test(error.message||'');
       if(transient&&errors<=8&&now()<state.deadline){

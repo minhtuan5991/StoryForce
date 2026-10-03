@@ -61,7 +61,7 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
 async function ensureContent(tabId){
   try{
     const response=await withTabReadDeadline(()=>chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'}));
-    if(response?.version==='1.1.13')return;
+    if(response?.version==='1.1.14')return;
   }catch(error){
     // Do not pile up injections in a hung renderer. A disconnected listener
     // can be reinstalled, but a timed-out read waits for the next collection tick.
@@ -80,7 +80,7 @@ async function captureRaw(tabId,target){
 }
 const automatic=createAutomaticBridge({chrome,request,ensureContent,captureRaw});
 const mediaAutomatic=createMediaBridge({chrome,request,ensureContent,
-  armCapture:async(tabId,ticket)=>withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},world:'MAIN',func:armDownloadCapture,args:[ticket]})),
+  armCapture:async(tabId,ticket,provider)=>withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},world:'MAIN',func:armDownloadCapture,args:[ticket,provider]})),
   readCapture:async(tabId,ticket)=>{
     const results=await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},func:readDownloadCapture,args:[ticket]}));
     return results[0]?.result||'';

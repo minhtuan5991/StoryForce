@@ -64,3 +64,39 @@ test('after extension reload, the next scene replaces only the exact prompt reco
   await assert.rejects(f.window.storyForgeMediaExecute(message),/không xóa/);
   assert.equal(field.value,'My unsent changes.');
 });
+
+test('Gemini ignores its offscreen Quill clipboard but still refuses two actual prompt editors',async()=>{
+  const dom=new JSDOM('<rich-textarea><div contenteditable="true" class="ql-editor" role="textbox" aria-label="Nhập câu lệnh cho Gemini"></div><div contenteditable="true" class="ql-clipboard" style="position:absolute;left:-100000px;width:0;height:1px"></div></rich-textarea>',{url:'https://gemini.google.com/app',runScripts:'outside-only'});
+  const {window}=dom,d=window.document;
+  window.HTMLElement.prototype.getClientRects=()=>[{}];
+  Object.defineProperty(d,'readyState',{value:'complete'});
+  let now=1000;window.Date.now=()=>now;
+  window.eval(adapter);
+  const setup={provider:'gemini',action:'media-setup',jobId:'image-one'};
+  assert.equal((await window.storyForgeMediaExecute(setup)).ready,false);
+  now+=2000;assert.equal((await window.storyForgeMediaExecute(setup)).ready,true);
+  const second=d.createElement('div');second.setAttribute('contenteditable','true');second.setAttribute('role','textbox');d.body.append(second);
+  await assert.rejects(window.storyForgeMediaExecute(setup),/duy nhất/);
+});
+
+test('Flow verifies the visible Omni model caption behind its generic accessible label without reopening the model menu',async()=>{
+  const dom=new JSDOM(`<textarea></textarea><button id="trigger" aria-label="Điều kiện kích hoạt cài đặt">Video · 720p · 10 giây x1</button>
+    <div class="cdk-overlay-pane" id="settings">
+      <button aria-checked="true">Video</button><button aria-checked="true">Thành phần</button>
+      <button aria-checked="true">16:9</button><button aria-label="Chọn nhóm mô hình" id="model"><span>Omni 1.1 Flash <mat-icon aria-hidden="true">arrow_drop_down</mat-icon></span></button>
+      <button>360p</button><button aria-checked="true">720p</button><button aria-checked="true">10 giây</button><button aria-checked="true">x1</button>
+    </div>`,{url:'https://flow.google.com/project/test',runScripts:'outside-only'});
+  const {window}=dom,d=window.document;
+  window.HTMLElement.prototype.getClientRects=()=>[{}];
+  Object.defineProperty(d,'readyState',{value:'complete'});
+  let now=1000,modelsOpened=0,closed=0;window.Date.now=()=>now;
+  d.querySelector('#model').onclick=()=>modelsOpened++;
+  d.querySelector('#trigger').onclick=()=>{closed++;d.querySelector('#settings').remove()};
+  window.eval(adapter);
+  const setup={provider:'flow',action:'media-setup',jobId:'video-one'};
+  assert.equal((await window.storyForgeMediaExecute(setup)).ready,false);
+  assert.equal(closed,1);assert.equal(modelsOpened,0);
+  assert.equal((await window.storyForgeMediaExecute(setup)).ready,false);
+  now+=2000;assert.equal((await window.storyForgeMediaExecute(setup)).ready,true);
+  assert.equal(closed,1);assert.equal(modelsOpened,0);
+});
