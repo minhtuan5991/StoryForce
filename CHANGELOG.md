@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.15 — 2026-10-03 (local only)
+
+- Fix AI Studio's Enzo voice picker staying open and Friendly style being repeatedly selected because its accessible name remains Style. Verify the selected voice and close the actual picker before filling narration.
+- Remember the exact prompt prepared by Bridge for each media tab across worker/extension restarts. Replace only that original prompt when moving to the next scene; preserve user edits.
+- Reconnect the content listener before downloading an existing output after extension reload. Explicitly resuming an interrupted download retrieves the existing result without generating again; keep completed and in-progress downloads intact.
+- Explain Comet's per-file Save As preference and the Downloads setting needed for unattended downloads. Include Browser Bridge 1.1.13. Preserve all other features/settings; not published to GitHub.
+
 ## 3.1.14 — 2026-10-03 (local only)
 
 - Recover unescaped quoted dialogue and literal line breaks inside otherwise complete AI JSON strings without changing evidence, issues, severity or references. Continue rejecting missing separators, incomplete structure and ambiguous quoting; keep existing schema and draft/attempt checks.

@@ -3,12 +3,11 @@
 (() => {
   const visible=e=>!!e&&!!e.getClientRects().length&&!e.closest('[inert],[aria-hidden="true"]')&&getComputedStyle(e).visibility!=='hidden';
   const norm=s=>String(s||'').replace(/\s+/g,' ').trim();
-  const label=e=>{
-    const aria=e.getAttribute('aria-label')||e.getAttribute('title')||e.getAttribute('data-tooltip');
-    if(aria)return norm(aria);
+  const caption=e=>{
     const clone=e.cloneNode(true);clone.querySelectorAll('mat-icon,svg,[aria-hidden="true"]').forEach(icon=>icon.remove());
     return norm(clone.textContent)||norm(e.innerText||e.textContent);
   };
+  const label=e=>norm(e.getAttribute('aria-label')||e.getAttribute('title')||e.getAttribute('data-tooltip'))||caption(e);
   const controls=()=>[...document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],a,[role="tab"]')].filter(visible);
   const enabled=e=>visible(e)&&!e.disabled&&e.getAttribute('aria-disabled')!=='true';
   function find(pattern,root=document){return [...root.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],a,[role="tab"]')].filter(enabled).find(e=>pattern.test(label(e)))}
@@ -48,6 +47,25 @@
   function setupStudio(){
     const create=find(/^Create new dialog$|^Tạo hộp thoại mới$/);
     if(create)return clickOne(create,'Đang tạo hộp thoại AI Studio…');
+    // AI Studio keeps its voice picker open after a selection. The speech
+    // badge behind it is inert, so verify the selected voice inside the picker
+    // and close that picker before reading the badge again.
+    const drawer=[...document.querySelectorAll('[role="dialog"],[id^="mat-mdc-dialog-"],aside,ms-speaker-settings')].find(e=>
+      visible(e)&&e.querySelector('[data-voice-name]')&&/Speaker settings|Cài đặt người nói/.test(e.innerText||e.textContent||''));
+    if(drawer){
+      const selected=drawer.querySelector('[data-voice-name="Enzo"].selected')||find(/^Enzo\s*\(Current\)$/i,drawer);
+      if(selected){
+        const close=find(/^Close(?: panel)?$|^close$|^Đóng$|Close speaker settings/,drawer);
+        if(close)return clickOne(close,'Đang đóng bảng giọng đọc Enzo…');
+        throw new Error('Đã chọn Enzo nhưng chưa thấy nút đóng bảng giọng đọc.');
+      }
+      const card=drawer.querySelector('[data-voice-name="Enzo"]');
+      const option=card?.querySelector('button.voice-card-content')||find(/^Enzo$/,drawer);
+      if(option)return clickOne(option,'Đã chọn Enzo, đang xác minh…');
+      const search=[...drawer.querySelectorAll('input')].find(e=>visible(e)&&/search.*voices|tìm.*giọng/i.test(e.placeholder||''));
+      if(search&&search.value!=='Enzo'){setEditor(search,'Enzo');return {ready:false,message:'Đang tìm giọng Enzo…'}}
+      throw Object.assign(new Error('Đang chờ danh sách giọng Enzo'),{code:'INPUT_NOT_READY'});
+    }
     const speaker=find(/^Speaker 1\s*[-–]\s*/);
     // Voice selection is not complete until the speech-block badge says Enzo.
     if(!speaker||!/^Speaker 1\s*[-–]\s*Enzo$/.test(label(speaker))){
@@ -58,20 +76,19 @@
       if(speaker)return clickOne(speaker,'Đang mở lựa chọn giọng Enzo…');
       throw Object.assign(new Error('Đang chờ hộp thoại giọng đọc'),{code:'INPUT_NOT_READY'});
     }
-    // New AI Studio leaves its Speaker settings drawer open after selection.
-    const drawer=[...document.querySelectorAll('[role="dialog"],aside,ms-speaker-settings')].find(e=>visible(e)&&/Speaker settings|Cài đặt người nói/.test(e.innerText||''));
-    const close=drawer&&find(/^Close$|^close$|^Đóng$|Close speaker settings/,drawer);
-    if(close)return clickOne(close,'Đang đóng bảng giọng đọc…');
     const styleBadge=controls().find(e=>/^(?:Style|Phong cách|Neutral|Serious|Casual|Friendly)$/.test(label(e))&&
-      !e.closest('[role="menu"],[role="listbox"]')&&e.getAttribute('role')!=='option'&&e.getAttribute('role')!=='menuitem');
-    if(!styleBadge||label(styleBadge)!=='Friendly'){
+      !e.closest('[role="menu"],[role="listbox"],.cdk-overlay-pane')&&e.getAttribute('role')!=='option'&&e.getAttribute('role')!=='menuitem');
+    // The badge's accessible name stays "Style" after selection; its visible
+    // caption carries "Friendly". Do not reopen an already-selected style.
+    if(!styleBadge||caption(styleBadge)!=='Friendly'){
       const option=exact('Friendly',settingsPanel());
       if(option)return clickOne(option,'Đang chọn style Friendly…');
       const style=styleBadge;
       if(style)return clickOne(style,'Đang mở lựa chọn style Friendly…');
       throw new Error('Không thấy style Friendly. Kiểm tra bảng Speaker/Style của AI Studio.');
     }
-    const popup=[...document.querySelectorAll('[role="menu"],[role="listbox"]')].find(visible);
+    const popup=[...document.querySelectorAll('[role="menu"],[role="listbox"],.cdk-overlay-pane')].find(e=>visible(e)&&
+      !e.contains(styleBadge)&&!!exact('Friendly',e));
     if(popup){styleBadge.click();return {ready:false,message:'Đang đóng menu style…'}}
     return {ready:true};
   }
@@ -178,7 +195,8 @@
     if(action==='media-prepare'){
       if(busy(provider))throw Object.assign(new Error('Dịch vụ vẫn đang tạo media'),{code:'INPUT_NOT_READY'});
       const field=editor(),existing=text(field);
-      if(existing&&existing!==norm(message.prompt)&&existing!==owned.lastPrompt)throw new Error('Ô nhập có nội dung bạn đang soạn. Bridge không xóa nội dung đó.');
+      if(existing&&existing!==norm(message.prompt)&&existing!==owned.lastPrompt&&existing!==norm(message.previousPrompt))
+        throw new Error('Ô nhập có nội dung bạn đang soạn. Bridge không xóa nội dung đó.');
       const baseline=snapshot(provider);
       owned.baselineNodes=mediaItems(provider);
       setEditor(field,message.prompt);
@@ -230,8 +248,8 @@
       // a low-resolution preview URL. The worker captures its exact URL.
       const href=button.tagName==='A'&&button.getAttribute('download')!==null?button.href:null;
       // Audio/video players expose the actual generated media, including blobs.
-      // Download it through chrome.downloads(saveAs:false), avoiding AI Studio's
-      // Save As picker and Chrome's "ask where to save" preference.
+      // Download it through chrome.downloads(saveAs:false). Comet also needs
+      // its per-file "ask where to save" preference disabled for unattended use.
       return {url:href||source(node),referrer:location.href,direct:provider==='aistudio'||!!href};
     }
     if(action==='media-download-click'){

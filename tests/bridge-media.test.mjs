@@ -11,7 +11,7 @@ function fixture(){
   const chrome={storage:{local:{get:async k=>({[k]:structuredClone(storage[k])}),set:async values=>Object.assign(storage,structuredClone(values))}},
     tabs:{create:async()=>({id:++tabCount,url:makeJob(1).url,status:state.tabStatus}),get:async id=>({id,url:makeJob(1).url,status:state.tabStatus}),
       sendMessage:async(id,m)=>{
-        messages.push(m.action);
+        messages.push(m.action);state.lastMessage=m;
         if(m.action==='media-setup'||m.action==='media-ready')return {ok:true,ready:state.ready};
         if(m.action==='media-prepare')return {ok:true,baseline:['old']};
         if(m.action==='media-send'){runs++;if(state.lostRun)throw Error('message channel closed');return {ok:true}}
@@ -99,4 +99,53 @@ test('lost download acknowledgement recovers the exact download without another 
   engine=f.create();for(let i=0;i<3;i++)await f.tick(engine);
   assert.equal(f.downloads.length,1);assert.equal(f.counts().runs,1);
   assert.equal((await engine.read()).downloadId,1);
+});
+
+test('resume after cancelling Save As downloads the existing result and imports it without generating twice',async()=>{
+  const f=fixture();let engine=f.create();for(let i=0;i<10;i++)await f.tick(engine);
+  f.downloads[0].state='interrupted';f.downloads[0].error='USER_CANCELED';
+  await f.tick(engine);
+  assert.equal((await engine.read()).phase,'paused');
+  assert.match((await engine.read()).message,/Settings → Downloads/);
+  engine=f.create();await engine.resume();
+  assert.equal((await engine.read()).phase,'download_ready');
+  await f.tick(engine);
+  assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,2);
+  assert.equal((await engine.read()).downloadId,2);
+  f.downloads[1].state='complete';await f.tick(engine);
+  assert.equal(f.counts().imports,1);
+});
+
+test('resume preserves a completed download for import and does not replace an in-progress download',async()=>{
+  for(const state of ['complete','in_progress']){
+    const f=fixture(),engine=f.create();for(let i=0;i<10;i++)await f.tick(engine);
+    f.storage.mediaBridge={...f.storage.mediaBridge,phase:'paused',resumePhase:'downloading'};
+    f.downloads[0].state=state;
+    await engine.resume();await f.tick(engine);
+    assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,1);
+    assert.equal(f.counts().imports,state==='complete'?1:0);
+  }
+});
+
+test('resume is a no-op during an active download',async()=>{
+  const f=fixture(),engine=f.create();for(let i=0;i<10;i++)await f.tick(engine);
+  const before=await engine.read();await engine.resume();
+  assert.deepEqual(await engine.read(),before);
+});
+
+test('download recovery reconnects the content script and remembers this tab prompt for the next scene across restarts',async()=>{
+  const f=fixture();let connected=true;
+  const send=f.chrome.tabs.sendMessage;
+  f.chrome.tabs.sendMessage=async(id,m)=>{assert.ok(connected);return send(id,m)};
+  const create=()=>createMediaBridge({chrome:f.chrome,request:f.request,ensureContent:async()=>{connected=true},now:()=>100000,pageSettleMs:0});
+  let engine=create();
+  for(let i=0;i<4;i++)await engine.tick();
+  assert.equal((await engine.read()).phase,'download_ready');
+  connected=false;engine=create();await engine.tick();
+  f.downloads[0].state='complete';await engine.tick();
+  assert.equal((await engine.read()).prompts[1],'Audio 1');
+  connected=false;engine=create();await engine.tick();await engine.tick();
+  assert.equal(f.state.lastMessage.action,'media-prepare');
+  assert.equal(f.state.lastMessage.previousPrompt,'Audio 1');
+  assert.equal(f.counts().tabCount,1);
 });

@@ -9,15 +9,29 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
   const enabled=async()=>!!(await chrome.storage.local.get('autoBridge')).autoBridge?.enabled;
   const call=async(state,action,extra={})=>{
     const result=await withTabReadDeadline(()=>chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action:'media-'+action,
-      provider:state.provider,jobId:state.jobId,prompt:state.prompt,media:state.media,baseline:state.baseline,...extra}));
+      provider:state.provider,jobId:state.jobId,prompt:state.prompt,previousPrompt:state.prompts?.[state.tabId],media:state.media,baseline:state.baseline,...extra}));
     if(!result?.ok)throw Object.assign(new Error(result?.error||'Không kết nối được tab tạo tài nguyên'),{code:result?.code});
     return result;
   };
   const status=async(state,message)=>{
     if(state.message!==message){await write({...state,message});await request('/jobs/'+state.jobId+'/status','POST',{step:message})}
   };
-  async function resume(){const s=await read();return write({...s,phase:s.resumePhase||'opening',deadline:now()+30*60*1000,
-    preparationDeadline:now()+180000,errors:0,message:'Đang tiếp tục lấy tài nguyên; yêu cầu đã gửi không được gửi lại.'})}
+  async function resume(){
+    const s=await read();
+    if(s.phase!=='paused')return s;
+    let phase=s.resumePhase||'opening',download=s;
+    if(phase==='downloading'&&s.downloadId){
+      const [item]=await chrome.downloads.search({id:s.downloadId});
+      if(!item||item.state==='interrupted'){
+        // Retry only the existing output. Reusing the interrupted ID would
+        // pause forever, while reopening preparation could spend credits twice.
+        phase='download_ready';
+        download={...s,downloadId:undefined,downloadInitiated:false,downloadTicket:undefined,downloadAt:undefined,downloadUrl:undefined};
+      }
+    }
+    return write({...download,phase,deadline:now()+30*60*1000,preparationDeadline:now()+180000,errors:0,
+      message:'Đang tiếp tục lấy tài nguyên; yêu cầu đã gửi không được gửi lại.'});
+  }
   async function tick(){
     if(busy||!await enabled())return;
     busy=true;
@@ -25,12 +39,12 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
     try{
       const {items}=await request('/jobs');
       let job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt&&j.media);
-      if(state.jobId&&!job){state=await write({phase:'idle',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},message:'Đã lưu hoặc dừng tác vụ media trước.'})}
+      if(state.jobId&&!job){state=await write({phase:'idle',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},prompts:state.prompts||{},message:'Đã lưu hoặc dừng tác vụ media trước.'})}
       if(state.phase==='paused')return;
       if(!job){
         job=items.find(j=>j.media);
         if(!job)return;
-        state=await write({phase:'opening',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},jobId:job.id,attempt:job.attempt,provider:job.provider,
+        state=await write({phase:'opening',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},prompts:state.prompts||{},jobId:job.id,attempt:job.attempt,provider:job.provider,
           prompt:job.prompt,media:job.media,owner:crypto.randomUUID(),deadline:now()+30*60*1000,preparationDeadline:now()+180000});
         const {claim}=await request('/media/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
         if(claim.phase==='sent')throw new Error('Yêu cầu đã gửi từ một phiên khác. Kiểm tra tab trước khi tiếp tục.');
@@ -68,7 +82,8 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         if(!setup.ready){await status(state,setup.message||'Đang chờ trang và cài đặt media sẵn sàng…');return}
         const prepared=await call(state,'prepare');
         const page=await chrome.tabs.get(state.tabId);
-        state=await write({...state,phase:'prepared',baseline:prepared.baseline,pages:{...state.pages,[state.provider]:page.url},message:'Đã nhập nội dung, đang chờ nút tạo khả dụng…'});
+        state=await write({...state,phase:'prepared',baseline:prepared.baseline,pages:{...state.pages,[state.provider]:page.url},
+          prompts:{...state.prompts,[state.tabId]:state.prompt},message:'Đã nhập nội dung, đang chờ nút tạo khả dụng…'});
         return;
       }
       if(state.phase==='prepared'){
@@ -92,8 +107,12 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       }
       if(state.phase==='download_ready'){
         if(!await enabled())return;
+        // Reloading the extension disconnects the old content listener even
+        // though the generated audio/image/video is still present in the tab.
+        await ensureContent(state.tabId);
         const download=await call(state,'download-info',{result:state.result});
         state=await write({...state,phase:'downloading',downloadAt:now(),downloadUrl:download.url,referrer:download.referrer,
+          prompts:{...state.prompts,[state.tabId]:state.prompt},
           message:'Đang tải '+state.media.filename+'…'});
         if(download.direct){
           const id=await chrome.downloads.download({url:download.url,filename:state.media.folder+'/'+state.media.filename,
@@ -130,11 +149,14 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         }
         const [item]=await chrome.downloads.search({id:state.downloadId});
         if(!item)throw new Error('Không tìm thấy lượt tải media này');
-        if(item.state==='interrupted')throw new Error('Tải bị gián đoạn: '+(item.error||'kiểm tra trình duyệt'));
+        if(item.state==='interrupted')throw new Error(item.error==='USER_CANCELED'
+          ? 'Lượt tải đã bị hủy. Nếu Comet hiện Save As, tắt “Ask where to save each file before downloading” trong Settings → Downloads, rồi bấm Tiếp tục tải tài nguyên. Bridge sẽ tải lại kết quả đã tạo, không gửi lại prompt.'
+          : 'Tải bị gián đoạn: '+(item.error||'kiểm tra trình duyệt'));
         if(item.state!=='complete')return;
         await request('/media/'+job.id+'/result','POST',{...permit,download_id:item.id,download_state:item.state,path:item.filename});
         // Only clear our own previous text once the completed file is imported.
-        await write({phase:'idle',tabs:state.tabs,pages:state.pages,folders:state.folders,message:'Đã tải và gán '+state.media.filename+'. Đang chuyển sang scene tiếp theo…'});
+        await write({phase:'idle',tabs:state.tabs,pages:state.pages,folders:state.folders,prompts:state.prompts,
+          message:'Đã tải và gán '+state.media.filename+'. Đang chuyển sang scene tiếp theo…'});
       }
     }catch(error){
       state=await read();

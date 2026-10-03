@@ -60,6 +60,8 @@ Không bypass đăng nhập, CAPTCHA, quota hay paywall. Đóng popup trong lúc
 ### Tự động tạo và tải tài nguyên (3.1.12)
 
 - Mở app và Bridge đã ghép nối, bật chế độ tự động của Bridge và đăng nhập AI Studio, Gemini, Flow bằng trình duyệt thông thường. Bridge cần quyền **Downloads / Tải xuống**; bản Bridge cũ chưa tự tải media.
+- Trong Comet, mở **Settings → Downloads** và tắt **Ask where to save each file before downloading** (Hỏi nơi lưu từng file). Khi bật tùy chọn này, Comet có thể vẫn hiện Save As dù Bridge yêu cầu tải tự động. Thiết lập này áp dụng cho các lượt tải của trình duyệt.
+- Nếu đã hủy hộp thoại lưu, tắt tùy chọn trên rồi bấm **Tiếp tục tải tài nguyên** trong popup Bridge. Bridge tải lại kết quả có sẵn; không tạo lại âm thanh/ảnh/video.
 - Trong **Xưởng giọng đọc**, sau khi đã khóa truyện và chia đoạn, bấm **Tạo và tải giọng đọc**. Không cần xác nhận số lượng âm thanh. Bridge chờ AI Studio tải xong, mở Create new dialog, chọn **Enzo / Friendly**, tạo từng đoạn và tải `tts_001.wav`, `tts_002.wav`... Dùng lại một tab, chỉ thay phần lời kể do Bridge nhập.
 - Trong **Đạo diễn hình ảnh**, chọn số lượng ảnh/video và tạo kế hoạch cảnh trước. Bấm **Xem và xác nhận số ảnh/video**, xem số lượng cuối cùng rồi bấm **Xác nhận số lượng và tạo tài nguyên**. Chưa xác nhận thì không tạo cả thumbnail lẫn scene. Sau xác nhận, Bridge tạo thumbnail trước, tiếp tục các scene theo thứ tự, dùng một tab Gemini và một tab Flow.
 - Cài đặt Flow: **Video / Thành phần / 16:9 / Omni 1.1 Flash / 720p / 10 giây / x1**. Flow trừ tín dụng theo mức đang hiển thị trên trang. Nếu không tìm được model/cài đặt hoặc xuất hiện CAPTCHA/đăng nhập, Bridge tạm dừng để bạn xử lý.

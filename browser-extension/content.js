@@ -4,7 +4,7 @@
   if (globalThis.storyForgeListener) {
     try { chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener); } catch {}
   }
-  globalThis.storyForgeVersion = '1.1.11';
+  globalThis.storyForgeVersion = '1.1.13';
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
     (el.checkVisibility ? el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) : getComputedStyle(el).visibility!=='hidden');
@@ -103,7 +103,7 @@
   const inputText=element=>normalizeText(element.value??editorText(element));
   let readiness;
   async function execute(message) {
-    if(message.action==='ping')return {version:'1.1.11'};
+    if(message.action==='ping')return {version:'1.1.13'};
     if(message.action?.startsWith('media-'))return globalThis.storyForgeMediaExecute(message);
     check();
     const a = adapter();
