@@ -34,6 +34,8 @@ def test_saved_counts_reach_prompt_and_output_and_existing_scene_labels(client,p
     with client.app.state.database.session() as db:
         j=db.query(Job).filter_by(project_id=project['id'],kind='visual_director').one()
         assert 'exactly 3 IMAGE scenes and 2 VIDEO scenes' in j.prompt
+        assert 'Reserve at least 10 seconds of corresponding narration' in j.prompt
+        assert 'at least 25 words' in j.prompt
     assert client.patch(base+'/visual-options',json={'mode':'minimum'}).status_code==200
     assert len(client.get(base).json()['scenes'])==5  # Selection does not silently regenerate or detach media.
 

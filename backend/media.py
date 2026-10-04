@@ -15,6 +15,7 @@ from uuid import uuid4
 from pathlib import Path
 from .config import APP_ROOT, RESOURCE_ROOT, safe_path
 from .intelligence import sentence_units, words
+from .visual_planning import balance_scene_ranges, DEFAULT_VIDEO_SECONDS
 
 MEDIA_FOLDERS = {"audio": "audio", "image": "images", "video": "videos", "music": "music", "ambient": "ambient", "sfx": "sfx"}
 EXTENSIONS = {".wav": "audio", ".mp3": "audio", ".m4a": "audio", ".flac": "audio", ".ogg": "audio", ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".mp4": "video", ".mov": "video", ".webm": "video"}
@@ -152,13 +153,43 @@ def timeline_from_audio(chunks: list[dict], scenes: list[dict], assets: list[dic
         return offset
 
     ordered = sorted(scenes, key=lambda s: s["number"])
+    policy = all(s.get('continuity', {}).get('timing_policy', {}).get('version') == 1 for s in ordered) and bool(ordered)
+    spans = None
+    if policy:
+        # Existing projects retain their fixed video anchors. New plans reserve
+        # narration before the first actual sync, then keep synced video starts.
+        count = ordered[0]['continuity']['timing_policy']['narration_word_count']
+        if count > word_offset:
+            raise ValueError('The scene plan no longer matches the narration. Regenerate it for the current story.')
+        clock = [at_word(i) for i in range(count + 1)]
+        asset_map = {a['id']: a for a in (assets or [])}
+        minimums = []
+        for scene in ordered:
+            asset = asset_map.get(scene.get('asset_id'))
+            minimums.append(float(asset.get('metadata_json', {}).get('video_duration') or asset.get('duration') or DEFAULT_VIDEO_SECONDS)
+                            if asset and asset['kind'] == 'video'
+                            else 0 if asset and asset['kind'] == 'image'
+                            else DEFAULT_VIDEO_SECONDS if scene['visual_type'] == 'VIDEO' else 0)
+        fixed = any(asset_map.get(s.get('asset_id'), {}).get('kind') == 'video' and (s.get('duration') or 0) > 0 for s in ordered)
+        if fixed:
+            spans = [{'start_word': s['start_word'], 'end_word': s['end_word'],
+                      'narration_duration': at_word(s['end_word']) - at_word(s['start_word'])} for s in ordered]
+            for scene, span, minimum in zip(ordered, spans, minimums):
+                if span['narration_duration'] + 1e-7 < minimum:
+                    raise ValueError(f"Scene {scene['number']} needs at least {minimum:g} seconds of corresponding narration. Review the scene plan or narration; the synced video start will not be moved.")
+        else:
+            spans = balance_scene_ranges(ordered, clock, minimums)
+        ordered = [{**scene, 'start_word': span['start_word'], 'end_word': span['end_word']} for scene, span in zip(ordered, spans)]
     timeline_scenes = []
     for i, scene in enumerate(ordered):
         start = at_word(scene["start_word"])
         end = offset if i == len(ordered)-1 else at_word(scene["end_word"])
         if end <= start:
             raise ValueError("Visual plan contains an empty narration range")
-        timeline_scenes.append({"id": scene["id"], "number": scene["number"], "offset": start, "duration": end-start})
+        row = {"id": scene["id"], "number": scene["number"], "offset": start, "duration": end-start}
+        if spans is not None:
+            row.update(spans[i])
+        timeline_scenes.append(row)
     if assets is not None:
         timeline_scenes = fit_visual_timeline(ordered, timeline_scenes, assets, offset, ending_asset_id)
     return {"duration": round(offset, 6), "chunks": timeline_chunks, "scenes": timeline_scenes,

@@ -4,6 +4,7 @@
 
 - Leave Flow's owned clip editor with Xong / Done and wait for the project grid before downloading. Do not wait for a VIDEO element in its canvas player or mistake the editor timeline for a running generation.
 - Persist the selected result across worker/content reloads, scope Download / More options to that result, and defer capture while the editor is closing. Resume existing results without sending another generation request.
+- Reserve at least 10 seconds of corresponding narration for each new video scene. Rebalance contiguous word ranges using WPM initially and measured audio at the first sync, including the native duration of an assigned video. Images absorb the remaining time; reject insufficient narration without trimming/looping video or moving synced video starts. Exclude the separate outro from the story's video budget.
 - Include Browser Bridge 1.1.15. Preserve other features and settings; not published to GitHub.
 
 ## 3.1.17 — 2026-10-03 (local only)

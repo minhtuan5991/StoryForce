@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from collections import Counter
@@ -15,7 +16,7 @@ from .schemas import StoryDNA, AuditResult, AIIssue, Verification
 from .intelligence import digest, words, tokens, novelty_check, duration_profile, chunk_text
 from .providers import MockProvider, BrowserBridgeProvider, PROVIDERS
 from .production_extras import outro_chunk
-from .visual_planning import visual_budget, validate_visual_output
+from .visual_planning import visual_budget, validate_visual_output, narration_clock, balance_scene_ranges, DEFAULT_VIDEO_SECONDS
 from .youtube_metadata import YouTubeMetadata, metadata_context, metadata_fingerprint, upload_text
 from .media import project_folder, probe, timeline_from_audio, write_subtitles, render_project, safe_path, validate_assets, render_inputs_hash, render_options
 
@@ -169,6 +170,8 @@ class Workflow:
             payload.setdefault("count", config["default_premise_count"])
         if job.kind == 'visual_director' and project:
             payload = {**payload, **visual_budget(serialize(project),config,payload)}
+            payload['video_seconds'] = DEFAULT_VIDEO_SECONDS
+            payload['minimum_video_words'] = math.ceil(DEFAULT_VIDEO_SECONDS * project.wpm / 60)
         return {"project": serialize(project) if project else {}, "channel": serialize(channel) if channel else {}, "source": serialize(source) if source else {},
                 "selected_premise": serialize(db.get(Premise, project.selected_premise_id)) if project and project.selected_premise_id else {},
                 "artifacts": artifacts, "premises": [serialize(p) for p in db.query(Premise).filter_by(project_id=job.project_id).all()] if project else [],
@@ -372,7 +375,8 @@ class Workflow:
                     budget = context['payload']
                     job.prompt = (f"Required visual budget: exactly {budget['image_count']} IMAGE scenes and {budget['video_count']} VIDEO scenes, in narration order. "
                                   "Use scene_001, scene_002, etc. Select the main story beats, concrete actions, reveals and climax; avoid redundant angles. "
-                                  "Images can hold longer to cover narration; each video plays once at native duration without looping. Keep image coverage between separated video moments. "
+                                  f"Reserve at least {DEFAULT_VIDEO_SECONDS} seconds of corresponding narration for every VIDEO scene (at least {budget['minimum_video_words']} words at the project's WPM before real audio is available). "
+                                  "Choose video moments with enough narration. Images absorb the remaining time; each video plays once at native duration without looping. Keep image coverage between separated video moments. "
                                   "This budget overrides duration_profile scene counts and video_ratio.\n\n" + job.prompt)
                 if job.kind == "story_bible":
                     job.prompt = "Develop only INPUT JSON.selected_premise, the user's explicit choice. Do not choose another candidate.\n\n" + job.prompt
@@ -602,11 +606,18 @@ class Workflow:
             if not 1 <= len(items) <= 200:
                 raise ValueError("Visual plan requires 1–200 scenes")
             validate_visual_output(items,visual_budget(serialize(p),settings_for(db,db.get(Channel,p.channel_id)),self.context(db,job)['payload']))
-            db.query(Scene).filter_by(project_id=p.id).delete()
             all_words = words(p.draft)
-            for i, item in enumerate(items):
-                start, end = round(len(all_words)*i/len(items)), round(len(all_words)*(i+1)/len(items))
+            chunks = [serialize(c) for c in db.query(Chunk).filter_by(project_id=p.id, story_version=p.story_version)]
+            clock, timing = narration_clock(p.draft, p.wpm, chunks)
+            ranges = balance_scene_ranges(items, clock)
+            # Validate time before replacing a plan that may already own media.
+            db.query(Scene).filter_by(project_id=p.id).delete()
+            for i, (item, span) in enumerate(zip(items, ranges)):
+                start, end = span['start_word'], span['end_word']
                 item['scene_id'] = f'scene_{i+1:03}'
+                item['timing_policy'] = {'version': 1, 'video_seconds': DEFAULT_VIDEO_SECONDS, 'wpm': p.wpm, 'narration_word_count': len(all_words)}
+                item['narration_duration'] = span['narration_duration']
+                item['narration_timing'] = timing
                 db.add(Scene(project_id=p.id, story_version=p.story_version, number=i+1, scene_key=item['scene_id'], text=" ".join(all_words[start:end]), start_word=start, end_word=end, visual_type=item.get("visual_type", "IMAGE"), prompt=item["prompt"], negative_prompt=item.get("negative_prompt", "No text or logos"), continuity={k:v for k,v in item.items() if k not in ("prompt", "negative_prompt")}))
             p.stage = "PRODUCTION"
 
@@ -678,8 +689,13 @@ class Workflow:
                 timeline = timeline_from_audio([serialize(c) for c in chunks], [serialize(s) for s in scenes], [serialize(a) for a in assets], render_options(serialize(p))['ending_asset_id'])
                 for c, t in zip(chunks, timeline["chunks"]):
                     c.offset = t["offset"]
+                draft_words = words(p.draft)
                 for s, t in zip(scenes, timeline["scenes"]):
                     s.offset, s.duration = t["offset"], t["duration"]
+                    if 'start_word' in t:
+                        s.start_word, s.end_word = t['start_word'], t['end_word']
+                        s.text = ' '.join(draft_words[s.start_word:s.end_word])
+                        s.continuity = {**s.continuity, 'narration_duration': t['narration_duration'], 'narration_timing': 'actual'}
                 folder = project_folder(self.root,p.id)
                 write_subtitles([serialize(c) for c in chunks], folder/"subtitles")
                 (folder/"timeline.json").write_text(json.dumps(timeline, indent=2), encoding="utf-8")
