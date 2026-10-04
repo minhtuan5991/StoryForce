@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.18 — 2026-10-04 (local only)
+
+- Leave Flow's owned clip editor with Xong / Done and wait for the project grid before downloading. Do not wait for a VIDEO element in its canvas player or mistake the editor timeline for a running generation.
+- Persist the selected result across worker/content reloads, scope Download / More options to that result, and defer capture while the editor is closing. Resume existing results without sending another generation request.
+- Include Browser Bridge 1.1.15. Preserve other features and settings; not published to GitHub.
+
 ## 3.1.17 — 2026-10-03 (local only)
 
 - Add Delete channel on channel cards and in the channel studio. Preview all owned projects before confirming deletion, preserve library sources, and optionally remove private project media using the existing shared-file protections. Active work and stale confirmations block deletion.

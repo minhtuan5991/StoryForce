@@ -100,3 +100,148 @@ test('Flow verifies the visible Omni model caption behind its generic accessible
   now+=2000;assert.equal((await window.storyForgeMediaExecute(setup)).ready,true);
   assert.equal(closed,1);assert.equal(modelsOpened,0);
 });
+
+function flowResult(){
+  const dom=new JSDOM('',{url:'https://flow.google.com/project/test',runScripts:'outside-only'});
+  const {window}=dom,d=window.document;
+  window.HTMLElement.prototype.getClientRects=function(){return this.style.display==='none'?[]:[{}]};
+  Object.defineProperty(d,'readyState',{value:'complete'});
+  let now=1000,opened=0,done=0,downloaded=0,wrong=0,more=0;
+  window.Date.now=()=>now;
+  const thumbnail='https://media.test/new.jpg';
+  function grid(withControls=false){
+    d.body.innerHTML=`<main><article><img alt="Hình thu nhỏ của video đã tạo" src="https://media.test/old.jpg"><button id="old-download">Tải xuống</button></article>
+      <article id="new-card"><img id="new" alt="Hình thu nhỏ của video đã tạo" src="${thumbnail}">${withControls?'<button id="more" aria-label="Tuỳ chọn khác">more_vert</button>':''}</article></main>`;
+    d.querySelector('#old-download').onclick=()=>wrong++;
+    d.querySelector('#new').onclick=()=>{opened++;edit()};
+    if(withControls)d.querySelector('#more').onclick=()=>{
+      more++;
+      const menu=d.createElement('div');menu.setAttribute('role','menu');menu.innerHTML='<button role="menuitem" id="download">Tải xuống</button>';
+      d.body.append(menu);menu.querySelector('button').onclick=()=>downloaded++;
+    };
+  }
+  function edit(){
+    // Flow's clip editor need not expose a VIDEO element. Its timeline also
+    // contains a progressbar, which must not block the owned Done action.
+    d.body.innerHTML='<canvas></canvas><div role="progressbar"></div><button id="done">Xong</button>';
+    d.querySelector('#done').onclick=()=>{done++;grid(true)};
+  }
+  grid();window.eval(adapter);
+  let collection;
+  const message={provider:'flow',jobId:'video-one',baseline:['https://media.test/old.jpg']};
+  const run=async(action='media-poll',extra={})=>{
+    const result=await window.storyForgeMediaExecute({...message,action,collection,...extra});
+    if(result.collection)collection=JSON.parse(JSON.stringify(result.collection));
+    return result;
+  };
+  return {window,d,run,grid,edit,thumbnail,message,advance:ms=>now+=ms,collection:()=>collection,
+    reload:()=>{window.storyForgeMediaOwned={};window.eval(adapter)},counts:()=>({opened,done,downloaded,wrong,more})};
+}
+
+test('Flow leaves its canvas clip editor with Done, then downloads only the newly generated tile',async()=>{
+  const f=flowResult();await f.run();f.advance(4500);
+  assert.equal((await f.run()).ready,false);
+  assert.equal(f.counts().opened,1);
+  assert.equal((await f.run()).ready,false);
+  assert.equal(f.counts().done,1);
+  let output;for(let i=0;i<4;i++){f.advance(4500);output=await f.run();if(output.ready)break}
+  assert.equal(output.ready,true);assert.equal(output.result.url,f.thumbnail);
+  const info=await f.run('media-download-info',{result:output.result});
+  assert.equal(info.direct,false);assert.equal(info.url,f.thumbnail);
+  await f.run('media-download-click',{result:output.result});
+  assert.deepEqual(f.counts(),{opened:1,done:1,downloaded:1,wrong:0,more:1});
+});
+
+test('Flow remembers the selected thumbnail across adapter reloads, even if its editor has no media element',async()=>{
+  const f=flowResult();await f.run();f.advance(4500);await f.run();
+  assert.equal(f.collection()?.thumbnailUrl,f.thumbnail);
+  f.reload();await f.run();assert.equal(f.counts().done,1);
+  f.reload();
+  let output;for(let i=0;i<4;i++){f.advance(4500);output=await f.run();if(output.ready)break}
+  assert.equal(output.ready,true);assert.equal(output.result.url,f.thumbnail);
+  assert.equal(f.counts().opened,1);assert.equal(f.counts().wrong,0);
+});
+
+test('Flow clicks Done once and waits for the editor to actually close before downloading',async()=>{
+  const f=flowResult();await f.run();f.advance(4500);await f.run();
+  let done=0;f.d.querySelector('#done').onclick=()=>done++;
+  await f.run();f.advance(5000);await f.run();
+  assert.equal(done,1);
+  assert.equal(f.counts().downloaded,0);
+  f.grid(true);f.advance(4500);await f.run();
+  assert.equal(f.counts().opened,1);
+});
+
+test('Flow does not exit an unrelated editor or choose an older tile download button',async()=>{
+  const f=flowResult();f.edit();
+  assert.equal((await f.run()).ready,false);assert.equal(f.counts().done,0);
+  f.grid();await f.run();f.advance(4500);await f.run();
+  assert.equal(f.counts().wrong,0);assert.equal(f.counts().opened,1);
+});
+
+test('Flow refuses multiple new results instead of downloading an arbitrary scene',async()=>{
+  const f=flowResult(),extra=f.d.createElement('article');
+  extra.innerHTML='<img alt="Hình thu nhỏ của video đã tạo" src="https://media.test/another-new.jpg"><button>Tải xuống</button>';
+  f.d.querySelector('main').append(extra);
+  await assert.rejects(f.run(),/nhiều|duy nhất/i);
+  assert.equal(f.counts().wrong,0);assert.equal(f.counts().opened,0);
+});
+
+test('Flow does not pin or open a thumbnail while generation is still running',async()=>{
+  const f=flowResult(),progress=f.d.createElement('div');progress.setAttribute('role','progressbar');f.d.body.append(progress);
+  await f.run();f.advance(5000);await f.run();
+  assert.equal(f.collection(),undefined);assert.equal(f.counts().opened,0);
+  progress.remove();await f.run();assert.equal(f.collection().thumbnailUrl,f.thumbnail);
+});
+
+test('Flow can inspect Download in its owned menu when the background grid becomes inert',async()=>{
+  const f=flowResult();f.grid(true);await f.run();f.advance(4500);await f.run();
+  f.d.querySelector('main').setAttribute('inert','');
+  const output=await f.run();assert.equal(output.ready,true);
+  await f.run('media-download-click',{result:output.result});
+  assert.equal(f.counts().downloaded,1);assert.equal(f.counts().wrong,0);
+  f.d.querySelector('[role="menu"]').remove();
+  const menu=f.d.createElement('div');menu.setAttribute('role','menu');menu.innerHTML='<button id="original">720p (Original)</button>';
+  let chosen=0;menu.querySelector('button').onclick=()=>chosen++;f.d.body.append(menu);
+  await f.run('media-download-continue',{result:output.result});await f.run('media-download-continue',{result:output.result});
+  assert.equal(chosen,1);
+});
+
+test('Flow waits instead of closing an editor when it did not open the selected result',async()=>{
+  const f=flowResult();await f.run();f.edit();f.advance(5000);
+  const output=await f.run();assert.equal(output.ready,false);assert.equal(f.counts().done,0);
+});
+
+test('Flow stops result collection if the tab moved to a different project',async()=>{
+  const f=flowResult();await f.run();f.advance(4500);await f.run();
+  f.window.history.replaceState({},'', '/project/another/edit/video');
+  await assert.rejects(f.run(),/dự án khác/);assert.equal(f.counts().done,0);
+});
+
+test('Flow keeps newer page evidence when a successful open or Done reply was lost',async()=>{
+  const f=flowResult();await f.run();const beforeOpen=f.collection();
+  f.advance(4500);await f.run();
+  const beforeDone=f.collection();let done=0;f.d.querySelector('#done').onclick=()=>done++;
+  const output=await f.window.storyForgeMediaExecute({...f.message,action:'media-poll',collection:beforeOpen});
+  assert.equal(done,1);assert.ok(output.collection.doneClickedAt);
+  f.advance(5000);
+  await f.window.storyForgeMediaExecute({...f.message,action:'media-poll',collection:beforeDone});
+  assert.equal(done,1);assert.equal(f.counts().opened,1);
+});
+
+test('Flow upgrades a canvas editor already opened by the old adapter without waiting for a video element',async()=>{
+  const f=flowResult();f.edit();
+  Object.assign(f.window.storyForgeMediaOwned,{setupJobId:'video-one',openedThumbnail:f.thumbnail,flowThumbnailAt:1000});
+  f.advance(5000);await f.run();
+  assert.equal(f.counts().done,1);assert.equal(f.collection().thumbnailUrl,f.thumbnail);
+  let output;for(let i=0;i<3;i++){output=await f.run();if(output.ready)break}
+  assert.equal(output.ready,true);assert.equal(f.counts().opened,0);
+});
+
+test('Flow does not adopt an old editor belonging to another job or a baseline clip',async()=>{
+  for(const legacy of [{setupJobId:'another-job',openedThumbnail:'https://media.test/new.jpg'},
+    {setupJobId:'video-one',openedThumbnail:'https://media.test/old.jpg'}]){
+    const f=flowResult();f.edit();Object.assign(f.window.storyForgeMediaOwned,legacy);
+    await f.run();assert.equal(f.counts().done,0);assert.equal(f.collection(),undefined);
+  }
+});

@@ -2,11 +2,11 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createMediaBridge} from '../browser-extension/media-automatic.js';
 
-function fixture(){
+function fixture(provider='aistudio'){
   const storage={autoBridge:{enabled:true}},messages=[],downloads=[];
   let time=1000,tabCount=0,runs=0,imports=0;const claims={};
-  const makeJob=i=>({id:'media'+i,attempt:1,provider:'aistudio',url:'https://aistudio.google.com/generate-speech',prompt:'Audio '+i,
-    media:{batch_id:'batch',folder:'Project',filename:'tts_00'+i+'.wav'}});
+  const makeJob=i=>({id:'media'+i,attempt:1,provider,url:provider==='flow'?'https://flow.google.com/project/test':'https://aistudio.google.com/generate-speech',prompt:'Audio '+i,
+    media:{batch_id:'batch',folder:'Project',filename:(provider==='flow'?'scene_00':'tts_00')+i+(provider==='flow'?'.mp4':'.wav')}});
   const state={jobs:[makeJob(1)],tabStatus:'complete',ready:true,generated:true,lostRun:false};
   const chrome={storage:{local:{get:async k=>({[k]:structuredClone(storage[k])}),set:async values=>Object.assign(storage,structuredClone(values))}},
     tabs:{create:async()=>({id:++tabCount,url:makeJob(1).url,status:state.tabStatus}),get:async id=>({id,url:makeJob(1).url,status:state.tabStatus}),
@@ -227,4 +227,60 @@ test('closed submitted tab and claimed-sent setup cannot reopen a page or send a
     {claim:{phase:'sent'}}:g.request(path,...rest),ensureContent:async()=>{},now:()=>100000});
   await guarded.tick();
   assert.equal((await guarded.read()).phase,'paused');assert.equal(g.counts().tabCount,0);assert.deepEqual(g.messages,[]);
+});
+
+test('Flow persists its selected clip before Done and passes it back after worker restart without another Send',async()=>{
+  const f=fixture('flow'),send=f.chrome.tabs.sendMessage;
+  const collection={jobId:'media1',thumbnailUrl:'https://media.test/new.jpg',openedAt:10000,selectedAt:6000};
+  let polls=0;
+  f.chrome.tabs.sendMessage=async(id,m)=>{
+    if(m.action==='media-poll'){
+      polls++;
+      if(polls===1)return {ok:true,ready:false,collection,message:'Đang mở video Flow vừa tạo…'};
+      assert.deepEqual(m.collection,collection);
+      return {ok:true,ready:true,collection:{...collection,doneClickedAt:12000},result:{url:collection.thumbnailUrl}};
+    }
+    return send(id,m);
+  };
+  let engine=f.create();for(let i=0;i<6;i++)await f.tick(engine);
+  assert.equal((await engine.read()).phase,'submitted');
+  assert.deepEqual((await engine.read()).collection,collection);
+  engine=f.create();await f.tick(engine);
+  assert.equal((await engine.read()).phase,'download_ready');
+  assert.equal((await engine.read()).collection.doneClickedAt,12000);
+  assert.equal(f.counts().runs,1);
+});
+
+test('Flow waits for Done and grid readiness before arming a download, including retries of an existing result',async()=>{
+  const f=fixture('flow'),send=f.chrome.tabs.sendMessage;
+  let infos=0,armed=0;
+  f.chrome.tabs.sendMessage=async(id,m)=>{
+    if(m.action==='media-download-info'){
+      infos++;
+      if(infos===1)return {ok:true,ready:false,message:'Đang bấm Xong…',collection:{jobId:'media1',thumbnailUrl:'blob:new',openedAt:9000,doneClickedAt:11000}};
+      assert.equal(m.collection.doneClickedAt,11000);
+      return {ok:true,url:'blob:video',direct:false};
+    }
+    return send(id,m);
+  };
+  let engine=createMediaBridge({chrome:f.chrome,request:f.request,ensureContent:async()=>{},armCapture:async()=>armed++,now:()=>100000,pageSettleMs:0});
+  for(let i=0;i<5;i++)await engine.tick();
+  assert.equal((await engine.read()).phase,'download_ready');assert.equal(armed,0);
+  assert.ok(!f.messages.includes('media-download-click'));assert.equal(f.downloads.length,0);
+  f.storage.mediaBridge={...f.storage.mediaBridge,phase:'paused',resumePhase:'download_ready'};
+  engine=createMediaBridge({chrome:f.chrome,request:f.request,ensureContent:async()=>{},armCapture:async()=>armed++,now:()=>100000,pageSettleMs:0});
+  await engine.resume();await engine.tick();
+  assert.equal((await engine.read()).phase,'downloading');assert.equal(armed,1);
+  assert.equal(f.counts().runs,1);assert.equal(f.messages.filter(m=>m==='media-download-click').length,1);
+});
+
+test('Flow returns to download readiness if the editor changes between inspecting and clicking Download',async()=>{
+  const f=fixture('flow'),send=f.chrome.tabs.sendMessage;
+  f.chrome.tabs.sendMessage=async(id,m)=>m.action==='media-download-info'?{ok:true,url:'blob:video',direct:false}:
+    m.action==='media-download-click'?{ok:true,ready:false,collection:{jobId:'media1',thumbnailUrl:'blob:new',openedAt:9000,doneClickedAt:11000}}:send(id,m);
+  const engine=createMediaBridge({chrome:f.chrome,request:f.request,ensureContent:async()=>{},armCapture:async()=>{},now:()=>100000,pageSettleMs:0});
+  for(let i=0;i<5;i++)await engine.tick();
+  const state=await engine.read();
+  assert.equal(state.phase,'download_ready');assert.equal(state.downloadTicket,undefined);assert.equal(state.downloadAt,undefined);
+  assert.equal(state.collection.doneClickedAt,11000);assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,0);
 });

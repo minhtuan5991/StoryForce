@@ -170,10 +170,84 @@
   function resultNode(message){return mediaItems(message.provider).find(e=>source(e)===message.result?.url)}
   function downloadButton(node,provider){
     const pattern=/Download|Tải.*(?:xuống|về)|^download$|^file_download$/i;
+    if(provider==='flow')return flowTileButton(node,pattern);
     let root=node.parentElement;
     while(root&&root!==document.body){const button=find(pattern,root);if(button)return button;root=root.parentElement}
-    return ['aistudio','flow'].includes(provider)?find(pattern):undefined;
+    return provider==='aistudio'?find(pattern):undefined;
   }
+  const flowThumbnail=e=>e.tagName==='IMG'&&/Hình thu nhỏ của video đã tạo|generated video thumbnail/i.test(e.alt);
+  const flowDownload=/Download|Tải.*(?:xuống|về)|^download$|^file_download$/i;
+  const flowMenus=()=>[...document.querySelectorAll('[role="menu"],.cdk-overlay-pane')].filter(visible);
+  function flowTileButton(node,pattern){
+    // Never climb into the project grid and use a neighbouring clip's action.
+    for(let root=node.parentElement;root&&root!==document.body;root=root.parentElement){
+      const thumbnails=[...root.querySelectorAll('img[alt]')].filter(flowThumbnail);
+      if(new Set(thumbnails.map(source)).size>1)break;
+      const button=find(pattern,root);if(button)return button;
+    }
+  }
+  function flowResult(message){
+    const saved=message.collection?.jobId===message.jobId?message.collection:undefined;
+    const local=owned.flowCollection?.jobId===message.jobId?owned.flowCollection:undefined;
+    // An action may succeed even when its reply is lost. Preserve the page's
+    // newer action evidence instead of overwriting it with the worker's copy.
+    let collection=saved?{...saved,...(local?.thumbnailUrl===saved.thumbnailUrl?local:{})}:local?{...local}:undefined;
+    const reply=(value={ready:false})=>{owned.flowCollection=collection;return {...value,...(collection?{collection}:{})}};
+    // Upgrade an already-open clip from the old adapter even when Flow's
+    // canvas editor has removed every generated thumbnail from the DOM.
+    if(!collection&&owned.setupJobId===message.jobId&&owned.openedThumbnail&&!(message.baseline||[]).includes(owned.openedThumbnail))
+      collection={jobId:message.jobId,thumbnailUrl:owned.openedThumbnail,selectedAt:owned.flowThumbnailAt||Date.now()-4000,openedAt:Date.now(),projectUrl:location.href};
+    if(!collection){
+      if(busy('flow')&&!find(/^(?:Xong|Done)$/i))return reply();
+      const items=mediaItems('flow').filter(e=>!(message.baseline||[]).includes(source(e))&&
+        !(flowThumbnail(e)&&owned.baselineNodes?.includes(e)));
+      const candidates=[...new Map(items.filter(flowThumbnail).map(e=>[source(e),e])).values()];
+      const videos=[...new Map(items.filter(e=>e.tagName==='VIDEO').map(e=>[source(e),e])).values()];
+      const outputs=candidates.length?candidates:videos;
+      if(outputs.length>1)throw new Error('Có nhiều video Flow mới; chưa xác định được một kết quả duy nhất cho scene này. Kiểm tra tab rồi tiếp tục.');
+      const node=message.result?resultNode(message):outputs[0];
+      if(!node)return reply();
+      const url=source(node);
+      collection={jobId:message.jobId,thumbnailUrl:url,selectedAt:Date.now(),projectUrl:location.href};
+      // Recover a clip already opened by the previous adapter in this page.
+      if(owned.openedThumbnail===url)collection.openedAt=Date.now();
+      if(message.result)collection.selectedAt-=4000;
+      return reply();
+    }
+    const page=new URL(collection.projectUrl).pathname.split('/edit/')[0].replace(/\/$/,'');
+    if(location.pathname!==page&&!location.pathname.startsWith(page+'/'))throw new Error('Tab Flow đã chuyển sang dự án khác. Mở lại dự án của video đang chờ tải.');
+    const done=find(/^(?:Xong|Done)$/i);
+    if(done){
+      // Only leave the editor we opened for this exact job. Its canvas player
+      // may not expose a VIDEO element, and its timeline may be a progressbar.
+      if(!collection.openedAt)return reply({ready:false,message:'Đang chờ trở về danh sách video Flow của tác vụ này…'});
+      if(!collection.doneClickedAt){
+        collection.doneClickedAt=Date.now();owned.flowCollection=collection;done.click();
+        return reply({ready:false,message:'Đang bấm Xong để trở về danh sách video Flow…'});
+      }
+      return reply({ready:false,message:'Đang chờ Flow đóng màn hình chỉnh sửa video…'});
+    }
+    if(busy('flow'))return reply();
+    const nodes=collection.menuOpened?[...document.querySelectorAll(mediaSelector.flow)]:mediaItems('flow');
+    const node=nodes.find(e=>source(e)===collection.thumbnailUrl);
+    if(!node)return reply({ready:false,message:'Đang chờ video vừa tạo xuất hiện lại trong danh sách Flow…'});
+    if(Date.now()-collection.selectedAt<4000)return reply();
+    const menus=flowMenus();
+    const menu=collection.menuOpened&&menus.length===1?menus[0]:undefined;
+    const button=flowTileButton(node,flowDownload)||(menu&&find(flowDownload,menu));
+    if(button)return reply({ready:true,result:{url:collection.thumbnailUrl},button,node});
+    const more=flowTileButton(node,/^(?:Tuỳ chọn khác|Tùy chọn khác|More options)$/i);
+    if(more&&!menus.length){
+      collection.menuOpened=true;owned.flowCollection=collection;more.click();
+      return reply({ready:false,message:'Đang mở tùy chọn tải đúng video Flow vừa tạo…'});
+    }
+    if(flowThumbnail(node)&&!collection.openedAt&&!menus.length){
+      collection.openedAt=Date.now();owned.flowCollection=collection;node.click();
+      return reply({ready:false,message:'Đang mở video Flow vừa tạo…'});
+    }
+    return reply({ready:false,message:'Đang chờ nút tải của video Flow vừa tạo…'});
+  }
+  function flowResponse(result){const {button,node,...response}=result;return response}
   globalThis.storyForgeMediaExecute=async message=>{
     checkpoint();
     const {provider,action}=message;
@@ -213,36 +287,24 @@
       owned.sent=[...(owned.sent||[]),message.jobId];button.click();return {submitted:true};
     }
     if(action==='media-poll'){
+      if(provider==='flow')return flowResponse(flowResult(message));
       if(busy(provider))return {ready:false};
       const items=mediaItems(provider).filter(e=>!(message.baseline||[]).includes(source(e))&&
         !(provider==='flow'&&e.tagName==='IMG'&&owned.baselineNodes?.includes(e)));
       const node=items.find(e=>e.tagName==='VIDEO')||items.at(-1);
       if(!node)return {ready:false};
-      if(provider==='flow'&&node.tagName==='IMG'){
-        const url=source(node);
-        if(owned.flowThumbnail!==url){owned.flowThumbnail=url;owned.flowThumbnailAt=Date.now();return {ready:false}}
-        if(Date.now()-owned.flowThumbnailAt<4000)return {ready:false};
-        if(owned.openedThumbnail===url)return {ready:false,message:'Đang chờ trình phát video Flow…'};
-        // Flow displays completed videos as thumbnail tiles. Clicking their
-        // play area opens the actual media player in this same tab; the title
-        // button only opens prompt information and must not be used here.
-        owned.openedThumbnail=url;
-        node.click();return {ready:false,message:'Đang mở video Flow vừa tạo…'};
-      }
       const button=downloadButton(node,provider);
-      if(!button&&provider==='flow'){
-        const more=find(/^(?:Tuỳ chọn khác|Tùy chọn khác|More options)$/i);
-        if(more){more.click();return {ready:false,message:'Đang mở tùy chọn tải video Flow…'}}
-      }
       if(!button)return {ready:false,message:'Media đã xuất hiện, đang chờ nút tải khả dụng…'};
       const url=source(node);
       if(owned.resultUrl!==url){owned.resultUrl=url;owned.resultAt=Date.now();return {ready:false}}
       return {ready:Date.now()-owned.resultAt>=4000,result:{url}};
     }
     if(action==='media-download-info'){
-      const node=resultNode(message);
+      const flow=provider==='flow'?flowResult(message):undefined;
+      if(flow&&!flow.ready)return flowResponse(flow);
+      const node=flow?.node||resultNode(message);
       if(!node)throw new Error('Media vừa tạo không còn trên trang');
-      const button=downloadButton(node,provider);
+      const button=flow?.button||downloadButton(node,provider);
       if(!button)throw new Error('Không tìm thấy nút tải cho media vừa tạo');
       // Prefer the provider's Download action (full image / encoded WAV), not
       // a low-resolution preview URL. The worker captures its exact URL.
@@ -250,16 +312,21 @@
       // Audio/video players expose the actual generated media, including blobs.
       // Download it through chrome.downloads(saveAs:false). Comet also needs
       // its per-file "ask where to save" preference disabled for unattended use.
-      return {url:href||source(node),referrer:location.href,direct:provider==='aistudio'||!!href};
+      return {url:href||source(node),referrer:location.href,direct:provider==='aistudio'||!!href,...(flow?{collection:flow.collection}:{})};
     }
     if(action==='media-download-click'){
-      const node=resultNode(message),button=node&&downloadButton(node,provider);
+      const flow=provider==='flow'?flowResult(message):undefined;
+      if(flow&&!flow.ready)return flowResponse(flow);
+      const node=flow?.node||resultNode(message),button=flow?.button||(node&&downloadButton(node,provider));
       if(!button)throw new Error('Nút tải đã thay đổi. Kiểm tra tab rồi tiếp tục.');
       button.click();return {clicked:true};
     }
     if(action==='media-download-continue'){
       if(provider!=='flow')return {clicked:false};
-      if(!resultNode(message)||owned.downloadChoice===message.jobId)return {clicked:false};
+      // A provider menu can temporarily mark its grid inert. Match the exact
+      // result without requiring its thumbnail to remain interactive.
+      const node=[...document.querySelectorAll(mediaSelector.flow)].find(e=>source(e)===message.result?.url);
+      if(!node||owned.downloadChoice===message.jobId)return {clicked:false};
       const menus=[...document.querySelectorAll('[role="menu"],.cdk-overlay-pane')].filter(visible);
       const original=menus.map(menu=>find(/(?:Original|Kích thước gốc|Độ phân giải gốc|720p)/i,menu)).find(Boolean);
       if(!original)return {clicked:false};

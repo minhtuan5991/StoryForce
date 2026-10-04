@@ -9,7 +9,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
   const enabled=async()=>!!(await chrome.storage.local.get('autoBridge')).autoBridge?.enabled;
   const call=async(state,action,extra={})=>{
     const result=await withTabReadDeadline(()=>chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action:'media-'+action,
-      provider:state.provider,jobId:state.jobId,prompt:state.prompt,previousPrompt:state.prompts?.[state.tabId],media:state.media,baseline:state.baseline,...extra}));
+      provider:state.provider,jobId:state.jobId,prompt:state.prompt,previousPrompt:state.prompts?.[state.tabId],media:state.media,baseline:state.baseline,collection:state.collection,...extra}));
     if(!result?.ok)throw Object.assign(new Error(result?.error||'Không kết nối được tab tạo tài nguyên'),{code:result?.code});
     return result;
   };
@@ -128,6 +128,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       if(state.phase==='submitted'){
         await ensureContent(state.tabId);
         const result=await call(state,'poll');
+        if(result.collection&&JSON.stringify(result.collection)!==JSON.stringify(state.collection))state=await write({...state,collection:result.collection});
         if(!result.ready){await status(state,result.message||'Đang chờ media tạo xong; không gửi lại yêu cầu.');return}
         state=await write({...state,phase:'download_ready',result:result.result});
         return;
@@ -138,6 +139,8 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         // though the generated audio/image/video is still present in the tab.
         await ensureContent(state.tabId);
         const download=await call(state,'download-info',{result:state.result});
+        if(download.collection&&JSON.stringify(download.collection)!==JSON.stringify(state.collection))state=await write({...state,collection:download.collection});
+        if(download.ready===false){await status(state,download.message||'Đang chờ trang tải media sẵn sàng…');return}
         state=await write({...state,phase:'downloading',downloadAt:now(),downloadUrl:download.url,referrer:download.referrer,
           prompts:{...state.prompts,[state.tabId]:state.prompt},
           message:'Đang tải '+state.media.filename+'…'});
@@ -151,7 +154,9 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
             state=await write({...state,downloadTicket:crypto.randomUUID().replaceAll('-','')});
             await armCapture(state.tabId,state.downloadTicket,state.provider);
           }
-          await call(state,'download-click',{result:state.result});
+          const clicked=await call(state,'download-click',{result:state.result});
+          if(clicked.ready===false)await write({...state,phase:'download_ready',collection:clicked.collection||state.collection,
+            downloadAt:undefined,downloadUrl:undefined,downloadTicket:undefined,message:clicked.message});
         }
         return;
       }
