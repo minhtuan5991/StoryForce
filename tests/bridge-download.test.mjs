@@ -60,3 +60,58 @@ test('top-page anchor capture still captures only the requested download and del
   f.window.URL.revokeObjectURL(a.href);assert.deepEqual(f.revoked,[]);
   f.timers[0]();assert.deepEqual(f.revoked,[a.href]);
 });
+
+test('AI Studio captures the complete WAV built by Download and never the streaming audio source',()=>{
+  const f=fixture('aistudio'),d=f.window.document;
+  d.body.innerHTML='<audio src="blob:https://aistudio.google.com/preview-packet"></audio><button>Download</button>';
+  d.querySelector('button').onclick=()=>{
+    const full=new f.window.Blob(['assembled WAV with every PCM packet'],{type:'audio/wav'});
+    const a=d.createElement('a');a.href=f.window.URL.createObjectURL(full);a.download='Generated Audio.wav';
+    a.click();f.window.URL.revokeObjectURL(a.href);
+  };
+  assert.equal(f.captured(),null);
+  d.querySelector('button').click();
+  assert.equal(f.captured(),'blob:https://gemini.google.com/full-1');
+  assert.equal(f.blobs[0].type,'audio/wav');
+  assert.notEqual(f.captured(),d.querySelector('audio').src);
+  assert.deepEqual(f.revoked,[]);
+  f.timers[0]();assert.deepEqual(f.revoked,[f.captured()]);
+});
+
+test('AI Studio captures the full WAV in the same pure-download sandbox protocol as Gemini',()=>{
+  const f=fixture('aistudio');
+  const message={...f.message,values:[new f.window.Blob(['complete WAV'],{type:'audio/wav'}),'Generated Audio October 04, 2026 - 3:08PM.wav']};
+  f.send(message);
+  assert.equal(f.captured(),'blob:https://gemini.google.com/full-1');
+  assert.equal(f.posts[0].data.code,'void 0;');
+  assert.equal(f.blobs[0],message.values[0]);
+  const g=fixture('aistudio');g.send(f.message);assert.equal(g.captured(),null);
+});
+
+test('AI Studio keeps a full multi-minute base64 WAV out of extension storage without changing its bytes',()=>{
+  const f=fixture('aistudio'),a=f.window.document.createElement('a');
+  const pcm=Buffer.alloc(9_027_884,0x35);pcm.write('RIFF',0);pcm.write('WAVE',8);
+  a.href='data:audio/wav;base64,'+pcm.toString('base64');a.download='Generated Audio.wav';
+  assert.ok(a.href.length>10*1024*1024);
+  a.click();
+  assert.equal(f.captured(),'blob:https://gemini.google.com/full-1');
+  assert.equal(f.blobs[0].size,pcm.length);assert.equal(f.blobs[0].type,'audio/wav');
+  // JSDOM's Blob implementation stores its bytes behind its implementation symbol.
+  const implementation=f.blobs[0][Object.getOwnPropertySymbols(f.blobs[0])[0]];
+  assert.deepEqual(implementation._buffer,pcm);
+  assert.ok(f.captured().length<200);
+  f.timers[0]();assert.deepEqual(f.revoked,[f.captured()]);
+});
+
+test('AI Studio accepts its observed untyped complete WAV Blob and preserves the bytes',()=>{
+  const f=fixture('aistudio'),payload=Buffer.from('RIFF complete generated audio WAVE');
+  const blob=new f.window.Blob([payload]);
+  f.send({...f.message,values:[blob,'Generated Audio October 04, 2026 - 3:08PM.wav']});
+  assert.equal(f.captured(),'blob:https://gemini.google.com/full-1');
+  assert.equal(f.blobs[0].type,'audio/wav');assert.equal(f.blobs[0].size,payload.length);
+  const implementation=f.blobs[0][Object.getOwnPropertySymbols(f.blobs[0])[0]];
+  assert.deepEqual(implementation._buffer,payload);
+  assert.equal(f.posts[0].data.code,'void 0;');
+  const g=fixture('aistudio');g.send({...g.message,values:[new g.window.Blob([payload]),'unrelated-file.wav']});
+  assert.equal(g.captured(),null);
+});

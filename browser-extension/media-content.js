@@ -166,14 +166,49 @@
     provider==='gemini'?visible(e)&&e.naturalWidth>=300:
       provider==='flow'&&e.tagName==='IMG'?visible(e)&&/Hình thu nhỏ của video đã tạo|generated video thumbnail/i.test(e.alt):!!(e.currentSrc||e.src||e.querySelector('source')?.src))}
   const source=e=>e.currentSrc||e.src||e.querySelector('source')?.src||'';
-  function snapshot(provider){return mediaItems(provider).map(e=>source(e))}
-  function resultNode(message){return mediaItems(message.provider).find(e=>source(e)===message.result?.url)}
+  function sourceKey(e){
+    const url=source(e);
+    if(!url.startsWith('data:'))return url;
+    const cache=owned.sourceKeys||=new WeakMap(),previous=cache.get(e);
+    if(previous?.url===url)return previous.key;
+    // After playback AI Studio may put the whole WAV in AUDIO.src. A baseline
+    // must identify that prior result without persisting megabytes of PCM.
+    let hash=2166136261;
+    for(let i=0;i<url.length;i++)hash=Math.imul(hash^url.charCodeAt(i),16777619);
+    const key='data:storyforge:'+url.length+':'+(hash>>>0).toString(16);
+    cache.set(e,{url,key});return key;
+  }
+  function snapshot(provider){return mediaItems(provider).map(e=>provider==='aistudio'?sourceKey(e):source(e))}
+  function resultNode(message){
+    const items=mediaItems(message.provider);
+    // AI Studio swaps playback packet URLs while the same completed result is
+    // playing. The authorized job and unchanged editor identify that result;
+    // an old packet URL must not prevent its full Download action.
+    if(message.provider==='aistudio'&&message.result&&text(editor())===norm(message.prompt)&&!busy('aistudio'))
+      return items.at(-1);
+    return items.find(e=>source(e)===message.result?.url);
+  }
   function downloadButton(node,provider){
     const pattern=/Download|Tải.*(?:xuống|về)|^download$|^file_download$/i;
     if(provider==='flow')return flowTileButton(node,pattern);
     let root=node.parentElement;
     while(root&&root!==document.body){const button=find(pattern,root);if(button)return button;root=root.parentElement}
     return provider==='aistudio'?find(pattern):undefined;
+  }
+  function studioDuration(node,button){
+    // The AUDIO source can be a 40 ms streaming packet. Use the visible
+    // player's total-time counter, never that packet's duration, for checking
+    // the WAV constructed by the provider's Download action.
+    const seek=[...document.querySelectorAll('[role="slider"],input[type="range"]')].find(e=>
+      visible(e)&&/Seek audio|audio position|Vị trí âm thanh/i.test(label(e)));
+    for(let root=(seek||button||node).parentElement;root&&root!==document.body;root=root.parentElement){
+      if(button&&!root.contains(button))continue;
+      const times=[...root.querySelectorAll('span,div,time,p')].filter(e=>visible(e)&&
+        !e.closest('textarea,[contenteditable="true"],nav,aside')&&!e.children.length)
+        .map(e=>norm(e.textContent)).filter(s=>/^(?:\d+:)?\d{1,3}:\d{2}$/.test(s))
+        .map(s=>s.split(':').reduce((seconds,part)=>seconds*60+Number(part),0));
+      if(times.length)return Math.max(...times);
+    }
   }
   const flowThumbnail=e=>e.tagName==='IMG'&&/Hình thu nhỏ của video đã tạo|generated video thumbnail/i.test(e.alt);
   const flowDownload=/Download|Tải.*(?:xuống|về)|^download$|^file_download$/i;
@@ -289,15 +324,18 @@
     if(action==='media-poll'){
       if(provider==='flow')return flowResponse(flowResult(message));
       if(busy(provider))return {ready:false};
-      const items=mediaItems(provider).filter(e=>!(message.baseline||[]).includes(source(e))&&
+      const items=mediaItems(provider).filter(e=>!(message.baseline||[]).includes(provider==='aistudio'?sourceKey(e):source(e))&&
+        !(provider==='aistudio'&&(message.baseline||[]).includes(source(e)))&&
         !(provider==='flow'&&e.tagName==='IMG'&&owned.baselineNodes?.includes(e)));
       const node=items.find(e=>e.tagName==='VIDEO')||items.at(-1);
       if(!node)return {ready:false};
       const button=downloadButton(node,provider);
       if(!button)return {ready:false,message:'Media đã xuất hiện, đang chờ nút tải khả dụng…'};
       const url=source(node);
-      if(owned.resultUrl!==url){owned.resultUrl=url;owned.resultAt=Date.now();return {ready:false}}
-      return {ready:Date.now()-owned.resultAt>=4000,result:{url}};
+      const expectedDuration=provider==='aistudio'?studioDuration(node,button):undefined;
+      const signature=(provider==='aistudio'?message.jobId:url)+'|'+(expectedDuration??'');
+      if(owned.resultSignature!==signature){owned.resultSignature=signature;owned.resultAt=Date.now();return {ready:false}}
+      return {ready:Date.now()-owned.resultAt>=4000,result:{...(provider==='aistudio'?{jobId:message.jobId}:{url}),...(expectedDuration>0?{expectedDuration}:{})}};
     }
     if(action==='media-download-info'){
       const flow=provider==='flow'?flowResult(message):undefined;
@@ -309,10 +347,12 @@
       // Prefer the provider's Download action (full image / encoded WAV), not
       // a low-resolution preview URL. The worker captures its exact URL.
       const href=button.tagName==='A'&&button.getAttribute('download')!==null?button.href:null;
-      // Audio/video players expose the actual generated media, including blobs.
-      // Download it through chrome.downloads(saveAs:false). Comet also needs
-      // its per-file "ask where to save" preference disabled for unattended use.
-      return {url:href||source(node),referrer:location.href,direct:provider==='aistudio'||!!href,...(flow?{collection:flow.collection}:{})};
+      // AI Studio's player exposes individual PCM streaming packets. Clicking
+      // Download assembles all packets into the full WAV. Capture that exact
+      // download blob instead of saving the preview, even if it is a valid WAV.
+      const expectedDuration=provider==='aistudio'?studioDuration(node,button):undefined;
+      return {url:href||(provider==='aistudio'?undefined:source(node)),referrer:location.href,direct:!!href,
+        ...(expectedDuration>0?{expectedDuration}:{}),...(flow?{collection:flow.collection}:{})};
     }
     if(action==='media-download-click'){
       const flow=provider==='flow'?flowResult(message):undefined;

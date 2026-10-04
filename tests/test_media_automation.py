@@ -40,14 +40,61 @@ def claim(client,p,j,owner='one'):
     return response.json()
 
 
-def result(client,p,j,path,id=10):
-    return client.post('/api/bridge/media/'+j['id']+'/result',headers=p['headers'],json={'owner':'one','attempt':j['attempt'],'download_id':id,'download_state':'complete','path':str(path)})
+def result(client,p,j,path,id=10,**extra):
+    return client.post('/api/bridge/media/'+j['id']+'/result',headers=p['headers'],json={'owner':'one','attempt':j['attempt'],'download_id':id,'download_state':'complete','path':str(path),**extra})
 
 
-def wav(path):
+def wav(path,seconds=1):
     path.parent.mkdir(parents=True,exist_ok=True)
     with wave.open(str(path),'wb') as audio:
-        audio.setnchannels(1);audio.setsampwidth(2);audio.setframerate(24000);audio.writeframes(b'\0\0'*24000)
+        audio.setnchannels(1);audio.setsampwidth(2);audio.setframerate(24000);audio.writeframes(b'\0\0'*int(24000*seconds))
+
+
+def test_streaming_wav_fragment_never_attaches_or_advances_and_full_download_can_follow(client,production):
+    p=production
+    with client.app.state.database.session() as db:
+        chunk=db.query(Chunk).filter_by(project_id=p['id'],number=1).one()
+        chunk.text=' '.join(['narration']*495);chunk.word_count=495;db.commit()
+    state=start(client,p);j=media_job(client,p);claim(client,p,j)
+    path=Path(state['download_path'])/'tts_001.wav';wav(path,.04)
+    response=result(client,p,j,path)
+    assert response.status_code==422 and '[TTS_INCOMPLETE]' in response.text
+    detail=client.get('/api/projects/'+p['id']).json()
+    assert not detail['assets'] and not detail['chunks'][0]['asset_id']
+    assert detail['settings']['media_automation']['completed']==0
+    assert media_job(client,p)['id']==j['id']
+    assert claim(client,p,j)['send'] is False
+    wav(path,146.24)
+    response=result(client,p,j,path,expected_duration=146)
+    assert response.status_code==200,response.text
+    detail=client.get('/api/projects/'+p['id']).json()
+    assert detail['chunks'][0]['real_duration']==pytest.approx(146.24)
+    assert detail['settings']['media_automation']['completed']==1
+
+
+def test_download_matches_provider_duration_with_rounding_tolerance(client,production):
+    p=production;state=start(client,p);j=media_job(client,p);claim(client,p,j)
+    path=Path(state['download_path'])/'tts_001.wav';wav(path,10)
+    for expected in (146,'146',True,-1):
+        response=result(client,p,j,path,expected_duration=expected)
+        assert response.status_code==422 and '[TTS_INCOMPLETE]' in response.text
+    assert result(client,p,j,path,expected_duration=11).status_code==200
+
+
+def test_new_batch_regenerates_existing_fragment_and_keeps_valid_short_outro(client,production):
+    p=production;root=client.app.state.root
+    for number,seconds in ((1,.04),(2,9.4)):
+        path=root/f'old{number}.wav';wav(path,seconds)
+        with client.app.state.database.session() as db:
+            asset=Asset(project_id=p['id'],name=f'tts_{number:03}.wav',kind='audio',path=path.name,duration=seconds,story_version=1)
+            db.add(asset);db.flush()
+            chunk=db.query(Chunk).filter_by(project_id=p['id'],number=number).one()
+            chunk.text=' '.join(['narration']*(495 if number==1 else 33))
+            chunk.asset_id=asset.id;chunk.status='ATTACHED';chunk.real_duration=seconds;db.commit()
+    state=start(client,p)
+    assert state['total']==1 and state['skipped']==1
+    assert media_job(client,p)['media']['filename']=='tts_001.wav'
+    assert (root/'old1.wav').is_file() and (root/'old2.wav').is_file()
 
 
 def test_visuals_require_exact_current_count_confirmation(client,production):

@@ -50,6 +50,45 @@ test('media waits for complete page and stable controls; reuses one tab for all 
   assert.equal(f.counts().imports,2);
 });
 
+test('AI Studio saves only the captured full WAV and sends its player duration for validation',async()=>{
+  const f=fixture(),send=f.chrome.tabs.sendMessage;
+  let armed=0,captured='',posted;
+  f.chrome.tabs.sendMessage=async(id,m)=>{
+    if(m.action==='media-download-info')return {ok:true,url:'blob:40ms-preview',direct:false,expectedDuration:146};
+    if(m.action==='media-download-click'){assert.equal(armed,1);captured='blob:complete-wav';return {ok:true,clicked:true}}
+    return send(id,m);
+  };
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
+    if(path.endsWith('/result'))posted=body;
+    return f.request(path,method,body);
+  },ensureContent:async()=>{},armCapture:async()=>armed++,readCapture:async()=>captured,now:()=>100000,pageSettleMs:0});
+  for(let i=0;i<5;i++)await engine.tick();
+  assert.equal(f.downloads.length,0);
+  assert.equal((await engine.read()).downloadUrl,undefined);
+  await engine.tick();
+  assert.equal(f.downloads[0].url,'blob:complete-wav');
+  assert.equal(f.counts().runs,1);
+  f.downloads[0].state='complete';await engine.tick();
+  assert.equal(posted.expected_duration,146);assert.equal(posted.download_id,1);
+  assert.equal(f.counts().imports,1);
+});
+
+test('a rejected incomplete WAV pauses and Continue downloads the existing result without another Run',async()=>{
+  const f=fixture();let rejected=true;
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
+    if(path.endsWith('/result')&&rejected)throw Error('[TTS_INCOMPLETE] WAV is only a streaming fragment');
+    return f.request(path,method,body);
+  },ensureContent:async()=>{},now:()=>100000,pageSettleMs:0});
+  for(let i=0;i<5;i++)await engine.tick();
+  f.downloads[0].state='complete';await engine.tick();
+  const state=await engine.read();
+  assert.equal(state.phase,'paused');assert.equal(state.resumePhase,'download_ready');
+  assert.equal(state.downloadId,undefined);assert.equal(f.counts().imports,0);
+  rejected=false;await engine.resume();await engine.tick();
+  assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,2);
+  f.downloads[1].state='complete';await engine.tick();assert.equal(f.counts().imports,1);
+});
+
 test('lost Run acknowledgment and worker restart only collect; never run again',async()=>{
   const f=fixture();let engine=f.create();f.state.lostRun=true;
   for(let i=0;i<8;i++)await f.tick(engine);

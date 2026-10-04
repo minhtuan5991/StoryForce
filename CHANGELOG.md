@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.19 — 2026-10-04 (local only)
+
+- Download AI Studio's complete WAV through its Download button and capture the assembled file instead of an individual streaming preview packet. Wait for a stable visible total-time counter and check it against the downloaded file when available.
+- Capture AI Studio's observed sandbox download even when its WAV Blob has no MIME type. Preserve all bytes, and keep any large base64 download data out of extension storage by passing a page-owned blob URL.
+- Keep compact, cached identities for prior AI Studio audio and identify new results by their authorized job and unchanged editor. Full base64 WAVs remain in the provider page so the next narration scene cannot overflow Bridge storage.
+- Reject implausibly short narration or a WAV whose duration disagrees with AI Studio before assigning it or advancing the queue. Continue retries downloading the existing result without another Run; a new narration batch regenerates invalid existing clips and keeps valid assignments.
+- Match the content-script version to the installed Bridge so provider tabs receive the updated adapter after extension reload. Include Browser Bridge 1.1.23. Preserve other features and settings; not published to GitHub.
+
 ## 3.1.18 — 2026-10-04 (local only)
 
 - Leave Flow's owned clip editor with Xong / Done and wait for the project grid before downloading. Do not wait for a VIDEO element in its canvas player or mistake the editor timeline for a running generation.

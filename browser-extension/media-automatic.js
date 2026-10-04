@@ -141,7 +141,8 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         const download=await call(state,'download-info',{result:state.result});
         if(download.collection&&JSON.stringify(download.collection)!==JSON.stringify(state.collection))state=await write({...state,collection:download.collection});
         if(download.ready===false){await status(state,download.message||'Đang chờ trang tải media sẵn sàng…');return}
-        state=await write({...state,phase:'downloading',downloadAt:now(),downloadUrl:download.url,referrer:download.referrer,
+        state=await write({...state,phase:'downloading',downloadAt:now(),downloadUrl:download.direct?download.url:undefined,referrer:download.referrer,
+          expectedDuration:download.expectedDuration||state.result?.expectedDuration,
           prompts:{...state.prompts,[state.tabId]:state.prompt},
           message:'Đang tải '+state.media.filename+'…'});
         if(download.direct){
@@ -185,7 +186,8 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
           ? 'Lượt tải đã bị hủy. Nếu Comet hiện Save As, tắt “Ask where to save each file before downloading” trong Settings → Downloads, rồi bấm Tiếp tục tải tài nguyên. Bridge sẽ tải lại kết quả đã tạo, không gửi lại prompt.'
           : 'Tải bị gián đoạn: '+(item.error||'kiểm tra trình duyệt'));
         if(item.state!=='complete')return;
-        await request('/media/'+job.id+'/result','POST',{...permit,download_id:item.id,download_state:item.state,path:item.filename});
+        await request('/media/'+job.id+'/result','POST',{...permit,download_id:item.id,download_state:item.state,path:item.filename,
+          ...(state.expectedDuration>0?{expected_duration:state.expectedDuration}:{})});
         // Only clear our own previous text once the completed file is imported.
         await write({phase:'idle',tabs:state.tabs,pages:state.pages,folders:state.folders,prompts:state.prompts,
           message:'Đã tải và gán '+state.media.filename+'. Đang chuyển sang scene tiếp theo…'});
@@ -200,7 +202,12 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       if(transient&&errors<=8&&now()<state.deadline){
         await write({...state,errors,message:'Tab media đang tải hoặc mất kết nối. Đang chờ lại; không gửi trùng.'});
       }else{
-        await write({...state,phase:'paused',resumePhase:state.phase,errors,message:error.message||String(error)});
+        // An incomplete WAV must never advance the queue. Continue retries
+        // the provider's existing output, not the rejected file or a new Run.
+        const incomplete=/\[TTS_INCOMPLETE\]/.test(error.message||'');
+        const retry=incomplete?{downloadId:undefined,downloadInitiated:false,downloadTicket:undefined,
+          downloadAt:undefined,downloadUrl:undefined}:{};
+        await write({...state,...retry,phase:'paused',resumePhase:incomplete?'download_ready':state.phase,errors,message:error.message||String(error)});
         if(state.jobId){try{await request('/jobs/'+state.jobId+'/status','POST',{step:'Tạo media tạm dừng: '+error.message})}catch{}}
       }
     }finally{busy=false}

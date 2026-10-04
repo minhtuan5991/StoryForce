@@ -6,6 +6,7 @@ one job at a time and a durable send permit; a restart never grants a second run
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -13,7 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import text as sql_text
 
-from .intelligence import digest
+from .intelligence import digest, words
 from .media import project_folder, probe, safe_path, find_binary, run_process
 from .models import Asset, Chunk, Scene, Job, Project, Channel, now, uid, serialize
 from .production_extras import thumbnail_prompt
@@ -49,6 +50,18 @@ def target_hash(target):
     if isinstance(target, Chunk):
         return digest([target.id, target.story_version, target.number, target.text])
     return digest([target.id, target.story_version, target.number, target.visual_type, target.prompt, target.negative_prompt])
+
+
+def narration_download_error(text, duration, expected_duration=None):
+    # A conservative 600 WPM ceiling catches streaming fragments without
+    # forcing Enzo to match the project's estimated narration speed.
+    if not duration or not math.isfinite(duration) or duration < len(words(text)) / 10:
+        return "[TTS_INCOMPLETE] File WAV quá ngắn so với lời kể. Tải lại WAV đầy đủ qua nút Download của AI Studio; chưa gán file hoặc chuyển scene."
+    if expected_duration is not None:
+        if isinstance(expected_duration, bool) or not isinstance(expected_duration, (int, float)) or not math.isfinite(expected_duration) or expected_duration <= 0:
+            return "[TTS_INCOMPLETE] Chưa xác minh được thời lượng trên AI Studio. Kiểm tra kết quả rồi tiếp tục tải."
+        if abs(duration - expected_duration) > max(2, expected_duration * .02):
+            return f"[TTS_INCOMPLETE] WAV dài {duration:.2f}s khác thời lượng AI Studio {expected_duration:.2f}s. Tải lại kết quả đầy đủ; chưa gán file hoặc chuyển scene."
 
 
 class MediaAutomation:
@@ -100,7 +113,8 @@ class MediaAutomation:
                 for chunk in targets:
                     if chunk.story_version != p.story_version or chunk.status == "STALE":
                         raise ValueError("Recreate audio segments for the current story first")
-                    if not regenerate and self.available(db, chunk.asset_id, "audio", p.story_version):
+                    asset = db.get(Asset, chunk.asset_id) if chunk.asset_id else None
+                    if not regenerate and self.available(db, chunk.asset_id, "audio", p.story_version) and not narration_download_error(chunk.text, asset.duration):
                         skipped += 1
                         continue
                     items.append({"kind": "tts_context", "provider": "aistudio", "target_type": "chunk", "target_id": chunk.id,
@@ -259,6 +273,10 @@ class MediaAutomation:
                     info = probe(source, config)
                     if info["duration"] <= 0 or not info["has_audio" if kind == "audio" else "has_video"]:
                         raise ValueError("Download has no usable media stream")
+                    if kind == "audio":
+                        error = narration_download_error(job.prompt, info["duration"], body.get("expected_duration"))
+                        if error:
+                            raise ValueError(error)
                     if kind == "audio" and info.get("audio_codec") != "pcm_s16le":
                         binary = find_binary("ffmpeg", config)
                         if not binary:
@@ -266,6 +284,9 @@ class MediaAutomation:
                         run_process([binary, "-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,pipe", "-i", str(source),
                                      "-vn", "-c:a", "pcm_s16le", str(temporary)], timeout=180)
                         info = probe(temporary, config)
+                        error = narration_download_error(job.prompt, info["duration"], body.get("expected_duration"))
+                        if error:
+                            raise ValueError(error)
                     else:
                         shutil.copyfile(source, temporary)
                 sha = hashlib.sha256()
@@ -279,7 +300,8 @@ class MediaAutomation:
                     temporary.replace(destination)
                     asset = Asset(project_id=p.id, name=media["filename"], kind=kind, path=str(destination.relative_to(self.root)),
                                   sha256=checksum, size=destination.stat().st_size, duration=info.get("duration"),
-                                  metadata_json={**info, "browser_download_id": body["download_id"], "download_path": str(source)}, story_version=p.story_version)
+                                  metadata_json={**info, "browser_download_id": body["download_id"], "download_path": str(source),
+                                                 **({"provider_duration": body["expected_duration"]} if kind == "audio" and body.get("expected_duration") else {})}, story_version=p.story_version)
                     db.add(asset)
                     db.flush()
                 if media["target_type"] == "thumbnail":
@@ -291,7 +313,8 @@ class MediaAutomation:
                     if isinstance(target, Chunk):
                         target.real_duration = asset.duration
                 p.publish = {**(p.publish or {}), "final_reviewed": False}
-                job.result = {"asset_id": asset.id, "download_id": body["download_id"], "filename": media["filename"]}
+                job.result = {"asset_id": asset.id, "download_id": body["download_id"], "filename": media["filename"],
+                              **({"duration": asset.duration} if kind == "audio" else {})}
                 job.status, job.progress, job.step = "completed", 100, "Đã tạo, tải và gán tài nguyên"
                 state = {**state, "completed": state["completed"] + 1, "download_path": str(source.parent)}
                 self.advance(db, p, state)

@@ -4,6 +4,56 @@ import {readFileSync} from 'node:fs';
 import {JSDOM} from '../frontend/node_modules/jsdom/lib/api.js';
 
 const adapter=readFileSync(new URL('../browser-extension/media-content.js',import.meta.url),'utf8');
+
+test('AI Studio downloads the assembled WAV, reads its visible duration, and waits for the total to stop changing',async()=>{
+  const dom=new JSDOM(`<main><textarea>At 11:47 p.m., the story begins.</textarea>
+    <section><audio src="blob:https://aistudio.google.com/40ms-packet"></audio>
+      <span>0:00</span><input type="range" aria-label="Seek audio position"><span id="total">2:26</span>
+      <button id="download" aria-label="Download">download</button></section></main>`,
+    {url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  const {window}=dom,d=window.document;
+  window.HTMLElement.prototype.getClientRects=()=>[{}];
+  Object.defineProperty(d,'readyState',{value:'complete'});
+  let now=1000,clicks=0;window.Date.now=()=>now;
+  d.querySelector('#download').onclick=()=>clicks++;
+  window.eval(adapter);
+  const message={provider:'aistudio',jobId:'tts-one',baseline:[],prompt:'At 11:47 p.m., the story begins.'};
+  const poll=()=>window.storyForgeMediaExecute({...message,action:'media-poll'});
+  assert.equal((await poll()).ready,false);
+  now+=4500;d.querySelector('#total').textContent='2:30';
+  assert.equal((await poll()).ready,false);
+  now+=4500;d.querySelector('audio').src='blob:https://aistudio.google.com/next-playback-packet';const output=await poll();
+  assert.equal(output.ready,true);assert.equal(output.result.expectedDuration,150);
+  d.querySelector('audio').src='blob:https://aistudio.google.com/another-packet';
+  const info=await window.storyForgeMediaExecute({...message,action:'media-download-info',result:output.result});
+  assert.equal(info.direct,false);assert.equal(info.expectedDuration,150);
+  await window.storyForgeMediaExecute({...message,action:'media-download-click',result:output.result});
+  assert.equal(clicks,1);
+  d.querySelector('textarea').value='A different story.';
+  await assert.rejects(window.storyForgeMediaExecute({...message,action:'media-download-click',result:output.result}),/Nút tải đã thay đổi/);
+});
+
+test('AI Studio never persists a multi-minute base64 audio baseline, result or preview URL',async()=>{
+  const {window}=new JSDOM('<textarea>Previous narration.</textarea><section><audio></audio><span>0:00</span><input type="range" aria-label="Seek audio position"><span>3:08</span><button aria-label="Download">download</button></section>',
+    {url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  const d=window.document;window.HTMLElement.prototype.getClientRects=()=>[{}];
+  Object.defineProperty(d,'readyState',{value:'complete'});
+  let url='data:audio/wav;base64,'+'A'.repeat(12*1024*1024),now=1000;
+  Object.defineProperty(d.querySelector('audio'),'currentSrc',{get:()=>url});window.Date.now=()=>now;
+  window.eval(adapter);
+  const message={provider:'aistudio',jobId:'second',prompt:'Second narration.',previousPrompt:'Previous narration.'};
+  const {baseline}=await window.storyForgeMediaExecute({...message,action:'media-prepare'});
+  assert.ok(JSON.stringify(baseline).length<100);
+  assert.equal((await window.storyForgeMediaExecute({...message,baseline,action:'media-poll'})).ready,false);
+  // A different result of the same byte count must not be mistaken for the baseline.
+  url=url.slice(0,-1)+'B';await window.storyForgeMediaExecute({...message,baseline,action:'media-poll'});now+=4500;
+  const output=await window.storyForgeMediaExecute({...message,baseline,action:'media-poll'});
+  assert.equal(output.ready,true);assert.equal(output.result.jobId,'second');
+  assert.equal(output.result.expectedDuration,188);assert.equal(output.result.url,undefined);
+  assert.ok(JSON.stringify(output).length<200);
+  const info=await window.storyForgeMediaExecute({...message,result:output.result,action:'media-download-info'});
+  assert.equal(info.direct,false);assert.equal(info.url,undefined);assert.ok(JSON.stringify(info).length<200);
+});
 function studio(){
   const dom=new JSDOM(`<main id="speech" inert>
     <button id="speaker">Speaker 1 - Fola</button><button id="style" aria-label="Style">Friendly</button>
