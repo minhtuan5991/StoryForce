@@ -47,7 +47,8 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
   const collectionExpired=state=>now()>(state.collectionDeadline||(state.deadline+collectionWindow(state)));
   const collectionTimeout=()=>new Error('Đã hết thời gian chờ tối đa để lấy kết quả. Kiểm tra tab AI rồi bấm Tiếp tục; không gửi lại prompt.');
   async function queueRetry(state,code){
-    const message='Tự động chờ 30 giây rồi thử lại bằng yêu cầu mới: '+(code==='INVALID_JSON'?'câu trả lời không phải JSON.':'chưa có nút gửi khả dụng.');
+    const reason={INVALID_JSON:'câu trả lời không phải JSON.',SEND_NOT_READY:'chưa có nút gửi khả dụng.',RETENTION_EVIDENCE:'trích dẫn chưa khớp mốc thời gian; sẽ đánh giá lại từng khoảng.'};
+    const message='Tự động chờ 30 giây rồi thử lại bằng yêu cầu mới: '+reason[code];
     await write({...state,phase:'retry_wait',retryCode:code,retryAt:now()+30000,retryId:crypto.randomUUID(),message});
     try{await request('/jobs/'+state.jobId+'/status','POST',{step:message})}catch{}
   }
@@ -83,6 +84,16 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
       let job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt);
       if(state.jobId&&!job){state=await write({enabled:true,phase:'idle',message:'Tác vụ trước đã hoàn tất hoặc đã hủy.'})}
       if(state.phase==='paused'){
+        // Read the already-sent answer once after upgrading a legacy retention
+        // pause. The app will accept valid evidence or authorize a bounded retry.
+        if(!state.retentionRecovered&&job?.kind==='retention_audit'&&state.owner&&state.tabId&&state.baseline&&
+           state.resumePhase==='submitted'&&/Retention (?:issue )?evidence does not belong/.test(state.message||'')){
+          const {claim}=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
+          if(claim.phase==='sent')await write({...state,phase:'submitted',retentionRecovered:true,previous:'',stable:0,
+            deadline:now()+Math.max(30000,(state.timeout||180)*1000),collectionDeadline:now()+collectionWindow(state),
+            message:'Đang kiểm tra lại trích dẫn theo thời gian sau bản sửa lỗi; chưa gửi yêu cầu mới.'});
+          return;
+        }
         // Recover collection once with the updated renderer, even if an older
         // version already extended its timeout. A sent claim resumes reads only.
         if(!state.rendererRecovered&&job&&textJob(job)&&state.owner&&state.tabId&&state.baseline&&
@@ -261,7 +272,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
         if(current.jobId){try{await request('/jobs/'+current.jobId+'/status','POST',{step:'Tự động tạm dừng: Chưa kết nối được ô nhập AI sau các lần chờ. Tải lại tab rồi tiếp tục.'})}catch{}}
         return;
       }
-      if(['INVALID_JSON','SEND_NOT_READY'].includes(error.code)){
+      if(['INVALID_JSON','SEND_NOT_READY','RETENTION_EVIDENCE'].includes(error.code)){
         await queueRetry(current,error.code);return;
       }
       // Missing/local app connection is recoverable without re-sending anything.

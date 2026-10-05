@@ -121,7 +121,10 @@ def create_app(data_root: str | Path | None = None):
 
     @app.exception_handler(ValueError)
     async def value_error(request,exc):
-        return JSONResponse({"detail":str(exc)},status_code=422)
+        payload = {"detail": str(exc)}
+        if isinstance(exc, audience.RetentionEvidenceError):
+            payload['code'] = exc.code
+        return JSONResponse(payload,status_code=422)
 
     def get(db,model,id):
         item = db.get(model,id)
@@ -960,7 +963,7 @@ def create_app(data_root: str | Path | None = None):
         reason=body.get("reason")
         if not owner or len(owner)>128 or not retry_id or len(retry_id)>128:
             raise ValueError("Invalid automatic retry request")
-        if reason not in ("INVALID_JSON","SEND_NOT_READY"):
+        if reason not in ("INVALID_JSON","SEND_NOT_READY","RETENTION_EVIDENCE"):
             raise ValueError("This error requires manual review")
         with database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
@@ -975,8 +978,14 @@ def create_app(data_root: str | Path | None = None):
             claim=job.payload.get("_bridge_auto",{})
             if claim.get("owner")!=owner or claim.get("attempt")!=job.attempts:
                 raise HTTPException(409,"Another browser owns this attempt")
-            if reason=="INVALID_JSON" and claim.get("phase")!="sent":
+            if reason in ("INVALID_JSON","RETENTION_EVIDENCE") and claim.get("phase")!="sent":
                 raise ValueError("Cannot retry a response before sending")
+            if reason == 'RETENTION_EVIDENCE':
+                feedback = job.payload.get('_retention_feedback', {})
+                project = db.get(Project, job.project_id) if job.project_id else None
+                if (job.kind != 'retention_audit' or not project or feedback.get('attempt') != job.attempts
+                        or feedback.get('audience_hash') != audience.fingerprint(db, project)):
+                    raise ValueError('Only a rejected current retention assessment can be retried')
             if reason=="SEND_NOT_READY" and claim.get("phase")=="sent":
                 raise ValueError("The request was already sent; collect its response")
             count=retry.get("count",0)+1
@@ -1014,7 +1023,21 @@ def create_app(data_root: str | Path | None = None):
     def bridge_result(id:str,body:dict=Body(...)):
         result=body.get("result")
         if isinstance(result,str):result=parse_ai_result(result)
-        workflow.complete_ai(id,result,expected_attempt=body.get("attempt"))
+        try:
+            workflow.complete_ai(id,result,expected_attempt=body.get("attempt"))
+        except audience.RetentionEvidenceError as exc:
+            # Persist only a rejection from the current sent attempt. The
+            # retry endpoint verifies this marker, ownership and retry limit.
+            with database.session() as db:
+                db.execute(sql_text("BEGIN IMMEDIATE"))
+                job = get(db, Job, id)
+                if (body.get('attempt') == job.attempts and job.status == 'waiting_user'
+                        and job.payload.get('_bridge_auto', {}).get('phase') == 'sent'):
+                    job.payload = {**job.payload, '_retention_feedback': {
+                        'attempt': job.attempts, 'message': str(exc)[:1500],
+                        'audience_hash': job.payload.get('_audience_hash')}}
+                    db.commit()
+            raise
         logging.getLogger("browser_bridge").info("Job %s: result accepted via %s",id,
             "automatic collection" if body.get("attempt") is not None else "manual bridge capture")
         return {"accepted":True}

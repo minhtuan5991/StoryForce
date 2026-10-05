@@ -176,6 +176,19 @@ class Workflow:
                 artifacts[a.kind] = a.content
         config = settings_for(db, channel)
         payload = {k:v for k,v in (job.payload or {}).items() if not k.startswith("_")}
+        if job.kind == 'retention_audit' and project:
+            # Old drafts, source stories and previous audit text are not
+            # evidence for the current draft and can confuse time attribution.
+            premise = db.get(Premise, project.selected_premise_id) if project.selected_premise_id else None
+            return {
+                'project': {k: getattr(project, k) for k in ('id', 'title', 'draft', 'story_version', 'wpm', 'target_minutes')},
+                'channel': {k: getattr(channel, k) for k in ('name', 'niche', 'dna', 'country', 'age_range', 'language')} if channel else {},
+                'selected_premise': {k: getattr(premise, k) for k in ('title', 'logline', 'packaging')} if premise else {},
+                'artifacts': {k: artifacts[k] for k in ('opening_choice',) if k in artifacts},
+                'audience_timing': audience.timed_zones(project.draft, project.wpm),
+                'correction_feedback': (job.payload or {}).get('_retention_feedback', {}).get('message', ''),
+                'payload': payload,
+            }
         if job.kind == "premise_generation":
             payload.setdefault("count", config["default_premise_count"])
         if job.kind == 'visual_director' and project:

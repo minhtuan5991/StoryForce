@@ -1,11 +1,12 @@
 """Versioned YouTube preparation; AI judgments are not observed retention."""
 from __future__ import annotations
 
-import re
+import math
+from bisect import bisect_left, bisect_right
 from sqlalchemy import desc
 from pydantic import BaseModel, Field
 from typing import Literal
-from .intelligence import digest, words
+from .intelligence import digest, words, WORD_PATTERN
 from .models import Artifact, Premise, serialize
 
 
@@ -75,8 +76,8 @@ def fingerprint(db, p):
 
 
 def timed_zones(text, wpm):
-    matches = list(re.finditer(r'\S+', text))
-    seconds = len(words(text)) * 60 / max(1, wpm)
+    matches = list(WORD_PATTERN.finditer(text))
+    seconds = len(matches) * 60 / max(1, wpm)
     spans = [(0, 10, 'Concrete interest / question'), (10, 30, 'Stakes and reason to continue'),
              (30, 60, 'Momentum without resetting the hook'), (60, 90, 'New evidence or escalation'),
              (90, 180, 'Meaningful change'), (180, 420, 'Escalation and partial payoff')]
@@ -87,8 +88,40 @@ def timed_zones(text, wpm):
         lo = matches[first].start() if first < len(matches) else len(text)
         hi = matches[last - 1].end() if last > first else lo
         zones.append({'id': f'{start}-{end}', 'start_seconds': start, 'end_seconds': min(end, seconds),
-                      'applicable': start < seconds, 'purpose': purpose, 'start_char': lo, 'end_char': hi})
+                      'applicable': start < seconds, 'purpose': purpose, 'start_char': lo, 'end_char': hi,
+                      'start_word': first, 'end_word': last, 'text': text[lo:hi]})
     return {'estimated_seconds': round(seconds, 2), 'timing_basis': 'Estimated from words/WPM, not recorded narration', 'zones': zones}
+
+
+class RetentionEvidenceError(ValueError):
+    code = 'RETENTION_EVIDENCE'
+
+
+def evidence_location(text, quote, zone, wpm, matches):
+    """Match exact occurrences against word time, including boundary context."""
+    pace = max(1, wpm)
+    starts, ends = [m.start() for m in matches], [m.end() for m in matches]
+    occurrences = []
+    pos = text.find(quote)
+    while pos >= 0:
+        start = bisect_right(ends, pos) * 60 / pace
+        end = bisect_left(starts, pos + len(quote)) * 60 / pace
+        gap = max(zone['start_seconds'] - end, start - zone['end_seconds'], 0)
+        occurrences.append((gap, start, end))
+        pos = text.find(quote, pos + 1)
+    if not occurrences:
+        raise ValueError('Retention judgments need exact evidence from the current draft')
+    # A quote may cross a boundary, but quoting a whole story cannot prove
+    # every zone. Keep the same 15-second tolerance in actual word time.
+    local_limit = zone['end_word'] - zone['start_word'] + 2 * math.ceil(pace * 15 / 60)
+    gap, start, end = min(occurrences)
+    if not words(quote) or len(words(quote)) > local_limit or gap > 15:
+        excerpt = ' '.join(quote.split())[:100]
+        raise RetentionEvidenceError(
+            f'Kiểm định giữ người xem: khoảng {zone["id"]} giây, trích dẫn ở '
+            f'{start:.1f}–{end:.1f} giây theo WPM. Chọn trích dẫn ngắn trong '
+            f'nội dung của khoảng này rồi đánh giá lại. Trích dẫn: “{excerpt}”.')
+    return {'evidence_start_seconds': round(start, 2), 'evidence_end_seconds': round(end, 2)}
 
 
 def validate_scores(scores):
@@ -109,6 +142,7 @@ def validate_audit(db, p, output):
     result = RetentionAudit.model_validate(output).model_dump()
     clock = timed_zones(p.draft, p.wpm)
     expected = {z['id']: z for z in clock['zones']}
+    matches = list(WORD_PATTERN.finditer(p.draft))
     if len(result['zones']) != len(expected) or {z['id'] for z in result['zones']} != set(expected):
         raise ValueError('Assess every provided retention time zone exactly once')
     for verdict in result['zones']:
@@ -119,12 +153,7 @@ def validate_audit(db, p, output):
             quote = verdict['evidence']
             if not quote or quote not in p.draft:
                 raise ValueError('Retention judgments need exact evidence from the current draft')
-            # Include a 15-second boundary margin; do not accept evidence from
-            # an unrelated later passage as proof of an effective opening.
-            margin = int(p.wpm / 4) * 10
-            pos = p.draft.find(quote, max(0, zone['start_char'] - margin), min(len(p.draft), zone['end_char'] + margin + len(quote)))
-            if pos < 0:
-                raise ValueError('Retention evidence does not belong to the reported time zone')
+            verdict.update(evidence_location(p.draft, quote, zone, p.wpm, matches))
     ids = [i['issue_id'] for i in result['issues']]
     if len(ids) != len(set(ids)):
         raise ValueError('Retention issue IDs must be unique')
@@ -132,10 +161,8 @@ def validate_audit(db, p, output):
         if issue['zone_id'] not in expected or not expected[issue['zone_id']]['applicable'] or issue['evidence'] not in p.draft:
             raise ValueError('Retention issues need an applicable time zone and exact draft evidence')
         zone = expected[issue['zone_id']]
-        margin = int(p.wpm / 4) * 10
-        if p.draft.find(issue['evidence'], max(0, zone['start_char'] - margin), min(len(p.draft), zone['end_char'] + margin + len(issue['evidence']))) < 0:
-            raise ValueError('Retention issue evidence does not belong to its time zone')
-        issue['estimated_seconds'] = expected[issue['zone_id']]['start_seconds']
+        issue.update(evidence_location(p.draft, issue['evidence'], zone, p.wpm, matches))
+        issue['estimated_seconds'] = issue['evidence_start_seconds']
     failed = any(z['status'] == 'FAIL' for z in result['zones']) or any(i['severity'] == 'HIGH' for i in result['issues'])
     if result['retention_readiness_passed'] and failed:
         raise ValueError('Retention cannot pass with failed zones or HIGH retention issues')

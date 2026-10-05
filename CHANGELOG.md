@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.21 — 2026-10-05
+
+- Match retention evidence against the same word/WPM clock used for narration estimates. Include exact text for every time zone, support quotations crossing a boundary or repeated in the draft, and bound adjacent context to 15 seconds independently of word length.
+- Send only the current draft, selected packaging and relevant channel context for retention assessments. Exclude old drafts and source transcripts; require Gemini to assess the supplied passage for each time zone.
+- Report the rejected zone, measured quote times and quote excerpt. Automatically request a corrected retention assessment after a verified current rejection, within the existing three-retry budget and ownership/attempt guards. Keep independent quality checks and reject false passes.
+- Include Browser Bridge 1.1.25, which resumes an existing legacy retention pause by reading its already-sent answer before requesting any correction. Preserve other features and settings.
+
 ## 3.1.20 — 2026-10-05 (local only)
 
 - Add genre-aware title/thumbnail promises, three opening variants, timed retention evidence and targeted repairs. Keep story integrity, retention readiness and packaging alignment separate; prior projects without these assessments remain usable.

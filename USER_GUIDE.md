@@ -101,6 +101,8 @@ Kiểm tra cuối gồm duration, resolution, FPS, audio, subtitle, scene covera
 
 ## 8. Publish, analytics, backup
 
+Từ **3.1.21**, Kiểm định giữ người xem nhận nội dung gốc của từng khoảng thời gian để tránh gán nhầm trích dẫn. App đối chiếu bằng số từ/WPM, chấp nhận câu qua ranh giới với dung sai tối đa 15 giây. Nếu trích dẫn sai mốc, thông báo nêu khoảng và thời điểm trích dẫn thực tế; Browser Bridge **1.1.25** tự yêu cầu đánh giá lại trong giới hạn ba lần thử của tác vụ. App vẫn không nhận kết quả đạt nếu bằng chứng sai hoặc các kiểm định cần thiết chưa hoàn tất. Sau khi cập nhật, Reload tiện ích để áp dụng cơ chế này.
+
 Upload YouTube thủ công. Lưu URL, ngày đăng, title, description, thumbnail concept, tags và final duration ở Publish. Nhập snapshot analytics theo ngày; cùng project/ngày cập nhật snapshot, không cộng dồn các snapshot cũ. Sample size và evidence level luôn hiển thị.
 
 Publish cung cấp project ZIP, ZIP gồm media và **Xuất project CapCut**. Chọn Xuất project CapCut, kiểm tra thư mục dự án (CapCut Settings → Draft location), rồi bấm xuất. Tool sao chép tài nguyên đã gán vào một project mới, sắp xếp scene và âm thanh theo timeline, thêm phụ đề/sóng nhạc/logo theo tùy chọn hiện tại. Mở project này trong CapCut Home (khởi động lại CapCut nếu chưa thấy), rồi bấm Export. Đã kiểm tra trên CapCut International 9.5 Windows. Project dùng bản sao media riêng, vì vậy cần giữ toàn bộ thư mục project; mỗi lần xuất tạo bản mới, không ghi đè project đã chỉnh sửa. Không cần dựng video trước trong StoryForge. Settings → Backup & storage hỗ trợ database backup/restore và đổi data root. Restore áp dụng ở lần khởi động sau, tự backup database hiện tại. Media không nằm trong database backup.

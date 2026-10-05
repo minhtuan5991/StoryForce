@@ -38,12 +38,13 @@ function fixture(options={pageSettleMs:0}){
     if(path.endsWith('/retry')){
       assert.equal(body.attempt,state.jobs[0].attempt);
       if(state.retries>=3)throw Error('Đã tự gửi lại 3 lần. Kiểm tra tab AI rồi tiếp tục thủ công hoặc bấm Thử lại.');
+      state.retryReasons??=[];state.retryReasons.push(body.reason);
       state.retries++;state.jobs=[{...job,attempt:body.attempt+1}];claim=undefined;
       if(state.loseRetryResponse){state.loseRetryResponse=false;throw Error('Response lost')}
       return {accepted:true,retry_count:state.retries};
     }
     if(path.endsWith('/result')){
-      if(state.rejectResult)throw Error('Invalid result schema');
+      if(state.rejectResult)throw Object.assign(Error('Invalid result schema'),{code:state.resultCode});
       assert.equal(body.result.answer,'new response');saved++;state.jobs=[];return {accepted:true};
     }
     return {updated:true};
@@ -51,6 +52,33 @@ function fixture(options={pageSettleMs:0}){
   const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},now:()=>time,readTimeoutMs:20,...options});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
   return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:(ms=31000)=>{time+=ms}};
 }
+
+test('retention evidence rejection waits before one corrected request and never saves a false pass',async()=>{
+  const f=fixture(),a=f.create();f.state.jobs[0].kind='retention_audit';
+  f.state.rejectResult=true;f.state.resultCode='RETENTION_EVIDENCE';
+  await a.setEnabled(true);for(let i=0;i<6;i++)await a.tick();
+  assert.equal((await a.read()).phase,'retry_wait');
+  assert.deepEqual(f.counts(),{sent:1,saved:0});
+  await a.tick();assert.equal(f.state.retries,0);
+  f.advance();await a.tick();
+  assert.deepEqual(f.state.retryReasons,['RETENTION_EVIDENCE']);
+  f.state.rejectResult=false;for(let i=0;i<7;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.state.retries,1);
+});
+
+test('legacy retention pause rereads the existing result and disabled retry never sends',async()=>{
+  const f=fixture();let a=f.create();f.state.jobs[0].kind='retention_audit';
+  await a.setEnabled(true);await a.tick();
+  f.db.autoBridge={...f.db.autoBridge,phase:'paused',resumePhase:'submitted',
+    message:'Retention evidence does not belong to the reported time zone'};
+  a=f.create();await a.tick();
+  assert.equal((await a.read()).phase,'submitted');assert.equal(f.counts().sent,1);
+  f.state.rejectResult=true;f.state.resultCode='RETENTION_EVIDENCE';
+  for(let i=0;i<6;i++)await a.tick();
+  assert.equal((await a.read()).phase,'retry_wait');
+  await a.setEnabled(false);f.advance();await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:0});assert.equal(f.state.retries,0);
+});
 
 test('waits after complete, resets on reload and preserves the wait across worker restarts',async()=>{
   const f=fixture({});let a=f.create();f.state.tabStatus='loading';await a.setEnabled(true);await a.tick();

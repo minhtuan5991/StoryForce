@@ -15,8 +15,11 @@ def digest(value) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+WORD_PATTERN = re.compile(r"\b[\w]+(?:['’\-][\w]+)*\b")
+
+
 def words(text: str) -> list[str]:
-    return re.findall(r"\b[\w]+(?:['’\-][\w]+)*\b", text)
+    return WORD_PATTERN.findall(text)
 
 
 def duration_profile(minutes: float, wpm: int = 150) -> dict:

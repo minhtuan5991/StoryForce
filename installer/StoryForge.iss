@@ -1,4 +1,4 @@
-#define AppVersion "3.1.20"
+#define AppVersion "3.1.21"
 #ifndef ReleaseRoot
   #define ReleaseRoot "..\release\StoryForge"
 #endif

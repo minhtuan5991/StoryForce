@@ -10,7 +10,7 @@ async function request(path, method='GET', body) {
   if (!token) throw new Error('Pair the extension first. Generate a key in StoryForge Settings.');
   const response = await fetch(BASE + '/api/bridge' + path, {method,headers:{'X-Bridge-Token':token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
   const result = await response.json();
-  if (!response.ok) throw new Error(result.detail || 'Bridge request failed');
+  if (!response.ok) throw Object.assign(new Error(result.detail || 'Bridge request failed'), {code:result.code});
   return result;
 }
 async function open(job) {
