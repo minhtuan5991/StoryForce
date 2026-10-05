@@ -45,6 +45,37 @@ def test_cross_boundary_passages_and_repeated_quotes_use_actual_occurrences():
         locate(text, text, '0-10')
 
 
+def test_quotation_and_whitespace_formatting_preserves_the_actual_source():
+    text = 'He said, “Don’t open it.”\n\nThe gate stayed shut.'
+    result = locate(text, 'He said, "Don\'t open it." The gate stayed shut.', '0-10')
+    assert result['evidence'] == text
+    assert result['evidence_format_normalized'] is True
+    assert result['evidence_start_seconds'] == 0
+    assert result['evidence_end_seconds'] == len(words(text)) * .4
+    omitted = locate(text, 'He said, Don’t open it. The gate stayed shut.', '0-10')
+    assert omitted['evidence'] == text
+
+
+@pytest.mark.parametrize('quote', [
+    'He said, Don’t close it. The gate stayed shut.',
+    'He said, Dont open it. The gate stayed shut.',
+    'The gate stayed shut. He said, Don’t open it.',
+    'He said, Don’t open it... The gate stayed shut.',
+])
+def test_formatting_tolerance_never_accepts_changed_words_order_or_ellipsis(quote):
+    with pytest.raises(audience.RetentionEvidenceError, match='exact evidence'):
+        locate('He said, “Don’t open it.”\n\nThe gate stayed shut.', quote, '0-10')
+
+
+def test_formatted_repeated_quote_is_still_matched_to_its_actual_time_zone():
+    tokens = ['word' + str(i) for i in range(500)]
+    tokens[0] = '"Don\'t go."'
+    tokens[240] = '“Don’t go.”'
+    result = locate(' '.join(tokens), '"Don\'t go."', '90-180')
+    assert result['evidence'] == 'Don’t go.'
+    assert result['evidence_start_seconds'] == 96.4
+
+
 def test_retention_context_uses_only_current_draft_and_exact_zone_passages(client, project):
     build_story(client, project)
     with client.app.state.database.session() as db:
@@ -59,7 +90,8 @@ def test_retention_context_uses_only_current_draft_and_exact_zone_passages(clien
         assert all(z['text'] for z in context['audience_timing']['zones'] if z['applicable'])
 
 
-def test_rejected_retention_callback_authorizes_one_corrected_attempt_and_preserves_gates(client, project):
+@pytest.mark.parametrize('rejection', ['wrong_zone', 'changed_words'])
+def test_rejected_retention_callback_authorizes_one_corrected_attempt_and_preserves_gates(client, project, rejection):
     build_story(client, project)
     from backend.workflow import set_draft
     with client.app.state.database.session() as db:
@@ -77,7 +109,7 @@ def test_rejected_retention_callback_authorizes_one_corrected_attempt_and_preser
         context = client.app.state.workflow.context(db, j)
         valid = client.app.state.workflow.mock.generate('retention_audit', context, '')
     bad = deepcopy(valid)
-    bad['zones'][0]['evidence'] = valid['zones'][-1]['evidence']
+    bad['zones'][0]['evidence'] = valid['zones'][-1]['evidence'] if rejection == 'wrong_zone' else 'Invented evidence'
     response = client.post(path + '/result', headers=headers, json={'attempt': 1, 'result': bad})
     assert response.status_code == 422 and response.json()['code'] == 'RETENTION_EVIDENCE'
     assert '0-10' in response.json()['detail']
@@ -88,7 +120,7 @@ def test_rejected_retention_callback_authorizes_one_corrected_attempt_and_preser
     assert client.post(path + '/retry', headers=headers, json=retry).json()['retry_count'] == 1
     waiting = next(j for j in client.get('/api/bridge/jobs', headers=headers).json()['items'] if j['id'] == jid)
     assert waiting['attempt'] == 2 and 'correction_feedback' in waiting['prompt']
-    assert 'nội dung của khoảng này' in waiting['prompt'] and '"text": "word0' in waiting['prompt']
+    assert 'Trích dẫn:' in waiting['prompt'] and '"text": "word0' in waiting['prompt']
     assert client.post(path + '/result', headers=headers, json={'attempt': 1, 'result': valid}).status_code == 422
     assert client.post(path + '/claim', headers=headers, json={'owner': 'one', 'attempt': 2, 'authorize_send': True}).json()['send']
     assert client.post(path + '/result', headers=headers, json={'attempt': 2, 'result': valid}).json()['accepted']

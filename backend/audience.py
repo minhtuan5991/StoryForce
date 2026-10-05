@@ -97,31 +97,79 @@ class RetentionEvidenceError(ValueError):
     code = 'RETENTION_EVIDENCE'
 
 
-def evidence_location(text, quote, zone, wpm, matches):
-    """Match exact occurrences against word time, including boundary context."""
+def evidence_text(text):
+    """Normalize display formatting while retaining a map to original text."""
+    chars, positions = [], []
+    for pos, char in enumerate(text):
+        if char in '\"“”„«»':
+            continue
+        if char in '‘’':
+            char = "'"
+        if char.isspace():
+            if not chars or chars[-1] == ' ':
+                continue
+            char = ' '
+        chars.append(char)
+        positions.append(pos)
+    if chars and chars[-1] == ' ':
+        chars.pop()
+        positions.pop()
+    return ''.join(chars), positions
+
+
+def evidence_spans(text, quote, normalized_source=None):
+    """Accept exact text or only whitespace/quotation-format differences."""
+    if not words(quote):
+        return []
+    spans = []
+    pos = text.find(quote)
+    while pos >= 0:
+        spans.append((pos, pos + len(quote), False))
+        pos = text.find(quote, pos + 1)
+    normalized, positions = normalized_source or evidence_text(text)
+    needle, _ = evidence_text(quote)
+    quote_words = [word.replace('‘', "'").replace('’', "'") for word in words(quote)]
+    pos = normalized.find(needle)
+    while pos >= 0:
+        lo, hi = positions[pos], positions[pos + len(needle) - 1] + 1
+        source_words = [word.replace('‘', "'").replace('’', "'") for word in words(text[lo:hi])]
+        # Removing quote delimiters must not merge or alter spoken words.
+        if source_words == quote_words:
+            spans.append((lo, hi, True))
+        pos = normalized.find(needle, pos + 1)
+    return spans
+
+
+def evidence_location(text, quote, zone, wpm, matches, normalized_source=None):
+    """Match source occurrences against word time, including boundary context."""
     pace = max(1, wpm)
     starts, ends = [m.start() for m in matches], [m.end() for m in matches]
     occurrences = []
-    pos = text.find(quote)
-    while pos >= 0:
+    for pos, stop, formatted in evidence_spans(text, quote, normalized_source):
         start = bisect_right(ends, pos) * 60 / pace
-        end = bisect_left(starts, pos + len(quote)) * 60 / pace
+        end = bisect_left(starts, stop) * 60 / pace
         gap = max(zone['start_seconds'] - end, start - zone['end_seconds'], 0)
-        occurrences.append((gap, start, end))
-        pos = text.find(quote, pos + 1)
+        occurrences.append((gap, start, end, pos, stop, formatted))
     if not occurrences:
-        raise ValueError('Retention judgments need exact evidence from the current draft')
+        excerpt = ' '.join(quote.split())[:100]
+        raise RetentionEvidenceError(
+            f'Retention judgments need exact evidence from the current draft: khoảng {zone["id"]} giây '
+            f'có trích dẫn không trùng bản gốc. Sao chép một đoạn ngắn từ zone.text, giữ nguyên '
+            f'từng từ và thứ tự rồi đánh giá lại. Trích dẫn: “{excerpt}”.')
     # A quote may cross a boundary, but quoting a whole story cannot prove
     # every zone. Keep the same 15-second tolerance in actual word time.
     local_limit = zone['end_word'] - zone['start_word'] + 2 * math.ceil(pace * 15 / 60)
-    gap, start, end = min(occurrences)
+    gap, start, end, pos, stop, formatted = min(occurrences)
     if not words(quote) or len(words(quote)) > local_limit or gap > 15:
         excerpt = ' '.join(quote.split())[:100]
         raise RetentionEvidenceError(
             f'Kiểm định giữ người xem: khoảng {zone["id"]} giây, trích dẫn ở '
             f'{start:.1f}–{end:.1f} giây theo WPM. Chọn trích dẫn ngắn trong '
             f'nội dung của khoảng này rồi đánh giá lại. Trích dẫn: “{excerpt}”.')
-    return {'evidence_start_seconds': round(start, 2), 'evidence_end_seconds': round(end, 2)}
+    location = {'evidence_start_seconds': round(start, 2), 'evidence_end_seconds': round(end, 2)}
+    if formatted:
+        location.update(evidence=text[pos:stop], evidence_format_normalized=True)
+    return location
 
 
 def validate_scores(scores):
@@ -143,6 +191,7 @@ def validate_audit(db, p, output):
     clock = timed_zones(p.draft, p.wpm)
     expected = {z['id']: z for z in clock['zones']}
     matches = list(WORD_PATTERN.finditer(p.draft))
+    normalized_source = evidence_text(p.draft)
     if len(result['zones']) != len(expected) or {z['id'] for z in result['zones']} != set(expected):
         raise ValueError('Assess every provided retention time zone exactly once')
     for verdict in result['zones']:
@@ -151,17 +200,15 @@ def validate_audit(db, p, output):
             raise ValueError('Only time zones outside the draft may be NOT_APPLICABLE')
         if zone['applicable']:
             quote = verdict['evidence']
-            if not quote or quote not in p.draft:
-                raise ValueError('Retention judgments need exact evidence from the current draft')
-            verdict.update(evidence_location(p.draft, quote, zone, p.wpm, matches))
+            verdict.update(evidence_location(p.draft, quote, zone, p.wpm, matches, normalized_source))
     ids = [i['issue_id'] for i in result['issues']]
     if len(ids) != len(set(ids)):
         raise ValueError('Retention issue IDs must be unique')
     for issue in result['issues']:
-        if issue['zone_id'] not in expected or not expected[issue['zone_id']]['applicable'] or issue['evidence'] not in p.draft:
+        if issue['zone_id'] not in expected or not expected[issue['zone_id']]['applicable']:
             raise ValueError('Retention issues need an applicable time zone and exact draft evidence')
         zone = expected[issue['zone_id']]
-        issue.update(evidence_location(p.draft, issue['evidence'], zone, p.wpm, matches))
+        issue.update(evidence_location(p.draft, issue['evidence'], zone, p.wpm, matches, normalized_source))
         issue['estimated_seconds'] = issue['evidence_start_seconds']
     failed = any(z['status'] == 'FAIL' for z in result['zones']) or any(i['severity'] == 'HIGH' for i in result['issues'])
     if result['retention_readiness_passed'] and failed:

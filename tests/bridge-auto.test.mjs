@@ -66,11 +66,13 @@ test('retention evidence rejection waits before one corrected request and never 
   assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.state.retries,1);
 });
 
-test('legacy retention pause rereads the existing result and disabled retry never sends',async()=>{
+for(const legacyMessage of ['Retention evidence does not belong to the reported time zone',
+  'Retention judgments need exact evidence from the current draft']){
+test('legacy retention pause rereads the existing result and disabled retry never sends: '+legacyMessage,async()=>{
   const f=fixture();let a=f.create();f.state.jobs[0].kind='retention_audit';
   await a.setEnabled(true);await a.tick();
   f.db.autoBridge={...f.db.autoBridge,phase:'paused',resumePhase:'submitted',
-    message:'Retention evidence does not belong to the reported time zone'};
+    message:legacyMessage};
   a=f.create();await a.tick();
   assert.equal((await a.read()).phase,'submitted');assert.equal(f.counts().sent,1);
   f.state.rejectResult=true;f.state.resultCode='RETENTION_EVIDENCE';
@@ -79,6 +81,7 @@ test('legacy retention pause rereads the existing result and disabled retry neve
   await a.setEnabled(false);f.advance();await a.tick();
   assert.deepEqual(f.counts(),{sent:1,saved:0});assert.equal(f.state.retries,0);
 });
+}
 
 test('waits after complete, resets on reload and preserves the wait across worker restarts',async()=>{
   const f=fixture({});let a=f.create();f.state.tabStatus='loading';await a.setEnabled(true);await a.tick();

@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.22 — 2026-10-05
+
+- Complete the retention fix after testing a real Gemini reassessment. Accept only display-format differences in whitespace, double-quote delimiters and straight/curly apostrophes; retain the exact original source passage and its word/WPM timing in the saved audit.
+- Keep changed words, contractions, order, ellipses and misplaced evidence rejected. Let the existing bounded corrective retry handle an evidence quotation that genuinely differs from the current draft, including pending legacy pauses.
+- Include Browser Bridge 1.1.26. Preserve all other features, settings and project data.
+
 ## 3.1.21 — 2026-10-05
 
 - Match retention evidence against the same word/WPM clock used for narration estimates. Include exact text for every time zone, support quotations crossing a boundary or repeated in the draft, and bound adjacent context to 15 seconds independently of word length.

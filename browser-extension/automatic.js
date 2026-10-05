@@ -87,7 +87,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
         // Read the already-sent answer once after upgrading a legacy retention
         // pause. The app will accept valid evidence or authorize a bounded retry.
         if(!state.retentionRecovered&&job?.kind==='retention_audit'&&state.owner&&state.tabId&&state.baseline&&
-           state.resumePhase==='submitted'&&/Retention (?:issue )?evidence does not belong/.test(state.message||'')){
+           state.resumePhase==='submitted'&&/Retention (?:(?:issue )?evidence does not belong|judgments need exact evidence)/.test(state.message||'')){
           const {claim}=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
           if(claim.phase==='sent')await write({...state,phase:'submitted',retentionRecovered:true,previous:'',stable:0,
             deadline:now()+Math.max(30000,(state.timeout||180)*1000),collectionDeadline:now()+collectionWindow(state),

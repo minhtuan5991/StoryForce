@@ -101,7 +101,7 @@ Kiểm tra cuối gồm duration, resolution, FPS, audio, subtitle, scene covera
 
 ## 8. Publish, analytics, backup
 
-Từ **3.1.21**, Kiểm định giữ người xem nhận nội dung gốc của từng khoảng thời gian để tránh gán nhầm trích dẫn. App đối chiếu bằng số từ/WPM, chấp nhận câu qua ranh giới với dung sai tối đa 15 giây. Nếu trích dẫn sai mốc, thông báo nêu khoảng và thời điểm trích dẫn thực tế; Browser Bridge **1.1.25** tự yêu cầu đánh giá lại trong giới hạn ba lần thử của tác vụ. App vẫn không nhận kết quả đạt nếu bằng chứng sai hoặc các kiểm định cần thiết chưa hoàn tất. Sau khi cập nhật, Reload tiện ích để áp dụng cơ chế này.
+Từ **3.1.22**, Kiểm định giữ người xem nhận nội dung gốc của từng khoảng thời gian để tránh gán nhầm trích dẫn. App đối chiếu bằng số từ/WPM, chấp nhận câu qua ranh giới với dung sai tối đa 15 giây. Khác biệt xuống dòng và dấu ngoặc kép khi sao chép được nhận diện, nhưng app vẫn lưu trích dẫn đúng từ bản gốc; không nhận từ bị đổi, bỏ hoặc đảo thứ tự. Nếu trích dẫn sai mốc hoặc khác nội dung gốc, Browser Bridge **1.1.26** tự yêu cầu đánh giá lại trong giới hạn ba lần thử của tác vụ. App vẫn không nhận kết quả đạt nếu bằng chứng sai hoặc các kiểm định cần thiết chưa hoàn tất. Sau khi cập nhật, Reload tiện ích để áp dụng cơ chế này.
 
 Upload YouTube thủ công. Lưu URL, ngày đăng, title, description, thumbnail concept, tags và final duration ở Publish. Nhập snapshot analytics theo ngày; cùng project/ngày cập nhật snapshot, không cộng dồn các snapshot cũ. Sample size và evidence level luôn hiển thị.
 
