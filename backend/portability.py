@@ -26,7 +26,7 @@ def project_archive(db, root: Path, project, include_media=False):
             if item['content'].get('content_fingerprint')!=metadata_fingerprint(db,project):
                 handoff='WARNING: Metadata is out of date; regenerate before uploading.\n\n'+handoff
             archive.writestr('publish/youtube_metadata.txt',handoff.encode('utf-8-sig'))
-        for kind in ("story_bible", "outline", "outline_rewrite", "gemini_story_audit", "chatgpt_cross_review", "visual_director", "render_report"):
+        for kind in ("story_bible", "outline", "outline_rewrite", "gemini_story_audit", "chatgpt_cross_review", "retention_audit", "opening_variants", "opening_choice", "visual_director", "render_report"):
             items = [a for a in related["artifacts"] if a["kind"] == kind]
             if items:
                 archive.writestr(f"story/{kind}.json",json.dumps(items[-1],ensure_ascii=False,indent=2))
@@ -74,7 +74,7 @@ def _inspect_connection(connection):
         if not required <= tables:
             raise ValueError("This is not a StoryForge database")
         version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-        if version != 1:
+        if version not in (1, 2):
             raise ValueError("Unsupported schema version")
 
 

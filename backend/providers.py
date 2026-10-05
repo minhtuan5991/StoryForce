@@ -14,6 +14,7 @@ PROVIDERS = {
     "chatgpt_cross_review": "chatgpt", "disagreement_resolver": "gemini", "targeted_rewrite": "chatgpt",
     "final_verify_gemini": "gemini", "final_verify_chatgpt": "chatgpt", "visual_director": "gemini",
     "tts_context": "aistudio", "image_generation": "gemini", "video_generation": "flow", "youtube_metadata": "chatgpt",
+    "opening_variants": "chatgpt", "retention_audit": "gemini", "retention_rewrite": "chatgpt",
 }
 PROVIDER_URLS = {"chatgpt": "https://chatgpt.com/", "gemini": "https://gemini.google.com/app",
                  "aistudio": "https://aistudio.google.com/generate-speech", "flow": "https://flow.google.com/"}
@@ -39,6 +40,19 @@ class MockProvider(LLMProvider):
     def generate(self, kind, context, prompt):
         project = context.get("project") or {}
         profile = duration_profile(project.get("target_minutes", 10), project.get("wpm", 150))
+        if kind == 'opening_variants':
+            return {'variants': [{'id': key, 'strategy': strategy, 'text': 'At 2:17 a.m., the abandoned station spoke my name. I had unplugged its radio an hour earlier.',
+                                  'scores': {'clarity': 88, 'curiosity': 86, 'promise_alignment': 90}, 'tradeoff': 'Synthetic fixture for offline workflow checks.'}
+                                 for key, strategy in zip('ABC', ('Concrete anomaly', 'Immediate choice', 'Consequences first'))],
+                    'recommended': 'A', 'rationale': 'Mock recommendation, not an audience experiment.'}
+        if kind == 'retention_audit':
+            clock = context['audience_timing']
+            text = project['draft']
+            return {'zones': [{'id': z['id'], 'status': 'PASS' if z['applicable'] else 'NOT_APPLICABLE',
+                               'evidence': text[z['start_char']:min(z['end_char'], z['start_char'] + 100)] if z['applicable'] else '',
+                               'explanation': 'Synthetic offline assessment; not a measured audience result.'} for z in clock['zones']],
+                    'issues': [], 'retention_readiness_passed': True, 'packaging_alignment_passed': True,
+                    'packaging_explanation': 'Mock fixture alignment check', 'summary': 'Mock retention assessment; review before production.'}
         if kind == "youtube_metadata":
             return {"title":project.get('title','A story')[:100],"description":"An original fictional story about an isolated keeper facing a difficult choice. Thank you for watching; if you enjoyed it, you are welcome to like the video and subscribe for more stories.","tags":["fictional story","mystery narration"],"hashtags":["#Fiction"],"alternative_titles":[],"seo_notes":"Mock fixture: review before uploading.","review_notes":["Review the final video, media rights, audience and synthetic-content disclosure settings."]}
         if kind == "story_dna":

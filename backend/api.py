@@ -30,6 +30,8 @@ from .models import *
 from .schemas import ChannelCreate, SourceCreate, ProjectCreate, JobCreate, AnalyticsCreate, StoryDNA
 from .intelligence import duration_profile, channel_fit, novelty_check, words, digest, tokens, recommend_duration
 from .workflow import Workflow, settings_for, latest, set_draft, gate_lock, lock_story, active_issues
+from . import audience
+from .channel_learning import learning_data, normalize_snapshot, reminders
 from .production_extras import tts_scene_context, thumbnail_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
 from .ai_result import parse_ai_result
@@ -59,6 +61,7 @@ def create_app(data_root: str | Path | None = None):
     database = Database(root)
     workflow = Workflow(database,root)
     media_automation = MediaAutomation(workflow)
+    workflow.media_automation = media_automation
     csrf = secrets.token_urlsafe(32)
     deletions = Deletions(database, workflow, csrf)
     log_handlers=[]
@@ -72,12 +75,22 @@ def create_app(data_root: str | Path | None = None):
 
     @asynccontextmanager
     async def lifespan(app):
-        yield
-        workflow.executor.shutdown(wait=True,cancel_futures=True)
-        database.engine.dispose()
-        for logger,handler in log_handlers:
-            logger.removeHandler(handler)
-            handler.close()
+        stop_watchdog=threading.Event()
+        def monitor_media():
+            while not stop_watchdog.wait(10):
+                try:media_automation.check_stalled()
+                except Exception:logging.getLogger('app').exception('Media heartbeat check failed')
+        monitor=threading.Thread(target=monitor_media,name='storyforge-media-heartbeat',daemon=True)
+        monitor.start()
+        try:
+            yield
+        finally:
+            stop_watchdog.set();monitor.join(timeout=5)
+            workflow.executor.shutdown(wait=True,cancel_futures=True)
+            database.engine.dispose()
+            for logger,handler in log_handlers:
+                logger.removeHandler(handler)
+                handler.close()
 
     app = FastAPI(title="StoryForge US",version=VERSION,lifespan=lifespan,docs_url="/api/docs",openapi_url="/api/openapi.json")
     app.state.database,app.state.workflow,app.state.root = database,workflow,root
@@ -304,7 +317,7 @@ def create_app(data_root: str | Path | None = None):
             if body.source_id:get(db,Source,body.source_id)
             data=body.model_dump()
             if body.duration_mode=="Auto":data["target_minutes"]=channel.default_duration
-            item=Project(**data);db.add(item);db.commit()
+            item=Project(**data, settings={'audience_policy': 1});db.add(item);db.commit()
             project_folder(root,item.id)
             return serialize(item)
 
@@ -332,6 +345,8 @@ def create_app(data_root: str | Path | None = None):
                     "youtube_metadata_current":bool(artifacts.get('youtube_metadata') and artifacts['youtube_metadata']['content'].get('content_fingerprint')==metadata_fingerprint(db,p)),
                     "workflow_settings":{key:config[key] for key in ("pipeline_mode","default_premise_count")},
                     "premise_reuse":workflow.premise_reuse(db,p),
+                    "audience_readiness":audience.readiness(db,p,gate_lock(db,p,include_audience=False)['can_lock']),
+                    "missing_resources":media_automation.missing(db,p),
                     "artifacts":artifacts,"premises":[serialize(v) for v in db.query(Premise).filter_by(project_id=id)],
                     "issues":[serialize(v) for v in db.query(Issue).filter_by(project_id=id).order_by(desc(Issue.cycle))],
                     "versions":[serialize(v) for v in db.query(StoryVersion).filter_by(project_id=id).order_by(desc(StoryVersion.version))],
@@ -397,6 +412,20 @@ def create_app(data_root: str | Path | None = None):
             db.execute(sql_text("BEGIN IMMEDIATE"))
             p=get(db,Project,id);result=lock_story(db,p,body);db.commit();return result
 
+    @app.post('/api/projects/{id}/opening-choice')
+    def choose_opening(id:str, body:dict=Body(...)):
+        with database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p=get(db,Project,id)
+            if p.locked or db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Choose an opening before locking or starting another project job')
+            report=latest(db,id,'opening_variants')
+            if not report:raise ValueError('Compare opening variants first')
+            choice=next((v for v in report.content['variants'] if v['id']==body.get('id')),None)
+            if not choice:raise ValueError('Choose opening A, B or C')
+            db.add(Artifact(project_id=id,kind='opening_choice',provider='human',content={**choice,'selection_source':'Human choice'},output_hash=digest(choice),story_version=p.story_version))
+            db.commit();return choice
+
     @app.patch("/api/artifacts/{id}")
     def edit_artifact(id:str,body:dict=Body(...)):
         with database.session() as db:
@@ -425,6 +454,8 @@ def create_app(data_root: str | Path | None = None):
             with database.session() as db:return workflow.next_step(db,get(db,Project,id))
         with database.session() as db:
             p=get(db,Project,id);next_action=workflow.next_step(db,p)
+            if not p.locked and next_action.get('gate',{}).get('can_lock'):
+                lock_story(db,p);db.commit();next_action=workflow.next_step(db,p)
             auto_continue=settings_for(db,db.get(Channel,p.channel_id))["pipeline_mode"]!="manual"
         if "kind" not in next_action:return next_action
         return workflow.submit(next_action["kind"],project_id=id,payload={"auto_continue":auto_continue})
@@ -465,12 +496,19 @@ def create_app(data_root: str | Path | None = None):
         with database.session() as db:
             job=get(db,Job,id)
             if job.status=="completed":raise ValueError("Completed jobs cannot be restarted; create a new job")
+            automatic_media=bool(job.payload.get('_media'))
+            media_project=job.project_id
+            if automatic_media and action!='cancel':
+                raise ValueError('Use Browser Bridge to resume an existing media download. Skipped resources must be created manually; see Assets')
+            if automatic_media and (job.status not in ('queued','running','waiting_user') or db.get(Project,media_project).settings.get('media_automation',{}).get('current_job_id')!=job.id):
+                raise ValueError('This media item is no longer active; see Assets for missing resources')
             if action=="cancel":job.status="cancelled";job.step="Cancelled by user"
             else:
                 if job.status=="running":raise ValueError("This job is already running")
                 job.status="queued";job.error=""
                 if action=="retry":job.payload={k:v for k,v in job.payload.items() if k!="_bridge_retry"}
             db.commit()
+        if automatic_media and action=='cancel':media_automation.stop(media_project)
         if action!="cancel":workflow.executor.submit(workflow.run,id)
         return {"status":"cancelled" if action=="cancel" else "queued"}
 
@@ -479,7 +517,8 @@ def create_app(data_root: str | Path | None = None):
         with workflow.deletion_lock, database.session() as db:
             db.execute(sql_text('BEGIN IMMEDIATE'))
             p=get(db,Project,id)
-            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+            active=db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).all()
+            if active and not workflow.tts_active(active):
                 raise HTTPException(409,'Finish the active job first')
             if set(body)-{'mode','image_count','video_count'}:raise ValueError('Unknown visual option')
             options={**((p.settings or {}).get('visual_options') or {}),**body}
@@ -700,43 +739,39 @@ def create_app(data_root: str | Path | None = None):
                     archive.write(project_file,project_file.name)
             return FileResponse(output,filename=output.name)
 
+    @app.get('/api/analytics/reminders')
+    def analytics_reminders(channel_id:str|None=None):
+        with database.session() as db:return {'items':reminders(db,channel_id),'optional':True}
+
     @app.get("/api/analytics")
     def analytics(channel_id:str|None=None):
         with database.session() as db:
             query=db.query(Analytics).join(Project,Project.id==Analytics.project_id)
             if channel_id:query=query.filter(Project.channel_id==channel_id)
             items=query.order_by(desc(Analytics.date)).limit(1000).all()
-            return {"items":[{**serialize(a),"project_title":db.get(Project,a.project_id).title,"channel_id":db.get(Project,a.project_id).channel_id} for a in items],"learning":learning_data(db,channel_id)}
+            return {"items":[{**serialize(a),"project_title":db.get(Project,a.project_id).title,"channel_id":db.get(Project,a.project_id).channel_id} for a in items],"learning":learning_data(db,channel_id),"reminders":reminders(db,channel_id)}
 
     @app.post("/api/analytics")
     def add_analytics(body:AnalyticsCreate):
         date.fromisoformat(body.date)
         with database.session() as db:
-            get(db,Project,body.project_id)
+            p=get(db,Project,body.project_id)
+            premise=db.get(Premise,p.selected_premise_id) if p.selected_premise_id else None
+            data={**body.model_dump(),'metrics':normalize_snapshot(body,p,premise)}
             record=db.query(Analytics).filter_by(project_id=body.project_id,date=body.date).first()
             if record:
-                for k,v in body.model_dump().items():setattr(record,k,v)
-            else:record=Analytics(**body.model_dump());db.add(record)
+                for k,v in data.items():setattr(record,k,v)
+            else:record=Analytics(**data);db.add(record)
             db.commit();return serialize(record)
 
-    def learning_data(db,channel_id=None):
-        query=db.query(Project)
-        if channel_id:query=query.filter_by(channel_id=channel_id)
-        rows=[]
-        for p in query.all():
-            snapshot=db.query(Analytics).filter_by(project_id=p.id).order_by(desc(Analytics.date)).first()
-            if snapshot:rows.append((p,snapshot))
-        n=len(rows)
-        grouped={}
-        for p,a in rows:
-            premise=db.get(Premise,p.selected_premise_id) if p.selected_premise_id else None
-            key=premise.category if premise else "Unclassified"
-            grouped.setdefault(key,[]).append(a)
-        patterns=[{"category":k,"sample_size":len(v),"views":sum(a.views for a in v),"average_ctr":round(sum(a.ctr for a in v)/len(v),2),"average_percentage_viewed":round(sum(a.average_percentage_viewed for a in v)/len(v),2)} for k,v in grouped.items()]
-        return {"sample_size":n,"confidence":"Insufficient" if n<5 else "Low" if n<20 else "Moderate observational evidence",
-                "total_views":sum(a.views for _,a in rows),"average_ctr":round(sum(a.ctr for _,a in rows)/max(1,n),2),"patterns":patterns,
-                "recommendations":["Collect at least five comparable videos per hypothesis before drawing conclusions."] if n<5 else ["Compare retention at similar ages and durations. Test one DNA change at a time; these observations do not establish causation."],
-                "automatic_dna_changes":False,"snapshot_policy":"Latest snapshot per project; cumulative snapshots are not summed"}
+    @app.post('/api/projects/{id}/analytics-reminder-dismiss')
+    def dismiss_analytics_reminder(id:str,body:dict=Body(...)):
+        if body.get('horizon_days') not in (7,28):raise ValueError('Choose the 7-day or 28-day reminder')
+        with database.session() as db:
+            p=get(db,Project,id)
+            dismissed=set(p.publish.get('analytics_reminders_dismissed',[]));dismissed.add(body['horizon_days'])
+            p.publish={**p.publish,'analytics_reminders_dismissed':sorted(dismissed)}
+            db.commit();return {'dismissed':True,'optional':True}
 
     @app.get("/api/calendar")
     def calendar(channel_id:str|None=None):
@@ -891,6 +926,10 @@ def create_app(data_root: str | Path | None = None):
     @app.post('/api/bridge/media/{id}/result')
     def complete_media(id:str,body:dict=Body(...)):
         return media_automation.complete(id,body)
+
+    @app.post('/api/bridge/media/{id}/failure')
+    def failed_media(id:str,body:dict=Body(...)):
+        return media_automation.failure(id,body)
 
     @app.post("/api/bridge/jobs/{id}/claim")
     def bridge_claim(id:str,body:dict=Body(...)):

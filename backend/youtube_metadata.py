@@ -1,7 +1,7 @@
 """ChatGPT handoff data; publishing remains a manual user action."""
 import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from .models import Channel, Chunk, Scene, serialize
+from .models import Channel, Chunk, Scene, Premise, serialize
 from .intelligence import digest
 
 POLICY_SOURCES = [
@@ -60,6 +60,7 @@ def metadata_context(db, project):
         'channel': {k:serialize(channel)[k] for k in ('name','language','niche','country','age_range','dna')},
         'narration_segments':[{'number':c.number,'text':c.text,'status':c.status,'seconds':c.real_duration} for c in chunks],
         'visual_plan':[{'scene':s.scene_key,'prompt':s.prompt} for s in scenes],
+        'selected_packaging': (db.get(Premise,project.selected_premise_id).packaging or {}) if project.selected_premise_id else {},
         'policy_sources':POLICY_SOURCES,
     }
 

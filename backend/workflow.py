@@ -15,12 +15,14 @@ from .models import *
 from .schemas import StoryDNA, AuditResult, AIIssue, Verification
 from .intelligence import digest, words, tokens, novelty_check, duration_profile, chunk_text
 from .providers import MockProvider, BrowserBridgeProvider, PROVIDERS
+from . import audience
+from .channel_learning import learning_data
 from .production_extras import outro_chunk
 from .visual_planning import visual_budget, validate_visual_output, narration_clock, balance_scene_ranges, DEFAULT_VIDEO_SECONDS
 from .youtube_metadata import YouTubeMetadata, metadata_context, metadata_fingerprint, upload_text
 from .media import project_folder, probe, timeline_from_audio, write_subtitles, render_project, safe_path, validate_assets, render_inputs_hash, render_options
 
-STORY_STEPS = ["content_direction", "premise_generation", "premise_mini_test", "story_bible", "outline", "outline_audit", "outline_rewrite", "full_draft", "gemini_story_audit", "chatgpt_cross_review", "disagreement_resolver", "targeted_rewrite", "final_verify_gemini", "final_verify_chatgpt"]
+STORY_STEPS = ["content_direction", "premise_generation", "premise_mini_test", "story_bible", "outline", "outline_audit", "outline_rewrite", "opening_variants", "full_draft", "gemini_story_audit", "chatgpt_cross_review", "disagreement_resolver", "targeted_rewrite", "retention_audit", "final_verify_gemini", "final_verify_chatgpt"]
 
 
 def settings_for(db, channel=None):
@@ -71,7 +73,7 @@ def verification_fingerprint(db, project):
     return digest({"draft":project.draft,"bible":bible.content if bible else {},"outline":outline.content if outline else {},"issues":sorted(issues)})
 
 
-def gate_lock(db, project):
+def gate_lock(db, project, include_audience=True):
     reasons = []
     if not project.draft.strip():
         reasons.append("No draft")
@@ -89,7 +91,14 @@ def gate_lock(db, project):
             reasons.append(f"{kind}: verify the current draft")
         elif not artifact.content.get("passed") or artifact.content.get("critical") or artifact.content.get("high"):
             reasons.append(f"{kind}: quality gate failed")
+    if include_audience and (project.settings or {}).get('audience_policy'):
+        ready = audience.readiness(db, project)
+        if ready['status'] != 'ASSESSED':
+            reasons.append('Assess retention for the current draft, Bible, outline and packaging')
+        elif not ready['retention_readiness_passed'] or not ready['packaging_alignment_passed']:
+            reasons.append('Retention or title/thumbnail promise needs repair')
     approval_token = digest({"version": project.story_version, "fingerprint": verification_fingerprint(db, project),
+                             "audience_fingerprint": audience.fingerprint(db, project),
                              "reasons": reasons, "verification": [latest(db, project.id, kind).output_hash if latest(db, project.id, kind) else None
                                                                       for kind in ("final_verify_gemini", "final_verify_chatgpt")]})
     return {"can_lock": not reasons, "reasons": reasons, "story_version": project.story_version, "approval_token": approval_token}
@@ -153,6 +162,7 @@ class Workflow:
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="storyforge")
         self.mock = MockProvider()
         self.bridge = BrowserBridgeProvider()
+        self.media_automation = None
 
     def context(self, db, job):
         project = db.get(Project, job.project_id) if job.project_id else None
@@ -180,7 +190,9 @@ class Workflow:
                 "novelty_memory": [serialize(n) for n in db.query(Novelty).order_by(desc(Novelty.updated_at)).limit(500).all()],
                 "calendar": [serialize(c) for c in db.query(CalendarEntry).filter_by(channel_id=channel.id).limit(60).all()] if channel else [],
                 "payload": payload, "video_ratio": config["visual_video_ratio"],
-                "duration_profile": duration_profile(project.target_minutes, project.wpm) if project else {}}
+                "duration_profile": duration_profile(project.target_minutes, project.wpm) if project else {},
+                "audience_timing": audience.timed_zones(project.draft, project.wpm) if project and job.kind in ('retention_audit', 'retention_rewrite') else {},
+                "channel_learning": learning_data(db, channel.id) if channel and job.kind in ('premise_generation', 'discovery') else {}}
 
     def validate_step(self, db, job):
         if job.kind not in PROVIDERS and job.kind not in ("chunk_tts", "sync", "render", "capcut_export"):
@@ -210,8 +222,21 @@ class Workflow:
             raise ValueError(f"Complete {required[job.kind]} first")
         if job.kind in ("gemini_story_audit", "chatgpt_cross_review", "targeted_rewrite", "final_verify_gemini", "final_verify_chatgpt") and not p.draft:
             raise ValueError("Create a draft first")
+        if job.kind == 'opening_variants' and not latest(db, p.id, 'outline_rewrite'):
+            raise ValueError('Revise the outline before comparing openings')
+        if job.kind in ('retention_audit', 'retention_rewrite'):
+            if not p.draft or not p.selected_premise_id:
+                raise ValueError('Create a draft and choose a premise before assessing retention')
+            if p.locked:
+                raise ValueError('Create an unlocked draft version before retention changes')
+        if job.kind == 'retention_rewrite' and db.query(Artifact).filter_by(project_id=p.id, kind='retention_rewrite').count() >= 3:
+            raise ValueError('Three retention repair passes reached. Review the remaining passages manually')
         if job.kind in ("chunk_tts", "visual_director", "sync", "render", "capcut_export", "tts_context", "image_generation", "video_generation") and not p.locked:
             raise ValueError("Lock the story before production")
+        if job.kind == 'visual_director' and job.payload.get('automatic_resources'):
+            budget = visual_budget(serialize(p), settings_for(db, db.get(Channel,p.channel_id)), job.payload)
+            if job.payload.get('confirmed_image_count') != budget['image_count'] or job.payload.get('confirmed_video_count') != budget['video_count']:
+                raise ValueError('Confirm the image and video counts before creating resources after the new plan')
         if job.kind == "targeted_rewrite":
             settings = settings_for(db)
             rewrite_count=db.query(Artifact).filter_by(project_id=p.id,kind="targeted_rewrite").count()
@@ -223,15 +248,63 @@ class Workflow:
     def submit(self, kind, project_id=None, source_id=None, channel_id=None, payload=None):
         with self.database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
-            if project_id and db.query(Job).filter(Job.project_id==project_id, Job.status.in_(["queued", "running", "waiting_user"])).count():
-                raise ValueError("Finish or cancel the active project job before starting another")
             job = Job(kind=kind, project_id=project_id, source_id=source_id, channel_id=channel_id, payload=payload or {})
             self.validate_step(db, job)
+            active = db.query(Job).filter(Job.project_id==project_id, Job.status.in_(["queued", "running", "waiting_user"])).all() if project_id else []
+            if active:
+                if kind == 'visual_director' and self.tts_active(active):
+                    p = db.get(Project, project_id)
+                    budget = self.context(db, job)['payload']
+                    queue = {'kind': 'visual_director', 'payload': {**budget, 'auto_continue': False},
+                             'story_version': p.story_version, 'draft_hash': digest(p.draft), 'queued_at': now()}
+                    # A later visual plan replaces the queued plan, not the audio
+                    # job or its durable browser authorization.
+                    p.settings = {**p.settings, 'production_queue': [queue]}
+                    db.commit()
+                    return {**queue, 'status': 'queued_after_tts', 'step': 'Visual plan queued after narration'}
+                raise ValueError("Finish or cancel the active project job before starting another")
             db.add(job)
             db.commit()
             result = serialize(job)
         self.executor.submit(self.run, result["id"])
         return result
+
+    @staticmethod
+    def tts_active(jobs):
+        return bool(jobs) and all(j.kind == 'tts_context' and j.payload.get('_media', {}).get('target_type') == 'chunk' for j in jobs)
+
+    def drain_production_queue(self, project_id):
+        """One project writer and one AI tab operation at a time; persists on restart."""
+        job_id, visual_body = None, None
+        with self.deletion_lock, self.database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p = db.get(Project, project_id)
+            if not p or db.query(Job).filter(Job.project_id==project_id, Job.status.in_(['queued', 'running', 'waiting_user'])).count():
+                return
+            pending = list(p.settings.get('production_queue', []))
+            if not pending:
+                return
+            action = pending.pop(0)
+            p.settings = {**p.settings, 'production_queue': pending}
+            if not p.locked or action.get('story_version') != p.story_version or action.get('draft_hash') != digest(p.draft):
+                p.settings = {**p.settings, 'production_queue_notice': 'Queued visual request expired because the story changed. Confirm the current plan again.'}
+            elif action['kind'] == 'visual_director':
+                job = Job(project_id=p.id, kind='visual_director', payload=action['payload'])
+                self.validate_step(db, job)
+                db.add(job); db.flush(); job_id = job.id
+            elif action['kind'] == 'visuals':
+                visual_body = action['body']
+            db.commit()
+        if job_id:
+            self.executor.submit(self.run, job_id)
+        elif visual_body and self.media_automation:
+            try:
+                self.media_automation.start(project_id, visual_body)
+            except ValueError as exc:
+                with self.database.session() as db:
+                    p = db.get(Project, project_id)
+                    p.settings = {**p.settings, 'production_queue_notice': str(exc)}
+                    db.commit()
 
     def premise_reuse(self, db, project):
         """An approved current render can seed another project without resetting it."""
@@ -268,7 +341,7 @@ class Workflow:
         gate = self.premise_reuse(db, original)
         if not gate['ready']:
             raise ValueError(gate['reason'])
-        settings = {'premise_origin': origin}
+        settings = {'premise_origin': origin, 'audience_policy': 1}
         if 'visual_options' in (original.settings or {}):
             settings['visual_options'] = deepcopy(original.settings['visual_options'])
         p = Project(channel_id=original.channel_id, source_id=original.source_id,
@@ -314,7 +387,8 @@ class Workflow:
                 if p.draft:
                     raise ValueError("Draft already exists; create a separate project for another premise")
                 p.selected_premise_id, p.title, p.stage = pr.id, pr.title, "BIBLE"
-                p.publish = {**p.publish, "thumbnail_concept": pr.mini_test.get("thumbnail_concept", "")}
+                p.publish = {**p.publish, "thumbnail_concept": pr.packaging.get('thumbnail_concept') or pr.mini_test.get("thumbnail_concept", "")}
+                p.settings = {**p.settings, 'selected_packaging': pr.packaging}
             # Mini-tests help choose a premise. An explicit choice supersedes
             # unfinished testing, including a browser response that failed JSON.
             for job in active:
@@ -380,6 +454,23 @@ class Workflow:
                                   "This budget overrides duration_profile scene counts and video_ratio.\n\n" + job.prompt)
                 if job.kind == "story_bible":
                     job.prompt = "Develop only INPUT JSON.selected_premise, the user's explicit choice. Do not choose another candidate.\n\n" + job.prompt
+                if job.kind == 'premise_generation':
+                    job.prompt += ('\n\nAdditional YouTube preparation contract: include each premise.packaging with primary_title_concept, alternative_angles (array), '
+                                   'thumbnail_concept, visual_focal_point, core_curiosity_question, viewer_promise, click_risk, likely_misinterpretation, '
+                                   'one_sentence_pitch (TEXT, not a score) and abstract_pattern (general narrative mechanism without names/places). '
+                                   'Add numeric 0–100 scores instant_clarity, curiosity_gap, title_potential, thumbnail_potential, opening_potential, retention_potential, '
+                                   'browse_feed_potential and impossible_element_clarity (null when the genre does not use an impossible element). '
+                                   'AI scores are estimates, never observed YouTube metrics. channel_learning.learned_patterns are observational hypotheses only; '
+                                   'use abstract appeal, vary mechanism, settings, occupations and beat sequence, and protect novelty. No analytics is required.\n')
+                if job.kind in ('outline', 'outline_rewrite'):
+                    job.prompt += ('\nFor each outline scene also include retention_role, escalation_type, new_information, unanswered_question, '
+                                   'payoff_or_setup, tension_delta (-100 to 100), risk_of_stall, estimated_start_seconds and estimated_end_seconds. '
+                                   'Maintain the selected packaging promise and introduce meaningful progression throughout the target duration.\n')
+                if job.kind == 'full_draft':
+                    job.prompt += ('\nUse artifacts.opening_choice as the opening direction when available, preserving Bible facts and continuous forward momentum. '
+                                   'Deliver selected_premise.packaging.viewer_promise. Do not reset after the hook into a background introduction. '
+                                   'Time zones 0–10, 10–30, 30–60, 60–90 seconds need concrete interest, stakes, new evidence and progress, adapted to genre. '
+                                   'In later sections change knowledge, choices or consequences rather than repeating suspense language.\n')
                 if job.kind == "tts_context":
                     job.prompt = str(context["payload"].get("text", ""))
                 elif job.kind in ("image_generation", "video_generation"):
@@ -387,6 +478,8 @@ class Workflow:
                 job.payload = {**(job.payload or {}), "_inputs_hash": digest(context), "_draft_hash": digest(context["project"].get("draft", "")), "_template_version": digest(template)[:12], "_story_version": context["project"].get("story_version", 0)}
                 if job.kind == 'youtube_metadata':
                     job.payload = {**job.payload, '_metadata_hash': digest(context)}
+                if job.kind in ('retention_audit', 'retention_rewrite', 'opening_variants'):
+                    job.payload = {**job.payload, '_audience_hash': audience.fingerprint(db, db.get(Project, job.project_id))}
                 job.provider = "mock:" + PROVIDERS[job.kind] if config["provider_mode"] == "mock" else PROVIDERS[job.kind]
                 db.commit()
                 result = (self.mock if config["provider_mode"] == "mock" else self.bridge).generate(job.kind, context, job.prompt)
@@ -432,6 +525,8 @@ class Workflow:
                 raise ValueError("The draft changed while this job was pending. Cancel and rerun with current inputs.")
             if job.kind == 'youtube_metadata' and job.payload.get('_metadata_hash') != metadata_fingerprint(db,project):
                 raise ValueError('The video or channel changed. Generate YouTube metadata again for the current content.')
+            if job.kind in ('retention_audit', 'retention_rewrite', 'opening_variants') and job.payload.get('_audience_hash') != audience.fingerprint(db, project):
+                raise ValueError('Story, outline or packaging changed. Rerun this assessment with current inputs')
             self.apply_output(db, job, project, output)
             artifact = Artifact(project_id=job.project_id, source_id=job.source_id, channel_id=job.channel_id,
                 kind=job.kind, provider=job.provider, content=output, raw_result=json.dumps(output, ensure_ascii=False),
@@ -515,6 +610,13 @@ class Workflow:
                 for field in ("title", "logline", "scores"):
                     if not item.get(field):
                         raise ValueError(f"Premise missing {field}")
+                audience.validate_scores(item['scores'])
+                if not item.get('packaging') and job.provider.startswith('mock:'):
+                    item['packaging'] = {'primary_title_concept':item['title'], 'thumbnail_concept':'One concrete radio signal and a human decision',
+                                         'visual_focal_point':'Radio console', 'core_curiosity_question':'Which warning should the keeper trust?',
+                                         'viewer_promise':'A difficult choice with a earned explanation', 'one_sentence_pitch':item['logline'],
+                                         'abstract_pattern':'Warning creates a moral choice'}
+                packaging = audience.Packaging.model_validate(item['packaging']).model_dump() if item.get('packaging') else {}
                 signature = item.get("signature", {})
                 warnings = novelty_check(item["title"] + " " + item["logline"], signature, memory, p.channel_id)
                 for key in ("source_similarity", "channel_repetition", "cross_channel_similarity"):
@@ -522,7 +624,12 @@ class Workflow:
                         warnings.append({"level": "BLOCK", "scope": key.upper(), "score": item["scores"][key], "title": "High similarity"})
                 if item["scores"].get("duration_fit", 100) < 50:
                     warnings.append({"level": "BLOCK", "scope": "DURATION", "title": "Poor duration fit"})
-                db.add(Premise(project_id=p.id, title=item["title"], logline=item["logline"], category=item.get("category", "Core"), scores=item["scores"], signature=signature, warnings=warnings))
+                if packaging:
+                    repeats = sum((pr.packaging or {}).get('abstract_pattern') == packaging['abstract_pattern'] for pr in db.query(Premise).join(Project, Project.selected_premise_id==Premise.id).filter(Project.channel_id==p.channel_id))
+                    if repeats >= 3:
+                        item['scores']['channel_repetition'] = max(item['scores'].get('channel_repetition', 0), min(75, repeats * 10))
+                        warnings.append({'level': 'WARN', 'scope': 'LEARNED_PATTERN', 'title': 'This abstract pattern has been used repeatedly. Vary its mechanism and beat sequence.', 'score': repeats * 10})
+                db.add(Premise(project_id=p.id, title=item["title"], logline=item["logline"], category=item.get("category", "Core"), scores=item["scores"], signature=signature, warnings=warnings, packaging=packaging))
             p.stage = "PREMISES"
         elif kind == "premise_mini_test":
             if not output.get("tests"):
@@ -553,6 +660,21 @@ class Workflow:
             p.stage = "AUDIT" if scope == "story" else "OUTLINE"
         elif kind == "full_draft":
             set_draft(db, p, output.get("text", ""))
+        elif kind == 'opening_variants':
+            validated = audience.validate_openings(output)
+            output.clear(); output.update(validated)
+            choice = next(v for v in output['variants'] if v['id'] == output['recommended'])
+            db.add(Artifact(project_id=p.id, kind='opening_choice', provider=job.provider,
+                            content={**choice, 'selection_source': 'AI recommendation; user can change before draft'},
+                            output_hash=digest(choice), story_version=p.story_version))
+        elif kind == 'retention_audit':
+            validated = audience.validate_audit(db, p, output)
+            output.clear(); output.update(validated)
+            p.settings = {**p.settings, 'audience_policy': 1}
+            p.stage = 'VERIFY'
+        elif kind == 'retention_rewrite':
+            audience.apply_repairs(db, p, output, set_draft)
+            p.stage = 'VERIFY'
         elif kind == "chatgpt_cross_review":
             reviews = {r["issue_id"]: r for r in output.get("reviews", [])}
             for issue in active_issues(db, p):
@@ -713,10 +835,11 @@ class Workflow:
 
     def next_step(self, db, p):
         if p.locked:
-            if not db.query(Chunk).filter_by(project_id=p.id).count():
+            chunks_current = db.query(Chunk).filter_by(project_id=p.id).all()
+            if not chunks_current or any(c.status=='STALE' or c.story_version!=p.story_version for c in chunks_current):
                 return {"kind": "chunk_tts"}
             if not db.query(Scene).filter_by(project_id=p.id).count():
-                return {"kind": "visual_director"}
+                return {"checkpoint": "Choose image/video counts and create the visual plan. Narration can run while you decide."}
             chunks = [serialize(c) for c in db.query(Chunk).filter_by(project_id=p.id).order_by(Chunk.number)]
             scenes = [serialize(s) for s in db.query(Scene).filter_by(project_id=p.id).order_by(Scene.number)]
             assets = [serialize(a) for a in db.query(Asset).filter_by(project_id=p.id)]
@@ -735,6 +858,18 @@ class Workflow:
                 return {"kind": "render"}
             return {"checkpoint": "Review the rendered video. Use Render again after any changes."}
         for step in STORY_STEPS:
+            if step in ('opening_variants', 'retention_audit') and not p.settings.get('audience_policy'):
+                continue
+            if step == 'retention_audit':
+                ready = audience.readiness(db, p)
+                if ready['status'] != 'ASSESSED':
+                    return {'kind': 'retention_audit'}
+                if not ready['retention_readiness_passed'] or not ready['packaging_alignment_passed']:
+                    audit = ready['audit']['content']
+                    if audit['issues'] and db.query(Artifact).filter_by(project_id=p.id, kind='retention_rewrite').count() < 3:
+                        return {'kind': 'retention_rewrite'}
+                    return {'checkpoint': 'Review the remaining retention or packaging issues. Three targeted repair passes are the automatic limit.', 'gate': gate_lock(db, p)}
+                continue
             if step == "premise_mini_test" and p.selected_premise_id:
                 continue
             if step == "story_bible" and not p.selected_premise_id:
@@ -753,15 +888,41 @@ class Workflow:
     def continue_pipeline(self, job_id):
         with self.database.session() as db:
             job = db.get(Job,job_id)
-            if job.status != "completed" or not job.project_id or not job.payload.get("auto_continue"):
+            if job.status != "completed" or not job.project_id:
                 return
             p = db.get(Project,job.project_id)
             config = settings_for(db, db.get(Channel,p.channel_id))
-            if config["pipeline_mode"] == "manual":
+            verified = job.kind in ('final_verify_gemini', 'final_verify_chatgpt', 'retention_audit') and not p.locked and gate_lock(db, p)['can_lock']
+            if verified:
+                lock_story(db, p)
+                db.commit()
+                next_action = self.next_step(db, p)
+                if next_action.get('kind') != 'chunk_tts' and config['provider_mode'] == 'browser' and self.media_automation:
+                    db.commit()
+                    self.media_automation.start(p.id, {'kind':'tts'})
+                    return
+            elif job.kind == 'chunk_tts':
+                # Browser narration is independent of visual count approval.
+                if config['provider_mode'] == 'browser' and self.media_automation:
+                    db.commit()
+                    self.media_automation.start(p.id, {'kind': 'tts'})
                 return
-            if config["pipeline_mode"] == "assisted" and job.kind in ("outline_rewrite", "full_draft"):
+            elif job.kind == 'visual_director':
+                db.commit()
+                if job.payload.get('automatic_resources') and config['provider_mode'] == 'browser' and self.media_automation:
+                    preview = self.media_automation.preview(db, p)
+                    if (preview['image_count'], preview['video_count']) == (job.payload['confirmed_image_count'], job.payload['confirmed_video_count']):
+                        self.media_automation.start(p.id, {'kind':'visuals', 'confirmation':preview['confirmation'],
+                                                       'image_count':preview['image_count'], 'video_count':preview['video_count']})
+                        return
+                self.drain_production_queue(p.id)
                 return
-            next_action = self.next_step(db,p)
+            elif config["pipeline_mode"] == "manual" or not job.payload.get('auto_continue'):
+                return
+            elif config["pipeline_mode"] == "assisted" and job.kind in ("outline_rewrite", "full_draft"):
+                return
+            else:
+                next_action = self.next_step(db,p)
             if next_action.get("checkpoint") and not p.selected_premise_id and config.get("auto_select_premise"):
                 premises = [pr for pr in db.query(Premise).filter_by(project_id=p.id).all() if pr.mini_test and not any(w.get("level")=="BLOCK" for w in pr.warnings)]
                 if premises:
@@ -769,7 +930,7 @@ class Workflow:
                     p.selected_premise_id = best.id
                     db.commit()
                     next_action = self.next_step(db,p)
-            if "gate" in next_action and config.get("auto_lock") and next_action["gate"]["can_lock"]:
+            if "gate" in next_action and next_action["gate"]["can_lock"]:
                 lock_story(db,p)
                 db.commit()
                 next_action = self.next_step(db,p)

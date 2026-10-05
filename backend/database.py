@@ -27,6 +27,13 @@ class Database:
             if version < 1:
                 Base.metadata.create_all(conn)
                 conn.execute(text("INSERT INTO schema_migrations(version) VALUES(1)"))
+            if version < 2:
+                # Inspect columns as fresh databases already include these fields.
+                for table, column in (("premises", "packaging"), ("analytics", "metrics")):
+                    columns = {r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))}
+                    if column not in columns:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} JSON DEFAULT '{{}}'"))
+                conn.execute(text("INSERT INTO schema_migrations(version) VALUES(2)"))
         with self.session() as db:
             for job in db.query(Job).filter(Job.status.in_(["running", "queued"])).all():
                 job.status = "waiting_user"

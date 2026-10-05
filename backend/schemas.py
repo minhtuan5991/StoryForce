@@ -54,6 +54,9 @@ class AnalyticsCreate(BaseModel):
     returning_viewers: int = Field(0, ge=0)
     likes: int = Field(0, ge=0)
     comments: int = Field(0, ge=0)
+    # Missing observed values stay null here; legacy numeric columns are kept
+    # for portable archives and earlier clients, never used to infer missing data.
+    metrics: dict = {}
 
 
 class AIIssue(BaseModel):

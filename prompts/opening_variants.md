@@ -1,0 +1,5 @@
+# template_version: 1.0
+Compare three different openings for INPUT JSON.selected_premise and the revised outline. Preserve the Bible, genre and intended audience; never force horror, shock or an impossible element onto another genre.
+Return ONLY valid JSON: {"variants":[{"id":"A","strategy":"...","text":"...","scores":{"clarity":0,"curiosity":0,"promise_alignment":0,"momentum_30":0,"momentum_60":0,"momentum_90":0,"exposition_control":0},"tradeoff":"..."}],"recommended":"A","rationale":"..."}.
+Include exactly A, B and C, each about 60–90 seconds at the project's WPM. Use concrete situations, clear stakes and a relevant unanswered question. Continue forward after the hook: do not reset into a background-heavy introduction. A necessary flashback is allowed when it materially changes the active question.
+Scores use 0–100 and are editorial AI predictions, never retention percentages or a real audience A/B test. One version can be a quiet but concrete opening when the channel's genre calls for it. Choose the strongest promise-aligned opening and explain the tradeoff.

@@ -57,7 +57,7 @@ def build_story(client,project,lock=True):
     detail=client.get('/api/projects/'+project['id']).json()
     response=client.post('/api/projects/'+project['id']+'/select-premise',json={'premise_id':detail['premises'][0]['id']})
     assert response.status_code==200,response.text
-    for kind in ('story_bible','outline','outline_audit','outline_rewrite','full_draft','gemini_story_audit','chatgpt_cross_review','targeted_rewrite','final_verify_gemini','final_verify_chatgpt'):
+    for kind in ('story_bible','outline','outline_audit','outline_rewrite','opening_variants','full_draft','gemini_story_audit','chatgpt_cross_review','targeted_rewrite','retention_audit','final_verify_gemini','final_verify_chatgpt'):
         job(client,project,kind)
     if lock:
         response=client.post('/api/projects/'+project['id']+'/lock')

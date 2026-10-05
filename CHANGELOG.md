@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.1.20 — 2026-10-05 (local only)
+
+- Add genre-aware title/thumbnail promises, three opening variants, timed retention evidence and targeted repairs. Keep story integrity, retention readiness and packaging alignment separate; prior projects without these assessments remain usable.
+- Store optional observed YouTube metrics, actual packaging versions and units. Add dismissible in-app 7/28-day reminders, comparable channel medians and conservative pattern learning without requiring metrics or changing channel DNA.
+- Automatically lock a story when its current required verifications pass and start narration production in Browser Bridge mode. Preserve final video viewing approval and unresolved human review requirements.
+- Allow visual count review and replacement plans during automatic TTS. Persist the latest approved plan, run it after narration, and require explicit image/video count confirmation before generating visual resources.
+- Skip an owned media item on browser/setup/generation/download failure; continue the batch, reject late results and show missing filenames/reasons in Assets. Detect lost Bridge heartbeats and keep unclaimed queues waiting. Preserve complete-WAV checks and reusable provider tabs.
+- Include Browser Bridge 1.1.24, schema migration preserving existing rows/settings, Vietnamese controls and versioned local installer/source/portable archives. Not published to GitHub.
+
 ## 3.1.19 — 2026-10-04 (local only)
 
 - Download AI Studio's complete WAV through its Download button and capture the assembled file instead of an individual streaming preview packet. Wait for a stable visible total-time counter and check it against the downloaded file when available.

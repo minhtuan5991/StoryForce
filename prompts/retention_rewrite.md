@@ -1,0 +1,4 @@
+# template_version: 1.0
+Repair only issues in INPUT JSON.artifacts.retention_audit for the current draft. Preserve the Bible, facts, chosen premise, character knowledge, causal links, ending and unrelated passages. Improve clarity, forward momentum, timely evidence and genuine choices; never add misleading clickbait or filler. Keep the target word range.
+Return ONLY JSON: {"replacements":[{"issue_id":"RET-001","old_text":"one exact existing passage containing the issue evidence","new_text":"replacement"}],"summary":"..."}.
+Each old_text must occur exactly once in the draft, include the quoted evidence, and identify one current retention issue. Do not rewrite the whole draft. Never remove a necessary setup or change the outcome merely for surprise. A hook followed by a background reset needs a local transition that keeps the current question active. Do not claim all problems are solved: both story models and retention will reassess the changed draft.

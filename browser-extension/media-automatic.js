@@ -66,8 +66,8 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       const {claim}=await request('/media/'+job.id+'/claim','POST',permit);
       if(['opening','prepared'].includes(state.phase)&&(claim.phase==='sent'||state.sentAt))
         throw new Error('Yêu cầu này đã được gửi. Kiểm tra tab lấy kết quả; không mở lại bước tạo media.');
-      if(now()>state.deadline)throw new Error('Đã hết thời gian chờ media. Kiểm tra tab rồi bấm Tiếp tục; không tạo lại yêu cầu.');
-      if(['opening','prepared'].includes(state.phase)&&now()>state.preparationDeadline)throw new Error('Chưa chuẩn bị được tab media sau 3 phút. Kiểm tra cài đặt rồi tiếp tục; chưa tạo yêu cầu mới.');
+      if(now()>state.deadline)throw new Error('Đã hết thời gian chờ media; scene này cần tạo lại thủ công.');
+      if(['opening','prepared'].includes(state.phase)&&now()>state.preparationDeadline)throw new Error('Chưa chuẩn bị được tab media sau 3 phút; scene này cần tạo lại thủ công.');
       if(state.phase==='opening'){
         let tab;
         const key=state.provider;
@@ -202,13 +202,43 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       if(transient&&errors<=8&&now()<state.deadline){
         await write({...state,errors,message:'Tab media đang tải hoặc mất kết nối. Đang chờ lại; không gửi trùng.'});
       }else{
-        // An incomplete WAV must never advance the queue. Continue retries
-        // the provider's existing output, not the rejected file or a new Run.
+        // Retry the existing full WAV download once, without another Run.
+        // A persistent provider/tab/download failure skips only this item.
         const incomplete=/\[TTS_INCOMPLETE\]/.test(error.message||'');
         const retry=incomplete?{downloadId:undefined,downloadInitiated:false,downloadTicket:undefined,
           downloadAt:undefined,downloadUrl:undefined}:{};
-        await write({...state,...retry,phase:'paused',resumePhase:incomplete?'download_ready':state.phase,errors,message:error.message||String(error)});
-        if(state.jobId){try{await request('/jobs/'+state.jobId+'/status','POST',{step:'Tạo media tạm dừng: '+error.message})}catch{}}
+        if(incomplete&&!state.fullDownloadRetry){
+          await write({...state,...retry,phase:'download_ready',fullDownloadRetry:true,errors,
+            message:'WAV chưa đầy đủ. Đang tải lại kết quả đã tạo, không gửi lại nội dung.'});
+          return;
+        }
+        let skipped=false;
+        if(state.jobId&&state.owner){
+          try{
+            const result=await request('/media/'+state.jobId+'/failure','POST',{owner:state.owner,attempt:state.attempt,
+              reason:error.message||String(error),stage:state.phase});
+            skipped=result.accepted===true;
+          }catch{}
+        }
+        if(skipped){
+          // Recover only the tab created/recorded by this queue. Late results
+          // belong to the failed job and cannot be imported for the next scene.
+          const tabs={...state.tabs},pages={...state.pages},folders={...state.folders},prompts={...state.prompts};
+          if(tabs[state.provider]===state.tabId){
+            try{
+              const tab=await chrome.tabs.get(state.tabId),host=new URL(tab.url||'').hostname;
+              if(['aistudio.google.com','gemini.google.com','flow.google.com','labs.google'].includes(host))await chrome.tabs.remove(state.tabId);
+            }catch{}
+            delete tabs[state.provider];delete pages[state.provider];delete folders[state.provider];delete prompts[state.tabId];
+          }
+          await write({phase:'idle',tabs,pages,folders,prompts,
+            message:'Đã bỏ qua '+state.media.filename+'. Xem phần Tài Nguyên để tạo thủ công; đang chuyển scene tiếp theo.'});
+        }else{
+          // A disconnected local app or ownership conflict cannot authorize
+          // skipping a job. Keep the exact stage for reconnection/manual resume.
+          await write({...state,...retry,phase:'paused',resumePhase:incomplete?'download_ready':state.phase,errors,message:error.message||String(error)});
+          if(state.jobId){try{await request('/jobs/'+state.jobId+'/status','POST',{step:'Tạo media tạm dừng: '+error.message})}catch{}}
+        }
       }
     }finally{busy=false}
   }

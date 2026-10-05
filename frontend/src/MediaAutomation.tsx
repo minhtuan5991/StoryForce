@@ -7,6 +7,10 @@ import {tr} from './i18n';
 export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'tts'|'visuals',active:boolean,act:(fn:()=>Promise<any>,message?:string)=>Promise<any>}){
   const [busy,setBusy]=useState(false),[preview,setPreview]=useState<Row|null>(null),[regenerate,setRegenerate]=useState(false);
   const batch=p.settings?.media_automation;
+  const live=p.jobs.filter((j:Row)=>['queued','running','waiting_user'].includes(j.status));
+  const ttsBusy=live.length>0&&live.every((j:Row)=>j.kind==='tts_context'&&j.payload?._media?.target_type==='chunk');
+  const blocked=active&&!(kind==='visuals'&&ttsBusy);
+  const queued=p.settings?.production_queue||[];
   const show=batch?.kind===kind;
   const running=show&&batch.phase==='running'&&p.jobs.some((j:Row)=>j.id===batch.current_job_id&&['queued','running','waiting_user'].includes(j.status));
   async function start(body:Row){
@@ -22,18 +26,22 @@ export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'t
   return <Section title={tr('Automatically create and download resources')} caption={kind==='tts'?'Enzo / Friendly · one AI Studio tab · sequential audio segments':'Gemini images / Flow videos · one tab per service · thumbnail first'}>
     <p>{tr(kind==='tts'?'Start to generate missing narration segments and download them immediately. No count confirmation is needed.':'Choose your image/video counts in the visual plan below. Automatic creation starts only after you confirm the final counts.')}</p>
     <p className="muted">{tr('Keep StoryForge and the paired Browser Bridge open with automation enabled. Completed downloads are automatically attached to their audio segment or scene.')}</p>
-    <label className="check-field"><input type="checkbox" checked={regenerate} disabled={active||busy} onChange={e=>setRegenerate(e.target.checked)}/>{tr('Generate again, including already assigned resources')}</label>
+    <label className="check-field"><input type="checkbox" checked={regenerate} disabled={blocked||busy} onChange={e=>setRegenerate(e.target.checked)}/>{tr('Generate again, including already assigned resources')}</label>
     <div className="inline wrap">
-      <Button primary disabled={!p.locked||active||busy||(kind==='tts'?!p.chunks.length:!p.scenes.length)} onClick={()=>kind==='tts'?start({}):review()}>
+      <Button primary disabled={!p.locked||blocked||busy||(kind==='tts'?!p.chunks.length:!p.scenes.length)} onClick={()=>kind==='tts'?start({}):review()}>
         {kind==='tts'?<AudioLines size={16}/>:<Image size={16}/>} {tr(kind==='tts'?'Create and download narration':'Review image/video counts')}
       </Button>
       {running&&<Button disabled={busy} onClick={()=>act(()=>api('/projects/'+p.id+'/media-automation/stop','POST'),'Media generation stopped')}><Square size={16}/>{tr('Stop resource automation')}</Button>}
     </div>
+    {kind==='visuals'&&ttsBusy&&<p className="notice compact">{tr('Narration is running. Confirmed visual requests will start after the audio queue finishes.')}</p>}
+    {kind==='visuals'&&queued.length>0&&<p role="status" className="notice compact">{tr('Visual request queued after narration. A newer plan replaces the queued plan.')}</p>}
+    {p.settings?.production_queue_notice&&<p role="alert" className="error-text">{tr(p.settings.production_queue_notice)}</p>}
     {show&&<div className="notice compact" role="status"><Download size={18}/><div>
-      <strong>{tr(batch.phase==='completed'?'Resources downloaded and attached':batch.phase==='cancelled'?'Resource automation stopped':'Resource queue')}: {batch.completed} / {batch.total}</strong>
+      <strong>{tr(batch.phase==='completed'?'Resources downloaded and attached':batch.phase==='completed_with_missing'?'Queue finished with missing resources':batch.phase==='cancelled'?'Resource automation stopped':'Resource queue')}: {batch.completed} / {batch.total}</strong>
       <p>{tr('Already assigned resources skipped')}: {batch.skipped}</p>
+      {batch.failed>0&&<p>{tr('Failed items skipped')}: {batch.failed} · <a href={'#/projects/'+p.id+'/assets'}>{tr('Resources still missing')}</a></p>}
       <p style={{overflowWrap:'anywhere'}}>{batch.download_path}</p>
-      <Progress value={batch.total?batch.completed*100/batch.total:100}/>
+      <Progress value={batch.total?(batch.completed+(batch.failed||0))*100/batch.total:100}/>
     </div></div>}
     {preview&&<Modal title={tr('Confirm image and video counts')} onClose={()=>{if(!busy)setPreview(null)}}>
       <p><strong>{preview.image_count} {tr('images')} · {preview.video_count} {tr('videos')} + 1 {tr('thumbnail')}</strong></p>

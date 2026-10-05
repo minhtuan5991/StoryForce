@@ -37,6 +37,36 @@ function fixture(provider='aistudio'){
   return {storage,state,messages,downloads,chrome,request,create,tick,counts:()=>({tabCount,runs,imports}),advance:ms=>time+=ms};
 }
 
+test('a stuck AI tab skips the owned scene, reopens for the next scene, and never resends the failed prompt',async()=>{
+  const f=fixture();f.state.ready=false;
+  const original=f.state.jobs[0],next={...original,id:'media2',prompt:'Audio 2',media:{...original.media,filename:'tts_002.wav'}};
+  let failed=[];
+  // A deterministic clock injected separately from download timing.
+  let clock=1000;
+  const worker=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
+    if(path.endsWith('/failure')){failed.push(body);f.state.jobs=[next];return {accepted:true}}
+    return f.request(path,method,body);
+  },ensureContent:async()=>{},now:()=>clock,pageSettleMs:0});
+  await worker.tick();await worker.tick();clock+=181000;await worker.tick();
+  assert.equal(failed.length,1);assert.equal((await worker.read()).phase,'idle');assert.equal(f.counts().runs,0);
+  f.state.ready=true;
+  for(let i=0;i<5;i++)await worker.tick();
+  assert.equal(f.counts().runs,1);assert.equal(f.counts().tabCount,2);
+  assert.equal((await worker.read()).jobId,'media2');
+  assert.ok(f.messages.filter(m=>m==='media-send').length===1);
+});
+
+test('a submitted generation timeout reports the missing item instead of reauthorizing Run',async()=>{
+  const f=fixture();f.state.generated=false;let clock=1000,failed=0;
+  const worker=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
+    if(path.endsWith('/failure')){assert.equal(body.stage,'submitted');failed++;f.state.jobs=[];return {accepted:true}}
+    return f.request(path,method,body);
+  },ensureContent:async()=>{},now:()=>clock,pageSettleMs:0});
+  for(let i=0;i<5;i++)await worker.tick();
+  assert.equal(f.counts().runs,1);clock+=30*60*1000+1;await worker.tick();
+  assert.equal(failed,1);assert.equal(f.counts().runs,1);assert.equal((await worker.read()).phase,'idle');
+});
+
 test('media waits for complete page and stable controls; reuses one tab for all audio segments',async()=>{
   const f=fixture();let engine=f.create();f.state.tabStatus='loading';
   await f.tick(engine);assert.deepEqual(f.messages,[]);
@@ -73,7 +103,7 @@ test('AI Studio saves only the captured full WAV and sends its player duration f
   assert.equal(f.counts().imports,1);
 });
 
-test('a rejected incomplete WAV pauses and Continue downloads the existing result without another Run',async()=>{
+test('a rejected incomplete WAV automatically retries the existing download once without another Run',async()=>{
   const f=fixture();let rejected=true;
   const engine=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
     if(path.endsWith('/result')&&rejected)throw Error('[TTS_INCOMPLETE] WAV is only a streaming fragment');
@@ -82,9 +112,9 @@ test('a rejected incomplete WAV pauses and Continue downloads the existing resul
   for(let i=0;i<5;i++)await engine.tick();
   f.downloads[0].state='complete';await engine.tick();
   const state=await engine.read();
-  assert.equal(state.phase,'paused');assert.equal(state.resumePhase,'download_ready');
+  assert.equal(state.phase,'download_ready');assert.equal(state.fullDownloadRetry,true);
   assert.equal(state.downloadId,undefined);assert.equal(f.counts().imports,0);
-  rejected=false;await engine.resume();await engine.tick();
+  rejected=false;await engine.tick();
   assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,2);
   f.downloads[1].state='complete';await engine.tick();assert.equal(f.counts().imports,1);
 });

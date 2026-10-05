@@ -28,15 +28,15 @@ Từ bản **3.1.10**, trong **Tư liệu nguồn**, bấm **Tiếng Việt** đ
 
 **Continue pipeline** chạy các bước đủ điều kiện rồi dừng tại checkpoint. Có thể chạy từng bước ở tab tương ứng.
 
-Trong Settings → General, **Manual** chạy một bước mỗi lần bấm; **Assisted** dừng thêm sau outline đã chỉnh và draft để bạn xem trước; **Auto** nối các bước đến checkpoint chọn premise hoặc duyệt Story Lock. Mặc định là Assisted. Số premise mặc định áp dụng cho pipeline và có thể đổi riêng ở tab Premises.
+Trong Settings → General, **Manual** chạy một bước mỗi lần bấm; **Assisted** dừng thêm sau outline đã chỉnh và draft để bạn xem trước; **Auto** nối các bước đến checkpoint chọn ý tưởng hoặc xác nhận số lượng ảnh/video. Mặc định là Assisted. Số premise mặc định áp dụng cho pipeline và có thể đổi riêng ở tab Premises.
 
 1. Direction → Premises → mini-test Top 3.
 2. Bạn chọn một premise; premise vượt ngưỡng similarity/duration risk bị chặn.
-3. Bible → Outline → Outline audit → targeted outline revision → Full draft.
+3. Bible → Outline → Outline audit → targeted outline revision → ba phương án mở đầu → Full draft.
 4. Gemini audit → ChatGPT cross-review và independent sweep → resolver nếu cần.
 5. Targeted rewrite sửa exact affected text; tối đa ba lần.
-6. Gemini và ChatGPT xác minh độc lập bản hiện tại.
-7. **Story lock → Approve Story Lock** khi mọi gate đạt yêu cầu.
+6. Kiểm tra nhịp giữ người xem và sự khớp giữa truyện với tiêu đề/thumbnail; sửa đoạn cụ thể nếu cần. Gemini và ChatGPT xác minh độc lập bản hiện tại. Dự án cũ chưa có kiểm tra mới được ghi là Chưa đánh giá.
+7. Khi kiểm định bản hiện tại đạt đầy đủ, app **tự khóa truyện** và chia đoạn TTS. Ở chế độ Browser Bridge, giọng đọc được tạo ngay; bạn chọn và xác nhận số lượng ảnh/video trong lúc chờ. Xem [hướng dẫn bản 3.1.20](docs/YOUTUBE_PREPARATION_3.1.20.md) về kiểm định giữ người xem, hàng đợi và báo cáo tài nguyên còn thiếu.
 
 Issue cần evidence, location, repair requirement. Bấm issue ID để xem Bible references và nhận xét ngắn của từng model. UNCERTAIN sau resolver cần human review. Không hiển thị hidden chain-of-thought.
 

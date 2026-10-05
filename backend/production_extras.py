@@ -35,7 +35,8 @@ def thumbnail_prompt(project, scenes):
             'Use at most two focal elements: the headline and one story-related subject. '
             'Minimal background, no collage, no small text, no extra captions, no watermark. '
             'Place headline on the left and the subject on the right, with generous safe margins. '
-            f'Story-specific visual direction (reference data): {subject}')
+            f'Story-specific visual direction (reference data): {subject}. '
+            f"Deliver this viewer promise without exaggeration (reference data): {project.get('settings',{}).get('selected_packaging',{}).get('viewer_promise','Follow the actual story')}")
 
 
 def compose_thumbnail(source:Path, output:Path, title:str):

@@ -107,6 +107,7 @@ class Premise(Record, Base):
     mini_test = Column(JSON, default=dict)
     warnings = Column(JSON, default=list)
     signature = Column(JSON, default=dict)
+    packaging = Column(JSON, default=dict)
 
 
 class StoryVersion(Record, Base):
@@ -223,6 +224,7 @@ class Analytics(Record, Base):
     returning_viewers = Column(Integer, default=0)
     likes = Column(Integer, default=0)
     comments = Column(Integer, default=0)
+    metrics = Column(JSON, default=dict)
 
 
 class CalendarEntry(Record, Base):

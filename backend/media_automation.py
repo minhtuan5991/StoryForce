@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import text as sql_text
@@ -68,6 +69,7 @@ class MediaAutomation:
     def __init__(self, workflow):
         self.workflow = workflow
         self.database, self.root = workflow.database, workflow.root
+        self.started_at = datetime.now(timezone.utc)
 
     def project(self, db, id):
         p = db.get(Project, id)
@@ -99,11 +101,24 @@ class MediaAutomation:
             p = self.project(db, id)
             if settings_for(db, db.get(Channel, p.channel_id))["provider_mode"] != "browser":
                 raise ValueError("Choose Browser Bridge mode before generating media")
-            if db.query(Job).filter(Job.project_id == id, Job.status.in_(["queued", "running", "waiting_user"])).count():
-                raise ValueError("Finish or cancel the active project job first")
             kind = body.get("kind")
             if kind not in ("tts", "visuals"):
                 raise ValueError("Choose narration or visuals")
+            active = db.query(Job).filter(Job.project_id == id, Job.status.in_(["queued", "running", "waiting_user"])).all()
+            if active:
+                if kind == 'tts' and self.workflow.tts_active(active):
+                    return self.public(p.settings['media_automation'])
+                if kind == 'visuals' and self.workflow.tts_active(active):
+                    report = self.preview(db, p)
+                    if body.get('confirmation') != report['confirmation'] or body.get('image_count') != report['image_count'] or body.get('video_count') != report['video_count']:
+                        raise ValueError('Confirm the current image and video counts before queueing')
+                    if any(a['kind'] == 'visual_director' for a in p.settings.get('production_queue', [])):
+                        raise ValueError('A replacement visual plan is queued. Confirm creation with the counts for that plan instead')
+                    queued = {'kind': 'visuals', 'body': body, 'story_version': p.story_version, 'draft_hash': digest(p.draft), 'queued_at': now()}
+                    p.settings = {**p.settings, 'production_queue': [queued], 'production_queue_notice': ''}
+                    db.commit()
+                    return {**queued, 'status': 'queued_after_tts'}
+                raise ValueError("Finish or cancel the active project job first")
             regenerate = body.get("regenerate") is True
             items, skipped = [], 0
             if kind == "tts":
@@ -154,7 +169,7 @@ class MediaAutomation:
                     break
             state = {"id": uid(), "kind": kind, "phase": "running" if items else "completed", "story_version": p.story_version,
                      "draft_hash": digest(p.draft), "folder": folder, "download_path": str(downloads_root() / folder),
-                     "total": len(items), "completed": 0, "skipped": skipped, "pending": items, "current_job_id": None,
+                     "total": len(items), "completed": 0, "failed": 0, "skipped": skipped, "pending": items, "current_job_id": None,
                      "confirmed_counts": {"images": body.get("image_count"), "videos": body.get("video_count")} if kind == "visuals" else {},
                      "created_at": now()}
             (downloads_root() / folder).mkdir(parents=True, exist_ok=True)
@@ -180,7 +195,7 @@ class MediaAutomation:
             db.flush()
             state.update(current_job_id=job.id, pending=pending)
         else:
-            state.update(phase="completed", current_job_id=None, pending=[])
+            state.update(phase="completed_with_missing" if state.get('failed') else "completed", current_job_id=None, pending=[])
         p.settings = {**(p.settings or {}), "media_automation": state}
 
     def validate_job(self, db, job, body):
@@ -219,12 +234,45 @@ class MediaAutomation:
             if claim and claim.get("owner") != owner:
                 raise ValueError("Another browser owns this media job; do not generate it twice")
             claim = claim or {"owner": owner, "attempt": job.attempts, "phase": "claimed"}
+            claim = {**claim, 'last_seen_at': now()}
             send = bool(body.get("authorize_send")) and claim["phase"] != "sent"
             if send:
                 claim = {**claim, "phase": "sent", "sent_at": now()}
             job.payload = {**job.payload, "_media_claim": claim}
             db.commit()
             return {"send": send, "claim": claim}
+
+    def check_stalled(self, current_time=None):
+        """A frozen entire browser cannot report failure from its own worker.
+
+        Skip a claimed item after three minutes without a Bridge heartbeat.
+        Unclaimed/off/paired-later queues remain waiting, and restarting the app
+        grants reconnection grace without granting another generation permit.
+        """
+        current_time = current_time or datetime.now(timezone.utc)
+        if (current_time - self.started_at).total_seconds() < 180:
+            return 0
+        stale = []
+        with self.database.session() as db:
+            for job in db.query(Job).filter_by(status='waiting_user'):
+                claim = job.payload.get('_media_claim', {})
+                if not job.payload.get('_media') or not claim.get('owner'):
+                    continue
+                try:
+                    seen = datetime.fromisoformat(claim.get('last_seen_at') or claim.get('sent_at') or job.updated_at)
+                except (ValueError, TypeError):
+                    continue
+                if (current_time - seen).total_seconds() > 180:
+                    stale.append((job.id, claim['owner'], claim['attempt'], claim.get('last_seen_at')))
+        count = 0
+        for id, owner, attempt, last_seen in stale:
+            try:
+                self.failure(id, {'owner':owner, 'attempt':attempt, 'last_seen_at':last_seen,
+                                  'reason':'Trình duyệt hoặc Bridge mất liên lạc quá 3 phút. Tài nguyên này cần tạo thủ công.', 'stage':'browser_disconnected'})
+                count += 1
+            except ValueError:
+                pass
+        return count
 
     def complete(self, id, body):
         from .workflow import settings_for
@@ -319,19 +367,73 @@ class MediaAutomation:
                 state = {**state, "completed": state["completed"] + 1, "download_path": str(source.parent)}
                 self.advance(db, p, state)
                 db.commit()
+                if not state.get('current_job_id'):
+                    self.workflow.drain_production_queue(p.id)
                 return {"accepted": True, **job.result}
             finally:
                 temporary.unlink(missing_ok=True)
 
+    def failure(self, id, body):
+        """Skip exactly one owned item; never infer success or accept its late file."""
+        reason = str(body.get('reason', '')).strip()[:1500]
+        if not reason:
+            raise ValueError('Provide the browser error for the missing resource')
+        with self.workflow.deletion_lock, self.database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            job = db.get(Job, id)
+            if not job:
+                raise ValueError('Media job not found')
+            claim = job.payload.get('_media_claim', {})
+            if claim.get('owner') != body.get('owner') or claim.get('attempt') != body.get('attempt'):
+                raise ValueError('This browser does not own the media job')
+            if body.get('stage') == 'browser_disconnected' and claim.get('last_seen_at') != body.get('last_seen_at'):
+                raise ValueError('The browser reconnected; leave the active media job alone')
+            if job.status == 'failed' and job.result.get('skipped'):
+                return {'accepted': True, **job.result}
+            p, state, media = self.validate_job(db, job, body)
+            failure = {'job_id': job.id, 'target_type': media['target_type'], 'target_id': media['target_id'],
+                       'filename': media['filename'], 'provider': media['provider'], 'reason': reason,
+                       'stage': str(body.get('stage', ''))[:80], 'story_version': p.story_version, 'time': now()}
+            previous = [f for f in p.settings.get('resource_failures', []) if f.get('target_id') != media['target_id']]
+            p.settings = {**p.settings, 'resource_failures': [*previous, failure][-250:]}
+            job.status, job.step, job.error = 'failed', 'Đã bỏ qua tài nguyên lỗi; xem Tài nguyên để tạo thủ công', reason
+            job.result = {'skipped': True, 'missing': failure}
+            self.advance(db, p, {**state, 'failed': state.get('failed', 0) + 1})
+            db.commit()
+        self.workflow.drain_production_queue(p.id)
+        return {'accepted': True, **job.result}
+
+    def missing(self, db, p):
+        failures = {f['target_id']: f for f in p.settings.get('resource_failures', []) if f.get('story_version') == p.story_version}
+        result = []
+        for model, kind, prefix, ext in ((Chunk, 'audio', 'tts', 'wav'), (Scene, ('image', 'video'), 'scene', 'mp4')):
+            for target in db.query(model).filter_by(project_id=p.id).order_by(model.number):
+                if target.story_version != p.story_version:
+                    continue
+                suffix = 'png' if isinstance(target, Scene) and target.visual_type != 'VIDEO' else ext
+                valid = self.available(db, target.asset_id, kind, p.story_version)
+                if valid and isinstance(target, Chunk):
+                    valid = not narration_download_error(target.text, db.get(Asset, target.asset_id).duration)
+                if not valid or target.status == 'STALE':
+                    result.append({'target_id': target.id, 'target_type': 'chunk' if isinstance(target, Chunk) else 'scene',
+                                   'filename': f'{prefix}_{target.number:03}.{suffix}',
+                                   'reason': failures.get(target.id, {}).get('reason', 'Chưa gán tài nguyên hợp lệ'),
+                                   'automatic_failure': target.id in failures})
+        thumbnail = failures.get(p.id)
+        if thumbnail and not self.available(db, p.publish.get('thumbnail_asset_id'), 'image', p.story_version):
+            result.insert(0, thumbnail)
+        return result
+
     def stop(self, id):
         with self.workflow.deletion_lock, self.database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
-            p = self.project(db, id)
+            p = db.get(Project, id)
+            if not p:raise ValueError('Project not found')
             state = {**(p.settings or {}).get("media_automation", {})}
             job = db.get(Job, state.get("current_job_id")) if state.get("current_job_id") else None
             if job and job.status in ("queued", "running", "waiting_user"):
                 job.status, job.step = "cancelled", "Đã dừng tự động tạo tài nguyên"
             state.update(phase="cancelled", pending=[], current_job_id=None)
-            p.settings = {**(p.settings or {}), "media_automation": state}
+            p.settings = {**(p.settings or {}), "media_automation": state, 'production_queue': []}
             db.commit()
             return self.public(state)

@@ -68,7 +68,7 @@ def test_bible_edit_invalidates_verification(client,project):
     response=client.patch('/api/artifacts/'+bible['id'],json={'content':content})
     assert response.status_code==200,response.text
     assert not client.get('/api/projects/'+project['id']).json()['lock_gate']['can_lock']
-    assert client.get('/api/projects/'+project['id']).json()['next']['kind']=='final_verify_gemini'
+    assert client.get('/api/projects/'+project['id']).json()['next']['kind']=='retention_audit'
 
 
 def test_cross_review_requires_coverage_and_independent_audit(client,project):
@@ -135,7 +135,8 @@ def test_assisted_mode_pauses_for_outline_and_draft_review(client,project):
     client.post(url+'/pipeline')
     detail=client.get(url).json()
     assert detail['lock_gate']['can_lock']
-    assert not detail['locked']
+    assert detail['locked']
+    assert detail['chunks']
 
 
 def test_analytics_latest_snapshot_not_double_counted(client,project):

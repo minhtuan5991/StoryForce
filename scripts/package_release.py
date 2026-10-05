@@ -1,10 +1,13 @@
 from pathlib import Path
 import hashlib
 import json
+import re
 import zipfile
 
 root=Path(__file__).resolve().parents[1]
 release=root/'release';release.mkdir(exist_ok=True)
+version=re.search(r'^VERSION\s*=\s*[\"\']([^\"\']+)',(root/'backend'/'config.py').read_text(encoding='utf-8'),re.MULTILINE).group(1)
+bridge_version=json.loads((root/'browser-extension'/'manifest.json').read_text(encoding='utf-8'))['version']
 def zip_tree(folder,output,exclude=()):
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED,compresslevel=5) as archive:
         for path in folder.rglob('*'):
@@ -12,9 +15,9 @@ def zip_tree(folder,output,exclude=()):
             if any(part in exclude for part in relative.parts):continue
             if path.is_file() and path.suffix not in ('.pyc','.tsbuildinfo','.log'):
                 archive.write(path,relative.as_posix())
-zip_tree(root/'browser-extension',release/'StoryForge-Browser-Bridge-1.0.0.zip')
-zip_tree(root,release/'StoryForge-US-3.0.0-Source.zip',exclude={'.venv','node_modules','.git','.runtime','release','build','tools','__pycache__','.pytest_cache','test-results','playwright-report','dist'})
-zip_tree(release/'StoryForge',release/'StoryForge-US-3.0.0-Windows-Portable.zip')
+zip_tree(root/'browser-extension',release/f'StoryForge-Browser-Bridge-{bridge_version}.zip')
+zip_tree(root,release/f'StoryForge-US-{version}-Source.zip',exclude={'.venv','node_modules','.git','.runtime','release','build','tools','__pycache__','.pytest_cache','test-results','playwright-report','dist'})
+zip_tree(release/'StoryForge',release/f'StoryForge-US-{version}-Windows-Portable.zip')
 manifest=[]
 for path in sorted(release.iterdir()):
     if path.is_file() and path.suffix in ('.exe','.zip','.mp4','.db'):

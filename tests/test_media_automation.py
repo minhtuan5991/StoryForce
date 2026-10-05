@@ -109,6 +109,99 @@ def test_visuals_require_exact_current_count_confirmation(client,production):
     assert j['media']['target_type']=='thumbnail' and j['media']['filename']=='thumbnail.png'
 
 
+def fail(client,p,j,reason='Tab AI is frozen',owner='one'):
+    return client.post('/api/bridge/media/'+j['id']+'/failure',headers=p['headers'],json={'owner':owner,'attempt':j['attempt'],'reason':reason,'stage':'submitted'})
+
+
+def test_failed_item_advances_once_reports_missing_and_rejects_late_download(client,production):
+    p=production;state=start(client,p);first=media_job(client,p);claim(client,p,first)
+    assert fail(client,p,first,owner='other').status_code==422
+    assert fail(client,p,first).json()['accepted']
+    second=media_job(client,p);assert second['id']!=first['id'] and second['media']['filename']=='tts_002.wav'
+    assert fail(client,p,first).json()['accepted']
+    assert media_job(client,p)['id']==second['id']
+    path=Path(state['download_path'])/'tts_001.wav';wav(path,2)
+    assert result(client,p,first,path).status_code==422
+    claim(client,p,second);path2=Path(state['download_path'])/'tts_002.wav';wav(path2)
+    assert result(client,p,second,path2).status_code==200
+    detail=client.get('/api/projects/'+p['id']).json()
+    assert detail['settings']['media_automation']['phase']=='completed_with_missing'
+    assert detail['settings']['media_automation']['failed']==1
+    assert any(m['filename']=='tts_001.wav' and m['automatic_failure'] for m in detail['missing_resources'])
+    uploaded=client.post('/api/projects/'+p['id']+'/assets',files=[('files',('tts_001.wav',path.read_bytes(),'audio/wav'))])
+    assert uploaded.status_code==200,uploaded.text
+    assert not any(m['filename']=='tts_001.wav' for m in client.get('/api/projects/'+p['id']).json()['missing_resources'])
+
+
+def test_confirmed_visuals_wait_for_tts_and_begin_after_all_audio_items(client,production):
+    p=production;start(client,p)
+    preview=client.get(p['path']+'/preview').json()
+    assert client.post(p['path']+'/start',json={'kind':'visuals'}).status_code==422
+    queued=start(client,p,'visuals',**{k:preview[k] for k in ('confirmation','image_count','video_count')})
+    assert queued['status']=='queued_after_tts'
+    assert media_job(client,p)['provider']=='aistudio'
+    for _ in range(2):
+        j=media_job(client,p);claim(client,p,j);assert fail(client,p,j).status_code==200
+    nextj=media_job(client,p)
+    assert nextj['provider']=='gemini' and nextj['media']['filename']=='thumbnail.png'
+    assert not client.get('/api/projects/'+p['id']).json()['settings']['production_queue']
+
+
+def test_new_visual_plan_is_queued_during_tts_and_runs_with_confirmed_counts(client,production):
+    p=production;start(client,p)
+    body={'mode':'custom','image_count':2,'video_count':0}
+    changed=client.patch('/api/projects/'+p['id']+'/visual-options',json=body)
+    assert changed.status_code==200,changed.text
+    request={'kind':'visual_director','project_id':p['id'],'payload':{'automatic_resources':True,'confirmed_image_count':2,'confirmed_video_count':0}}
+    queued=client.post('/api/jobs',json=request)
+    assert queued.status_code==200 and queued.json()['status']=='queued_after_tts',queued.text
+    assert media_job(client,p)['provider']=='aistudio'
+    for _ in range(2):
+        j=media_job(client,p);claim(client,p,j);assert fail(client,p,j).status_code==200
+    plan=media_job(client,p);assert plan['kind']=='visual_director' and not plan['media']
+    output={'scenes':[{'scene_id':f'scene_{i:03}','visual_type':'IMAGE','prompt':f'Concrete image {i}'} for i in (1,2)]}
+    completed=client.post('/api/jobs/'+plan['id']+'/result',json={'result':output})
+    assert completed.status_code==200,completed.text
+    nextj=media_job(client,p);assert nextj['media']['filename']=='thumbnail.png'
+    assert len(client.get('/api/projects/'+p['id']).json()['scenes'])==2
+
+
+def test_queued_visual_confirmation_expires_if_plan_changes_and_stop_clears_queue(client,production):
+    p=production;start(client,p);preview=client.get(p['path']+'/preview').json()
+    start(client,p,'visuals',**{k:preview[k] for k in ('confirmation','image_count','video_count')})
+    with client.app.state.database.session() as db:
+        s=db.query(Scene).filter_by(project_id=p['id']).first();s.prompt+=' changed';db.commit()
+    for _ in range(2):
+        j=media_job(client,p);claim(client,p,j);fail(client,p,j)
+    assert not client.get('/api/bridge/jobs',headers=p['headers']).json()['items']
+    assert 'Confirm' in client.get('/api/projects/'+p['id']).json()['settings']['production_queue_notice']
+    start(client,p);preview=client.get(p['path']+'/preview').json()
+    start(client,p,'visuals',**{k:preview[k] for k in ('confirmation','image_count','video_count')})
+    assert client.post(p['path']+'/stop').status_code==200
+    assert not client.get('/api/projects/'+p['id']).json()['settings']['production_queue']
+
+
+def test_browser_heartbeat_skips_only_claimed_stale_item_and_renewal_wins(client,production):
+    from datetime import datetime,timezone,timedelta
+    p=production;start(client,p);first=media_job(client,p);claim(client,p,first)
+    service=client.app.state.workflow.media_automation
+    old=client.get('/api/bridge/jobs',headers=p['headers']).json()['items'][0]['media_claim']['last_seen_at']
+    claim(client,p,first)
+    stale=client.post('/api/bridge/media/'+first['id']+'/failure',headers=p['headers'],json={
+        'owner':'one','attempt':first['attempt'],'reason':'stale heartbeat','stage':'browser_disconnected','last_seen_at':old})
+    assert stale.status_code==422
+    assert service.check_stalled(datetime.now(timezone.utc)+timedelta(seconds=181))==1
+    assert media_job(client,p)['id']!=first['id']
+    # Unclaimed next items remain waiting when the browser/automation is off.
+    assert service.check_stalled(datetime.now(timezone.utc)+timedelta(seconds=600))==0
+    assert client.post('/api/jobs/'+first['id']+'/retry').status_code==422
+    next_id=media_job(client,p)['id']
+    assert client.post('/api/jobs/'+first['id']+'/cancel').status_code==422
+    assert media_job(client,p)['id']==next_id
+    assert client.post('/api/jobs/'+next_id+'/cancel').status_code==200
+    assert not client.get('/api/bridge/jobs',headers=p['headers']).json()['items']
+
+
 def test_tts_downloads_attach_once_and_queue_next_in_order(client,production):
     p=production;state=start(client,p)
     j=media_job(client,p)
