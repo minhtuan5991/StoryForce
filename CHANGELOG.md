@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.23 — 2026-10-05 (local only)
+
+- Give AI thumbnails a story-grounded curiosity headline, one clear visual clue, 2–3 complementary typefaces and two contrasting text/accent colors. Adapt atmosphere to the channel and content direction, preserve the published title and avoid revealing the ending or inventing a viewer promise.
+- Make scene-image prompts photographic and grounded in the scene's actual light, weather, materials and character continuity. Apply the same image direction when copying a prompt, queueing one image or running automatic media generation, including existing visual plans.
+- Preserve scene counts, word ranges, audio/video timing, Flow prompts, attached resources, local thumbnail composition and all other features/settings. Include Browser Bridge 1.1.26. Not published to GitHub.
+
 ## 3.1.22 — 2026-10-05
 
 - Complete the retention fix after testing a real Gemini reassessment. Accept only display-format differences in whitespace, double-quote delimiters and straight/curly apostrophes; retain the exact original source passage and its word/WPM timing in the saved audit.

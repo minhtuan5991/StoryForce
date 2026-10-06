@@ -17,8 +17,8 @@ from sqlalchemy import text as sql_text
 
 from .intelligence import digest, words
 from .media import project_folder, probe, safe_path, find_binary, run_process
-from .models import Asset, Chunk, Scene, Job, Project, Channel, now, uid, serialize
-from .production_extras import thumbnail_prompt
+from .models import Asset, Chunk, Scene, Job, Project, Channel, Artifact, now, uid, serialize
+from .production_extras import thumbnail_prompt, scene_generation_prompt
 from .providers import PROVIDER_URLS
 
 
@@ -88,11 +88,17 @@ class MediaAutomation:
         scenes = db.query(Scene).filter_by(project_id=p.id).order_by(Scene.number).all()
         images = sum(s.visual_type != "VIDEO" for s in scenes)
         videos = len(scenes) - images
-        fingerprint = digest([p.id, p.story_version, p.draft, thumbnail_prompt(serialize(p), [serialize(s) for s in scenes]),
+        fingerprint = digest([p.id, p.story_version, p.draft, self.thumbnail(db, p, [serialize(s) for s in scenes]),
                               [(target_hash(s), s.asset_id) for s in scenes], p.publish.get("thumbnail_asset_id")])
         return {"image_count": images, "video_count": videos, "thumbnail_count": 1,
                 "confirmation": fingerprint, "folder": download_folder(p.title),
                 "download_path": str(downloads_root() / download_folder(p.title)), "flow": FLOW_OPTIONS}
+
+    @staticmethod
+    def thumbnail(db, p, scenes):
+        direction = db.query(Artifact).filter_by(project_id=p.id, kind='content_direction').order_by(Artifact.created_at.desc()).first()
+        channel = db.get(Channel, p.channel_id)
+        return thumbnail_prompt(serialize(p), scenes, serialize(channel) if channel else {}, direction.content if direction else {})
 
     def start(self, id, body):
         from .workflow import settings_for
@@ -143,7 +149,7 @@ class MediaAutomation:
                 if not scenes:
                     raise ValueError("Choose image/video counts and create a visual plan first")
                 if regenerate or not self.available(db, p.publish.get("thumbnail_asset_id"), "image", p.story_version):
-                    prompt = thumbnail_prompt(serialize(p), [serialize(s) for s in scenes])
+                    prompt = self.thumbnail(db, p, [serialize(s) for s in scenes])
                     items.append({"kind": "image_generation", "provider": "gemini", "target_type": "thumbnail", "target_id": id,
                                   "source_hash": digest(prompt), "filename": "thumbnail.png", "prompt": prompt})
                 else:
@@ -158,7 +164,7 @@ class MediaAutomation:
                     items.append({"kind": media_kind + "_generation", "provider": "flow" if media_kind == "video" else "gemini",
                                   "target_type": "scene", "target_id": scene.id, "source_hash": target_hash(scene),
                                   "filename": f"scene_{scene.number:03}.{'mp4' if media_kind == 'video' else 'png'}",
-                                  "prompt": scene.prompt + "\nAvoid: " + scene.negative_prompt,
+                                  "prompt": scene_generation_prompt(serialize(scene)),
                                   **({"flow": FLOW_OPTIONS} if media_kind == "video" else {})})
             folder = download_folder(p.title)
             # Equal project titles must not share a directory accidentally.
@@ -212,7 +218,7 @@ class MediaAutomation:
             raise ValueError("The story changed; start media generation for the new version")
         if media["target_type"] == "thumbnail":
             scenes = [serialize(s) for s in db.query(Scene).filter_by(project_id=p.id).order_by(Scene.number)]
-            current_hash = digest(thumbnail_prompt(serialize(p), scenes))
+            current_hash = digest(self.thumbnail(db, p, scenes))
         else:
             target = db.get(Chunk if media["target_type"] == "chunk" else Scene, media["target_id"])
             current_hash = target_hash(target) if target and target.project_id == p.id else None

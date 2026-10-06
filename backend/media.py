@@ -16,6 +16,7 @@ from pathlib import Path
 from .config import APP_ROOT, RESOURCE_ROOT, safe_path
 from .intelligence import sentence_units, words
 from .visual_planning import balance_scene_ranges, DEFAULT_VIDEO_SECONDS
+from .production_extras import thumbnail_prompt
 
 MEDIA_FOLDERS = {"audio": "audio", "image": "images", "video": "videos", "music": "music", "ambient": "ambient", "sfx": "sfx"}
 EXTENSIONS = {".wav": "audio", ".mp3": "audio", ".m4a": "audio", ".flac": "audio", ".ogg": "audio", ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".mp4": "video", ".mov": "video", ".webm": "video"}
@@ -604,7 +605,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         writer = csv.DictWriter(f, fieldnames=["scene", "offset", "duration", "story_version"])
         writer.writeheader()
         writer.writerows({"scene": s["scene_key"], "offset": s["offset"], "duration": s["duration"], "story_version": project["story_version"]} for s in scenes)
-    (folder/"thumbnail_prompt.txt").write_text(project.get("publish", {}).get("thumbnail_concept") or f"Cinematic thumbnail for {project['title']}. One clear focal subject, strong contrast, no misleading imagery.", encoding="utf-8")
+    (folder/"thumbnail_prompt.txt").write_text(thumbnail_prompt(project, scenes), encoding="utf-8")
     progress(96, "Final technical QA")
     report = final_qa(output, plan, binary, settings, log)
     stage_done('qa')

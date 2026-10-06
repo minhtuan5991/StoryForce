@@ -17,7 +17,7 @@ from .intelligence import digest, words, tokens, novelty_check, duration_profile
 from .providers import MockProvider, BrowserBridgeProvider, PROVIDERS
 from . import audience
 from .channel_learning import learning_data
-from .production_extras import outro_chunk
+from .production_extras import outro_chunk, scene_generation_prompt
 from .visual_planning import visual_budget, validate_visual_output, narration_clock, balance_scene_ranges, DEFAULT_VIDEO_SECONDS
 from .youtube_metadata import YouTubeMetadata, metadata_context, metadata_fingerprint, upload_text
 from .media import project_folder, probe, timeline_from_audio, write_subtitles, render_project, safe_path, validate_assets, render_inputs_hash, render_options
@@ -486,7 +486,12 @@ class Workflow:
                                    'In later sections change knowledge, choices or consequences rather than repeating suspense language.\n')
                 if job.kind == "tts_context":
                     job.prompt = str(context["payload"].get("text", ""))
-                elif job.kind in ("image_generation", "video_generation"):
+                elif job.kind == 'image_generation':
+                    scene = db.get(Scene, context['payload'].get('scene_id')) if context['payload'].get('scene_id') else None
+                    job.prompt = scene_generation_prompt({**context['payload'], 'visual_type': 'IMAGE',
+                                                          'text': scene.text if scene and scene.project_id == job.project_id else '',
+                                                          'continuity': scene.continuity if scene and scene.project_id == job.project_id else {}})
+                elif job.kind == "video_generation":
                     job.prompt = str(context["payload"].get("prompt", "")) + "\nAvoid: " + str(context["payload"].get("negative_prompt", ""))
                 job.payload = {**(job.payload or {}), "_inputs_hash": digest(context), "_draft_hash": digest(context["project"].get("draft", "")), "_template_version": digest(template)[:12], "_story_version": context["project"].get("story_version", 0)}
                 if job.kind == 'youtube_metadata':

@@ -32,7 +32,7 @@ from .intelligence import duration_profile, channel_fit, novelty_check, words, d
 from .workflow import Workflow, settings_for, latest, set_draft, gate_lock, lock_story, active_issues
 from . import audience
 from .channel_learning import learning_data, normalize_snapshot, reminders
-from .production_extras import tts_scene_context, thumbnail_prompt, compose_thumbnail, outro_chunk
+from .production_extras import tts_scene_context, thumbnail_prompt, scene_generation_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
 from .ai_result import parse_ai_result
 from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets, timeline_from_audio, render_options, validate_logo, validate_waveform_video
@@ -333,7 +333,9 @@ def create_app(data_root: str | Path | None = None):
             for a in db.query(Artifact).filter_by(project_id=id).order_by(Artifact.created_at).all():artifacts[a.kind]=serialize(a)
             chunks=[serialize(v) for v in db.query(Chunk).filter_by(project_id=id).order_by(Chunk.number)]
             scenes=[serialize(v) for v in db.query(Scene).filter_by(project_id=id).order_by(Scene.number)]
-            for scene in scenes:scene['scene_key']=f"scene_{scene['number']:03}"
+            for scene in scenes:
+                scene['scene_key']=f"scene_{scene['number']:03}"
+                scene['generation_prompt']=scene_generation_prompt(scene)
             assets=[serialize(v) for v in db.query(Asset).filter_by(project_id=id).order_by(desc(Asset.created_at))]
             try:render_timeline=timeline_from_audio(chunks,scenes,assets,render_options(serialize(p))['ending_asset_id'])
             except ValueError as exc:render_timeline={'error':str(exc)}
@@ -343,7 +345,7 @@ def create_app(data_root: str | Path | None = None):
                 chunk['scene_context']=tts_scene_context(chunk,serialize(p),channel,scenes,start)
                 start+=chunk['word_count']
             return {**serialize(p),"channel":serialize(db.get(Channel,p.channel_id)),"source":serialize(db.get(Source,p.source_id)) if p.source_id else None,
-                    "thumbnail_prompt":thumbnail_prompt(serialize(p),scenes),
+                    "thumbnail_prompt":thumbnail_prompt(serialize(p),scenes,channel,artifacts.get('content_direction',{}).get('content',{})),
                     "visual_budget":visual_budget(serialize(p),config),
                     "youtube_metadata_current":bool(artifacts.get('youtube_metadata') and artifacts['youtube_metadata']['content'].get('content_fingerprint')==metadata_fingerprint(db,p)),
                     "workflow_settings":{key:config[key] for key in ("pipeline_mode","default_premise_count")},
