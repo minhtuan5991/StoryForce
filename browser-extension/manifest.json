@@ -1,5 +1,5 @@
 {
-  "manifest_version":3,"name":"StoryForge US Browser Bridge","version":"1.1.26","minimum_chrome_version":"120",
+  "manifest_version":3,"name":"StoryForge US Browser Bridge","version":"1.1.27","minimum_chrome_version":"120",
   "description":"User-controlled local bridge for StoryForge. Fill prompts and capture results in your signed-in provider tabs.",
   "permissions":["storage","tabs","scripting","alarms","downloads"],
   "host_permissions":["http://127.0.0.1:8787/*","https://chatgpt.com/*","https://gemini.google.com/*","https://aistudio.google.com/*","https://labs.google/*","https://flow.google.com/*"],

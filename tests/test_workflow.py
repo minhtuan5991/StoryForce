@@ -99,8 +99,10 @@ def test_pipeline_stops_at_human_checkpoints(client,project):
     assert response.status_code==200
     detail=client.get('/api/projects/'+project['id']).json()
     assert len(detail['premises'])==10
-    assert not detail['selected_premise_id']
-    assert not detail['draft']
+    assert detail['selected_premise_id']==detail['premises'][0]['id']
+    assert detail['draft'] and not detail['locked'] and not detail['chunks']
+    assert detail['next']['checkpoint']=='Review and approve Story Lock.'
+    assert detail['lock_gate']['can_lock']
     assert sum(bool(pr['mini_test']) for pr in detail['premises'])==3
 
 

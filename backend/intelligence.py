@@ -144,6 +144,7 @@ def similarity(a: str | list, b: str | list) -> float:
 
 
 def novelty_check(text: str, signature: dict, memory: list[dict], channel_id: str) -> list[dict]:
+    signature = {key: value for key, value in signature.items() if not key.startswith('_')}
     warnings = []
     for item in memory:
         shared = [f"{key}: {value}" for key, value in signature.items() if value and item.get("signature", {}).get(key) == value]

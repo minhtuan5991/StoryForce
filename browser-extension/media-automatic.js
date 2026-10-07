@@ -1,12 +1,29 @@
 // Durable media queue. Generations are authorized once; downloads are tracked by
 // their exact ID/URL, never by whichever file happened to arrive most recently.
 import {withTabReadDeadline} from './transport.js';
+import {providerPage,projectSessionKey} from './media-sessions.js';
 
 export function createMediaBridge({chrome,request,ensureContent,armCapture,readCapture,now=()=>Date.now(),pageSettleMs=5000}){
   let busy=false;
   const read=async()=> (await chrome.storage.local.get('mediaBridge')).mediaBridge||{phase:'idle',tabs:{}};
   const write=async state=>{await chrome.storage.local.set({mediaBridge:state});return state};
   const enabled=async()=>!!(await chrome.storage.local.get('autoBridge')).autoBridge?.enabled;
+  const idle=(s,message)=>({phase:'idle',tabs:s.tabs||{},pages:s.pages||{},folders:s.folders||{},prompts:s.prompts||{},sessions:s.sessions||{},message});
+  async function remember(state,job){
+    const tab=await chrome.tabs.get(state.tabId),page=providerPage(state.provider,tab.url);
+    const key=state.sessionKey||projectSessionKey(job),previous=state.sessions?.[key]||{};
+    if(page&&previous.url&&page!==previous.url&&state.provider!=='aistudio')
+      throw new Error('Tab đã chuyển sang cuộc trò chuyện hoặc dự án khác; không gửi hay tải tài nguyên ở đó.');
+    let session={...previous,tabId:state.tabId,previousPrompt:state.prompts?.[state.tabId]||previous.previousPrompt};
+    if(page)session.url=page;
+    if(page&&(session.syncedUrl!==page||state.sentAt&&session.syncedSentFor!==job.id)&&(job.project_id||job.media.project_id)){
+      await request('/media/'+job.id+'/session','POST',{owner:state.owner,attempt:state.attempt,url:page});
+      session.syncedUrl=page;
+      if(state.sentAt)session.syncedSentFor=job.id;
+    }
+    return write({...state,sessionKey:key,sessions:{...state.sessions,[key]:session},
+      pages:{...state.pages,...(page?{[state.provider]:page}:{})}});
+  }
   const call=async(state,action,extra={})=>{
     const result=await withTabReadDeadline(()=>chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action:'media-'+action,
       provider:state.provider,jobId:state.jobId,prompt:state.prompt,previousPrompt:state.prompts?.[state.tabId],media:state.media,baseline:state.baseline,collection:state.collection,...extra}));
@@ -48,18 +65,38 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
     if(busy||!await enabled())return;
     busy=true;
     let state=await read();
+    let job;
     try{
       const {items}=await request('/jobs');
-      let job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt&&j.media);
-      if(state.jobId&&!job){state=await write({phase:'idle',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},prompts:state.prompts||{},message:'Đã lưu hoặc dừng tác vụ media trước.'})}
+      job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt&&j.media);
+      if(state.jobId&&!job){
+        // The app watchdog may have skipped the job while the browser was hung.
+        const key=state.sessionKey;
+        if(key)state={...state,sessions:{...state.sessions,[key]:{...state.sessions?.[key],recover:true,submitted:!!state.sentAt}}};
+        state=await write(idle(state,'Đã lưu hoặc dừng tác vụ media trước.'));
+      }
       if(state.phase==='paused')return;
       if(!job){
         job=items.find(j=>j.media);
         if(!job)return;
-        state=await write({phase:'opening',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},prompts:state.prompts||{},jobId:job.id,attempt:job.attempt,provider:job.provider,
+        const key=projectSessionKey(job),previous=state.sessions?.[key]||{};
+        const server=providerPage(job.provider,job.media_session?.url);
+        const legacy=!(job.project_id||job.media.project_id)&&state.folders?.[job.provider]===job.media.folder?
+          {url:providerPage(job.provider,state.pages?.[job.provider]),tabId:state.tabs?.[job.provider]}:{};
+        const context={...legacy,...previous,...(server?{url:server,syncedUrl:server}:{})};
+        if(!context.previousPrompt&&job.media_session?.last_prompt)context.previousPrompt=job.media_session.last_prompt;
+        state=await write({phase:'opening',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},prompts:state.prompts||{},sessions:{...state.sessions,[key]:context},sessionKey:key,jobId:job.id,attempt:job.attempt,provider:job.provider,
           prompt:job.prompt,media:job.media,owner:crypto.randomUUID(),deadline:now()+30*60*1000,preparationDeadline:now()+180000});
         const {claim}=await request('/media/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
         if(claim.phase==='sent')throw new Error('Yêu cầu đã gửi từ một phiên khác. Kiểm tra tab trước khi tiếp tục.');
+      }
+      if(!state.sessionKey){
+        // Upgrade an in-flight queue saved by older Bridge versions without
+        // losing its previously verified page or granting another Send.
+        const key=projectSessionKey(job),server=providerPage(job.provider,job.media_session?.url);
+        const legacy=state.folders?.[job.provider]===job.media.folder?
+          {url:providerPage(job.provider,state.pages?.[job.provider]),tabId:state.tabId||state.tabs?.[job.provider]}:{};
+        state=await write({...state,sessionKey:key,sessions:{...state.sessions,[key]:{...legacy,...state.sessions?.[key],...(server?{url:server,syncedUrl:server}:{})}}});
       }
       const permit={owner:state.owner,attempt:state.attempt};
       // Validate the batch, scene and explicit approval before every UI action.
@@ -71,21 +108,23 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       if(state.phase==='opening'){
         let tab;
         const key=state.provider;
+        let context=state.sessions?.[state.sessionKey]||{};
         if(state.tabId){try{tab=await chrome.tabs.get(state.tabId)}catch(error){
           if(!/No tab with id|Invalid tab ID/i.test(error.message||''))throw error;
         }}
         if(!tab){
-          const saved=state.tabs[key]||state.tabs[state.media.batch_id+':'+state.provider];
+          const saved=context.tabId;
           if(saved){try{tab=await chrome.tabs.get(saved)}catch{}}
           if(tab&&state.provider==='flow'){
-            const page=state.pages.flow;
+            const page=context.url;
             // Return from our own clip player to the same project for the next
             // scene. A different StoryForge project starts a new Flow project.
-            if(state.folders.flow!==state.media.folder)tab=await chrome.tabs.update(tab.id,{url:job.url,active:true});
-            else if(page&&tab.url?.startsWith(page+'/edit/'))tab=await chrome.tabs.update(tab.id,{url:page,active:true});
+            if(page&&tab.url?.startsWith(page+'/edit/'))tab=await chrome.tabs.update(tab.id,{url:page,active:true});
           }
           if(!tab){
-            const savedPage=state.folders[key]===state.media.folder&&state.pages[key];
+            const savedPage=context.url;
+            if(context.submitted&&!savedPage&&state.provider!=='aistudio')
+              throw new Error('Chưa có đường dẫn phiên đã gửi trước đó. Mở lại phiên cũ để giữ nhân vật; scene này cần xử lý thủ công.');
             // Only reopen a page we recorded for this project before Send.
             // A submitted job always stays on its original result-collection path.
             const hosts={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],flow:['flow.google.com','labs.google']}[key];
@@ -93,27 +132,43 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
             try{if(savedPage&&hosts.includes(new URL(savedPage).hostname))url=savedPage}catch{}
             tab=await chrome.tabs.create({url,active:true});
           }
-          state=await write({...state,tabId:tab.id,pageReadyAt:0,tabs:{...state.tabs,[key]:tab.id},folders:{...state.folders,[key]:state.media.folder}});
+          state=await write({...state,tabId:tab.id,pageReadyAt:0,tabs:{...state.tabs,[key]:tab.id},folders:{...state.folders,[key]:state.media.folder},
+            prompts:{...state.prompts,...(context.previousPrompt?{[tab.id]:context.previousPrompt}:{})},
+            sessions:{...state.sessions,[state.sessionKey]:{...context,tabId:tab.id}}});
         }
         const host=new URL(tab.url||job.url).hostname;
         const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],flow:['flow.google.com','labs.google']}[state.provider];
         if(!allowed.includes(host))throw new Error('Tab media đã chuyển sang trang khác. Mở lại dịch vụ để tiếp tục.');
         if(tab.status!=='complete'||tab.pendingUrl){await write({...state,pageReadyAt:0});return}
+        const currentPage=providerPage(state.provider,tab.url);
+        if(context.url&&currentPage!==context.url&&context.restoredFor!==job.id){
+          tab=await chrome.tabs.update(tab.id,{url:context.url,active:true});
+          await write({...state,pageReadyAt:0,sessions:{...state.sessions,[state.sessionKey]:{...context,restoredFor:job.id}}});return;
+        }
+        if(context.url&&currentPage!==context.url)
+          throw new Error('Không khôi phục được phiên cũ của dự án. Kiểm tra đăng nhập hoặc mở lại phiên; không tạo phiên khác.');
+        if(context.recover&&context.recoveredFor!==job.id&&context.url){
+          await chrome.tabs.update(tab.id,{url:context.url,active:true});
+          await write({...state,pageReadyAt:0,sessions:{...state.sessions,[state.sessionKey]:{...context,recoveredFor:job.id}}});return;
+        }
         // Setup may create a Flow project before it finishes selecting options.
         // Save that URL now so closing the browser does not lose the project.
-        if(state.pages?.[key]!==tab.url)state=await write({...state,pages:{...state.pages,[key]:tab.url}});
+        state=await remember(state,job);
         if(!state.pageReadyAt){await write({...state,pageReadyAt:now()});return}
         if(now()-state.pageReadyAt<pageSettleMs)return;
         await ensureContent(state.tabId);
-        const setup=await call(state,'setup');
+        const setup=await call(state,'setup',{recovery:!!context.recover});
         if(!setup.ready){await status(state,setup.message||'Đang chờ trang và cài đặt media sẵn sàng…');return}
-        const prepared=await call(state,'prepare');
-        const page=await chrome.tabs.get(state.tabId);
-        state=await write({...state,phase:'prepared',baseline:prepared.baseline,pages:{...state.pages,[state.provider]:page.url},
-          prompts:{...state.prompts,[state.tabId]:state.prompt},message:'Đã nhập nội dung, đang chờ nút tạo khả dụng…'});
+        const {files=[]}=await request('/media/'+job.id+'/references','POST',permit);
+        const prepared=await call(state,'prepare',{references:files,recovery:!!context.recover});
+        if(prepared.ready===false){await status(state,prepared.message||'Đang tải ảnh nhân vật tham chiếu…');return}
+        state=await remember(state,job);
+        state=await write({...state,phase:'prepared',baseline:prepared.baseline,
+          referencesPrepared:true,prompts:{...state.prompts,[state.tabId]:state.prompt},message:'Đã nhập nội dung, đang chờ nút tạo khả dụng…'});
         return;
       }
       if(state.phase==='prepared'){
+        if(!state.referencesPrepared){await write({...state,phase:'opening',pageReadyAt:0});return}
         await ensureContent(state.tabId);
         const ready=await call(state,'ready');
         if(!ready.ready)return;
@@ -123,9 +178,11 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         // so recovery only polls this tab instead of spending credits twice.
         state=await write({...state,phase:'submitted',sentAt:now(),message:'Đang tạo '+state.media.filename+'…'});
         if(authorized.send)await call(state,'send');
+        state=await remember(state,job);
         return;
       }
       if(state.phase==='submitted'){
+        state=await remember(state,job);
         await ensureContent(state.tabId);
         const result=await call(state,'poll');
         if(result.collection&&JSON.stringify(result.collection)!==JSON.stringify(state.collection))state=await write({...state,collection:result.collection});
@@ -135,6 +192,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       }
       if(state.phase==='download_ready'){
         if(!await enabled())return;
+        state=await remember(state,job);
         // Reloading the extension disconnects the old content listener even
         // though the generated audio/image/video is still present in the tab.
         await ensureContent(state.tabId);
@@ -189,8 +247,9 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         await request('/media/'+job.id+'/result','POST',{...permit,download_id:item.id,download_state:item.state,path:item.filename,
           ...(state.expectedDuration>0?{expected_duration:state.expectedDuration}:{})});
         // Only clear our own previous text once the completed file is imported.
-        await write({phase:'idle',tabs:state.tabs,pages:state.pages,folders:state.folders,prompts:state.prompts,
-          message:'Đã tải và gán '+state.media.filename+'. Đang chuyển sang scene tiếp theo…'});
+        const context=state.sessions?.[state.sessionKey]||{};
+        state={...state,sessions:{...state.sessions,[state.sessionKey]:{...context,recover:false,previousPrompt:state.prompt,submitted:true}}};
+        await write(idle(state,'Đã tải và gán '+state.media.filename+'. Đang chuyển sang scene tiếp theo…'));
       }
     }catch(error){
       state=await read();
@@ -215,24 +274,19 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         let skipped=false;
         if(state.jobId&&state.owner){
           try{
+            if(state.tabId&&job){try{state=await remember(state,job)}catch{}}
             const result=await request('/media/'+state.jobId+'/failure','POST',{owner:state.owner,attempt:state.attempt,
               reason:error.message||String(error),stage:state.phase});
             skipped=result.accepted===true;
           }catch{}
         }
         if(skipped){
-          // Recover only the tab created/recorded by this queue. Late results
-          // belong to the failed job and cannot be imported for the next scene.
-          const tabs={...state.tabs},pages={...state.pages},folders={...state.folders},prompts={...state.prompts};
-          if(tabs[state.provider]===state.tabId){
-            try{
-              const tab=await chrome.tabs.get(state.tabId),host=new URL(tab.url||'').hostname;
-              if(['aistudio.google.com','gemini.google.com','flow.google.com','labs.google'].includes(host))await chrome.tabs.remove(state.tabId);
-            }catch{}
-            delete tabs[state.provider];delete pages[state.provider];delete folders[state.provider];delete prompts[state.tabId];
-          }
-          await write({phase:'idle',tabs,pages,folders,prompts,
-            message:'Đã bỏ qua '+state.media.filename+'. Xem phần Tài Nguyên để tạo thủ công; đang chuyển scene tiếp theo.'});
+          // Keep the project page and prompt evidence. Recover the same page
+          // before preparing the next scene, never spend credits in a new chat.
+          const key=state.sessionKey,context=state.sessions?.[key]||{};
+          state={...state,sessions:{...state.sessions,[key]:{...context,recover:true,submitted:!!state.sentAt||context.submitted,
+            previousPrompt:state.prompts?.[state.tabId]||context.previousPrompt}}};
+          await write(idle(state,'Đã bỏ qua '+state.media.filename+'. Giữ phiên của dự án và chuyển scene tiếp theo; xem Tài Nguyên để tạo phần còn thiếu.'));
         }else{
           // A disconnected local app or ownership conflict cannot authorize
           // skipping a job. Keep the exact stage for reconnection/manual resume.

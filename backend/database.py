@@ -3,7 +3,7 @@ from contextlib import closing
 from pathlib import Path
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
-from .models import Base, Job
+from .models import Base, Job, PremiseUsage
 
 
 class Database:
@@ -34,6 +34,29 @@ class Database:
                     if column not in columns:
                         conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} JSON DEFAULT '{{}}'"))
                 conn.execute(text("INSERT INTO schema_migrations(version) VALUES(2)"))
+            if version < 3:
+                PremiseUsage.__table__.create(conn, checkfirst=True)
+                # Backfill existing choices without changing any story/settings.
+                rows = conn.execute(text('SELECT id, channel_id, title, selected_premise_id, settings FROM projects')).all()
+                import json
+                projects = {row.id: row for row in rows}
+                for row in rows:
+                    origin = json.loads(row.settings or '{}').get('premise_origin', {})
+                    pool_id = origin.get('project_id') or row.id
+                    premise_id = origin.get('premise_id') or row.selected_premise_id
+                    pool = projects.get(pool_id)
+                    if not premise_id or not pool or pool.channel_id != row.channel_id:
+                        continue
+                    chosen = conn.execute(text('SELECT title FROM premises WHERE id=:id AND project_id=:pool'),
+                                          {'id': premise_id, 'pool': pool_id}).first()
+                    if not chosen:
+                        continue
+                    known = conn.execute(text('SELECT id FROM premise_usage WHERE pool_project_id=:pool AND premise_id=:idea'),
+                                         {'pool': pool_id, 'idea': premise_id}).first()
+                    if not known:
+                        conn.execute(PremiseUsage.__table__.insert().values(channel_id=row.channel_id,
+                            pool_project_id=pool_id, premise_id=premise_id, project_id=row.id, title=chosen.title))
+                conn.execute(text("INSERT INTO schema_migrations(version) VALUES(3)"))
         with self.session() as db:
             for job in db.query(Job).filter(Job.status.in_(["running", "queued"])).all():
                 job.status = "waiting_user"

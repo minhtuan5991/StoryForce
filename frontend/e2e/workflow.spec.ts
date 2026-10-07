@@ -31,8 +31,7 @@ test('channel, duration wizard, pipeline checkpoint, persistence and asset mappi
   await page.locator('.studio-nav').getByRole('link',{name:'Premises',exact:true}).click();
   await expect(page.locator('.premise-card')).toHaveCount(10,{timeout:30000});
   await expect(page.getByRole('button',{name:'View mini-test'}).first()).toBeEnabled();
-  await page.getByRole('button',{name:'Choose',exact:true}).first().click();
-  await page.getByRole('button',{name:'Continue pipeline',exact:true}).click();
+  await expect(page.locator('.premise-card').first().getByRole('button',{name:'Used premise',exact:true})).toBeDisabled();
   await page.locator('.studio-nav').getByRole('link',{name:'Story lock',exact:true}).click();
   await expect(page.getByRole('button',{name:'Approve Story Lock',exact:true})).toBeEnabled({timeout:30000});
   await page.getByRole('button',{name:'Approve Story Lock',exact:true}).click();

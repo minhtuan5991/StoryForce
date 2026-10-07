@@ -51,7 +51,8 @@ def test_other_premises_create_independent_projects_without_changing_finished_wo
         assert 'render_options' not in new['settings'] and 'media_automation' not in new['settings']
         assert 'final_reviewed' not in new['publish']
         detail = client.get('/api/projects/' + new['id']).json()
-        assert len(detail['premises']) == len(before['premises'])
+        assert len(detail['premises']) == 1
+        assert detail['next']['kind'] == 'story_bible'
         assert detail['selected_premise_id'] != candidate['id']
         assert next(p for p in detail['premises'] if p['id'] == detail['selected_premise_id'])['title'] == candidate['title']
         assert detail['artifacts']['content_direction']['content'] == before['artifacts']['content_direction']['content']
@@ -60,6 +61,7 @@ def test_other_premises_create_independent_projects_without_changing_finished_wo
         new_ids.append(new['id'])
     assert len(set(new_ids)) == 2
     after = client.get(url).json()
+    assert set(after['premise_pool']['used_premise_ids']) == {c['id'] for c in candidates}
     for key in ('title', 'draft', 'locked', 'story_version', 'selected_premise_id', 'settings', 'publish', 'artifacts', 'premises', 'updated_at'):
         assert after[key] == before[key], key
     assert file.read_bytes() == b'original completed video'
@@ -94,3 +96,39 @@ def test_assisted_branch_continues_only_the_new_project_and_is_idempotent(client
     jobs = client.get('/api/projects/' + new['id']).json()['jobs']
     assert len(jobs) == 1 and jobs[0]['kind'] == 'story_bible' and jobs[0]['status'] == 'waiting_user'
     assert not [j for j in client.get('/api/projects/' + project['id']).json()['jobs'] if j['kind'] == 'story_bible']
+
+
+def test_branch_pipeline_skips_missing_generation_artifact_and_rejects_new_ideas(client, project):
+    candidates, _, _ = finished(client, project)
+    new = client.post('/api/projects/' + project['id'] + '/select-premise', json={'premise_id': candidates[1]['id']}).json()
+    url = '/api/projects/' + new['id']
+    detail = client.get(url).json()
+    assert detail['next'] == {'kind': 'story_bible'}
+    assert detail['premise_pool']['project_id'] == project['id']
+    assert candidates[1]['id'] in detail['premise_pool']['used_premise_ids']
+    for kind in ('content_direction', 'premise_generation', 'premise_mini_test'):
+        assert client.post('/api/jobs', json={'project_id': new['id'], 'kind': kind}).status_code == 422
+    with client.app.state.database.session() as db:
+        # Legacy branches can lack direction as well as generation artifacts.
+        db.query(Artifact).filter_by(project_id=new['id'], kind='content_direction').delete()
+        db.commit()
+    assert client.get(url).json()['next']['kind'] == 'story_bible'
+    result = client.post(url + '/pipeline')
+    assert result.status_code == 200, result.text
+    assert client.get(url).json()['jobs'][0]['kind'] == 'story_bible'
+
+
+def test_legacy_paused_premise_generation_does_not_block_finished_pool(client, project):
+    candidates, _, file = finished(client, project)
+    with client.app.state.database.session() as db:
+        stale = Job(project_id=project['id'], kind='premise_generation', status='waiting_user')
+        db.add(stale)
+        db.commit()
+        stale_id = stale.id
+    url = '/api/projects/' + project['id']
+    assert client.get(url).json()['premise_reuse']['ready']
+    result = client.post(url + '/select-premise', json={'premise_id': candidates[1]['id']})
+    assert result.status_code == 200, result.text
+    with client.app.state.database.session() as db:
+        assert db.get(Job, stale_id).status == 'cancelled'
+    assert file.read_bytes() == b'original completed video'

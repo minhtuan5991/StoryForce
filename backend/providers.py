@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from .config import RESOURCE_ROOT
 from .intelligence import duration_profile, words
+from .premise_policy import mock_batch
 
 PROVIDERS = {
     "story_dna": "gemini", "channel_fit": "gemini", "content_direction": "chatgpt",
@@ -13,7 +14,7 @@ PROVIDERS = {
     "outline_rewrite": "chatgpt", "full_draft": "chatgpt", "gemini_story_audit": "gemini",
     "chatgpt_cross_review": "chatgpt", "disagreement_resolver": "gemini", "targeted_rewrite": "chatgpt",
     "final_verify_gemini": "gemini", "final_verify_chatgpt": "chatgpt", "visual_director": "gemini",
-    "tts_context": "aistudio", "image_generation": "gemini", "video_generation": "flow", "youtube_metadata": "chatgpt",
+    "tts_context": "aistudio", "image_generation": "gemini", "video_generation": "flow", "youtube_metadata": "chatgpt", "thumbnail_plan": "chatgpt",
     "opening_variants": "chatgpt", "retention_audit": "gemini", "retention_rewrite": "chatgpt",
 }
 PROVIDER_URLS = {"chatgpt": "https://chatgpt.com/", "gemini": "https://gemini.google.com/app",
@@ -40,6 +41,24 @@ class MockProvider(LLMProvider):
     def generate(self, kind, context, prompt):
         project = context.get("project") or {}
         profile = duration_profile(project.get("target_minutes", 10), project.get("wpm", 150))
+        if kind == 'thumbnail_plan':
+            from .thumbnail_packaging import ConceptScores
+            quote = project.get('draft', '').strip()[:180]
+            headline = 'A STRANGE DETAIL'
+            text_mode = 'MICRO_HOOK' if context['channel_visual_profile']['text_usage'] == 'SHORT_TEXT' else 'NO_TEXT'
+            concepts = ['A close-up of the story evidence', 'A person confronting the story evidence', 'The setting containing the story evidence']
+            return {'visual_dna': {'primary_setting': 'Story location', 'signature_object': 'Story evidence',
+                    'central_anomaly': quote, 'threat_visibility': ['UNKNOWN'], 'spoiler_boundary': 'Do not reveal the ending', 'evidence_quotes': [quote]},
+                'thumbnail_variants': [{'id': key, 'strategy': strategy, 'concept': concept, 'composition': concept,
+                    'focal_subject': 'Story evidence', 'background': 'The actual setting', 'lighting': 'Practical story lighting',
+                    'text_mode': text_mode, 'text_overlay': headline if text_mode != 'NO_TEXT' else '', 'text_safe_area': 'NONE',
+                    'complement_strategy': 'TITLE_EVENT_THUMBNAIL_EVIDENCE', 'title_complement_reason': 'Show concrete evidence rather than repeat the full title.',
+                    'hypothesis': 'Synthetic offline concept fixture, not a measured audience result.',
+                    'generation_prompt': concept + '. Reference: ' + quote, 'negative_prompt': 'Unsupported entities, added gore, spoilers, watermarks',
+                    'evidence_quotes': [quote], 'scores': {k: 10 if k.endswith('_risk') else 80 for k in ConceptScores.model_fields}}
+                    for key, strategy, concept in zip('ABC', ('concrete_anomaly', 'human_threat', 'atmospheric_context'), concepts)],
+                'recommended_thumbnail_variant': 'A', 'recommendation_reason': 'Synthetic fixture for isolated workflow tests.',
+                'test_notes': 'Hold the title fixed to compare thumbnails; use YouTube Studio watch time results. No audience winner is predicted.'}
         if kind == 'opening_variants':
             return {'variants': [{'id': key, 'strategy': strategy, 'text': 'At 2:17 a.m., the abandoned station spoke my name. I had unplugged its radio an hour earlier.',
                                   'scores': {'clarity': 88, 'curiosity': 86, 'promise_alignment': 90}, 'tradeoff': 'Synthetic fixture for offline workflow checks.'}
@@ -54,7 +73,27 @@ class MockProvider(LLMProvider):
                     'issues': [], 'retention_readiness_passed': True, 'packaging_alignment_passed': True,
                     'packaging_explanation': 'Mock fixture alignment check', 'summary': 'Mock retention assessment; review before production.'}
         if kind == "youtube_metadata":
-            return {"title":project.get('title','A story')[:100],"description":"An original fictional story about an isolated keeper facing a difficult choice. Thank you for watching; if you enjoyed it, you are welcome to like the video and subscribe for more stories.","tags":["fictional story","mystery narration"],"hashtags":["#Fiction"],"alternative_titles":[],"seo_notes":"Mock fixture: review before uploading.","review_notes":["Review the final video, media rights, audience and synthetic-content disclosure settings."]}
+            from .youtube_metadata import STRATEGIES
+            text = project.get('draft', '').strip()
+            quote = text[:160]
+            first = text.split('.')[0].strip()[:75] or project.get('title', 'An unexplained warning')[:75]
+            titles = [first, first + ' | Mystery Story', 'The Mystery Behind ' + first]
+            scores = dict(clarity=80, curiosity=80, specificity=80, story_accuracy=90,
+                          suggested_fit=80, search_fit=70, channel_fit=80,
+                          thumbnail_complement=80 if context['thumbnail'].get('reviewed_visual') else None, genericness_risk=10, keyword_stuffing_risk=0)
+            return {'recommended_title': titles[0],
+                    'title_variants': [{'id': key, 'strategy': strategy, 'title': title, 'evidence_quote': quote, 'scores': scores.copy()}
+                                       for (key, strategy), title in zip(STRATEGIES.items(), titles)],
+                    'story_packaging': {'concrete_anchors': [first], 'central_anomaly': first,
+                                       'genre': 'Mystery', 'evidence_quotes': [quote]},
+                    'primary_keyword_cluster': {'primary': 'mystery story', 'secondary': ['fiction narration'], 'evidence_type': 'story_semantic'},
+                    'description': text[:600] + '\n\nAn original mystery narrated for this channel.',
+                    'tags': ['mystery story', 'fiction narration', 'atmospheric mystery', context['channel']['name']],
+                    'hashtags': ['#MysteryStory', '#FictionNarration'],
+                    'metadata_notes': {'title_reason': 'Synthetic offline fixture, not an audience prediction.',
+                                       'suffix_decision': 'Only the context variant uses a genre suffix.',
+                                       'search_vs_suggested_strategy': context['traffic_strategy']['mode'], 'accuracy_notes': []},
+                    'review_notes': ['Review the final video, media rights, audience and synthetic-content disclosure settings.']}
         if kind == "story_dna":
             return self.fixture["story_dna"]
         if kind == "discovery":
@@ -64,7 +103,7 @@ class MockProvider(LLMProvider):
         if kind == "premise_generation":
             count = max(1, min(50, int(context.get("payload", {}).get("count", 10))))
             titles = self.fixture["premise_titles"]
-            return {"premises": [{"title": titles[i % len(titles)] + (f" · Variation {i // len(titles) + 1}" if i >= len(titles) else ""), "logline": self.fixture["loglines"][i % len(self.fixture["loglines"])], "category": ["Core"]*4 + ["Adjacent"]*3 + ["Experimental"]*2 + ["Wildcard"] if False else ("Core" if i/count < .4 else "Adjacent" if i/count < .7 else "Experimental" if i/count < .9 else "Wildcard"), "scores": {"hook": 91-i%8, "originality": 86+i%7, "us_audience_fit": 88, "channel_fit": 89, "audio_fit": 94, "duration_fit": 92, "series_potential": 77, "source_similarity": 12+i%5, "channel_repetition": 8, "cross_channel_similarity": 6}, "signature": {"protagonist_job": ["radio archivist", "paramedic", "rail dispatcher", "lighthouse keeper", "forest ranger"][i%5], "disaster": ["signal blackout", "flood", "unexplained evacuation", "time anomaly"][i%4], "location": ["coastal station", "mountain pass", "abandoned hospital"][i%3], "twist": ["message from the future", "unreliable instruction", "hidden rescue"][i%3], "ending": "hope through sacrifice", "beat_signature": f"hook-rule-escalation-choice-{i}"}} for i in range(count)]}
+            return mock_batch(context, {"premises": [{"title": titles[i % len(titles)] + (f" · Variation {i // len(titles) + 1}" if i >= len(titles) else ""), "logline": self.fixture["loglines"][i % len(self.fixture["loglines"])], "category": "Core" if i/count < .4 else "Adjacent" if i/count < .7 else "Experimental" if i/count < .9 else "Wildcard", "scores": {"hook": 91-i%8, "originality": 86+i%7, "us_audience_fit": 88, "channel_fit": 89, "audio_fit": 94, "duration_fit": 92, "series_potential": 77, "source_similarity": 12+i%5, "channel_repetition": 8, "cross_channel_similarity": 6}, "signature": {"protagonist_job": ["radio archivist", "paramedic", "rail dispatcher", "lighthouse keeper", "forest ranger"][i%5], "disaster": ["signal blackout", "flood", "unexplained evacuation", "time anomaly"][i%4], "location": ["coastal station", "mountain pass", "abandoned hospital"][i%3], "twist": ["message from the future", "unreliable instruction", "hidden rescue"][i%3], "ending": "hope through sacrifice", "beat_signature": f"hook-rule-escalation-choice-{i}"}} for i in range(count)]})
         if kind == "premise_mini_test":
             return {"tests": [{"premise_id": p["id"], "title": p["title"], "thumbnail_concept": "A lone silhouette at a glowing radio console; a red signal cuts through the dark.", "hook": "At 2:17 a.m., the abandoned station spoke my name. The voice on the radio was mine. It told me not to open the door.", "opening": "\n\n".join(self.fixture["draft_paragraphs"][:5]), "duration_fit": f"One central mystery, {profile['characters'][0]}–{profile['characters'][1]} characters, {profile['minutes']} minutes.", "scores": {"click_clarity": 90, "opening_strength": 88, "retention_potential": 86, "novelty": 89, "channel_consistency": 91}} for p in context.get("premises", [])[:3]]}
         if kind == "story_bible":

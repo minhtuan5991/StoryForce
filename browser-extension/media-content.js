@@ -28,7 +28,9 @@
   }
   const text=e=>norm(e.value??e.innerText??e.textContent);
   function busy(provider){
-    return controls().some(e=>/^(Stop|Dừng)( generating| generation| response| tạo| phản hồi)?$|Stop generating|Dừng tạo|Hủy tạo/i.test(label(e)))||
+    const selectors=globalThis.STORYFORGE_ADAPTERS?.[provider]?.busy||[];
+    return selectors.some(selector=>[...document.querySelectorAll(selector)].some(visible))||
+      controls().some(e=>/^(Stop|Dừng)( generating| generation| response| tạo| phản hồi)?$|Stop generating|Dừng tạo|Hủy tạo|Ngừng (?:tạo|phản hồi)/i.test(label(e)))||
       (provider==='flow'&&[...document.querySelectorAll('[role="progressbar"]')].some(visible));
   }
   function run(provider){
@@ -44,16 +46,28 @@
   const owned=globalThis.storyForgeMediaOwned||={};
   let stableEditor,stableAt=0;
 
-  function setupStudio(){
+  function setupStudio(message){
+    const model=message.media?.tts?.model;
+    if(model){
+      const settings=[...document.querySelectorAll('aside,ms-run-settings,h1,h2,h3,[data-model-id]')]
+        .filter(e=>visible(e)&&!e.closest('textarea,[contenteditable="true"],model-response,user-query'));
+      if(!settings.some(e=>norm(e.textContent).includes(model)||e.getAttribute('data-model-id')==='gemini-3.8-flash-tts')){
+        const option=find(new RegExp('^'+model.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$'));
+        const trigger=option||find(/Gemini.*(?:TTS|Speech)|^(?:Model|Mô hình)$/i);
+        if(trigger&&(owned.modelAttempts||0)<3){owned.modelAttempts=(owned.modelAttempts||0)+1;return clickOne(trigger,'Đang xác minh model '+model+'…')}
+        throw new Error('Chưa xác minh được model '+model+' trên AI Studio. Kiểm tra model rồi tạo lại đoạn còn thiếu.');
+      }
+    }
     const create=find(/^Create new dialog$|^Tạo hộp thoại mới$/);
     if(create)return clickOne(create,'Đang tạo hộp thoại AI Studio…');
     // AI Studio keeps its voice picker open after a selection. The speech
     // badge behind it is inert, so verify the selected voice inside the picker
     // and close that picker before reading the badge again.
     const drawer=[...document.querySelectorAll('[role="dialog"],[id^="mat-mdc-dialog-"],aside,ms-speaker-settings')].find(e=>
-      visible(e)&&e.querySelector('[data-voice-name]')&&/Speaker settings|Cài đặt người nói/.test(e.innerText||e.textContent||''));
+      visible(e)&&(e.querySelector('[data-voice-name]')||e.matches('[role="dialog"],[id^="mat-mdc-dialog-"]'))&&/Speaker settings|Cài đặt người nói/.test(e.innerText||e.textContent||''));
     if(drawer){
-      const selected=drawer.querySelector('[data-voice-name="Enzo"].selected')||find(/^Enzo\s*\(Current\)$/i,drawer);
+      const selected=drawer.querySelector('[data-voice-name="Enzo"].selected')||find(/^Enzo\s*\(Current\)$/i,drawer)||
+        find(/^Speaker 1\s*[-–]\s*Enzo$/);
       if(selected){
         const close=find(/^Close(?: panel)?$|^close$|^Đóng$|Close speaker settings/,drawer);
         if(close)return clickOne(close,'Đang đóng bảng giọng đọc Enzo…');
@@ -179,8 +193,117 @@
     cache.set(e,{url,key});return key;
   }
   function snapshot(provider){return mediaItems(provider).map(e=>provider==='aistudio'?sourceKey(e):source(e))}
+  function geminiResponse(message){
+    const turns=[...document.querySelectorAll('user-query,model-response,[data-test-id="user-query"]')];
+    const queries=turns.filter(e=>e.matches('user-query,[data-test-id="user-query"]'));
+    if(!queries.length)return null;
+    const query=queries.filter(e=>norm(e.innerText||e.textContent).includes(norm(message.prompt))).at(-1);
+    if(!query)return null;
+    const following=turns.slice(turns.indexOf(query)+1);
+    const nextQuery=following.findIndex(e=>e.matches('user-query,[data-test-id="user-query"]'));
+    return (nextQuery<0?following:following.slice(0,nextQuery)).find(e=>e.matches('model-response'))||null;
+  }
+  function composer(field=editor()){
+    // Never inspect history attachments when locating the current upload UI.
+    const form=field.closest('form');if(form)return form;
+    let candidate=field.parentElement,result=field;
+    while(candidate&&candidate!==document.body){
+      if(candidate.querySelector('model-response,user-query,video,img[alt*="generated video thumbnail"],img[alt*="Hình thu nhỏ của video đã tạo"]'))break;
+      result=candidate;
+      candidate=candidate.parentElement;
+    }
+    return result;
+  }
+  const previews=root=>[...root.querySelectorAll('img')].filter(e=>visible(e)&&
+    !e.closest('model-response,user-query,nav,aside')&&!/icon|logo|avatar|generated video thumbnail|Hình thu nhỏ của video đã tạo/i.test(e.alt||e.className||''));
+  function referenceInput(root){
+    const inputs=[...document.querySelectorAll('input[type="file"]')].filter(e=>
+      !e.disabled&&!e.closest('model-response,user-query,nav,aside')&&(!e.accept||/image|\.png|\.jpe?g/i.test(e.accept)));
+    const local=inputs.filter(e=>root.contains(e)),choices=local.length?local:inputs;
+    if(!choices.length){
+      const dialog=[...document.querySelectorAll('[role="dialog"],[role="menu"]')].find(visible);
+      const uploadButton=dialog&&find(/Upload (?:files?|images?)|Tải (?:tệp|ảnh) lên|^Upload$|^Tải lên$/i,dialog);
+      const add=uploadButton||find(/^(?:add|plus|\+)$|Add (?:files|images|ingredients)|Thêm (?:tệp|ảnh|thành phần)|Upload files/i,root);
+      if(add)return clickOne(add,'Đang mở phần tải ảnh nhân vật tham chiếu…');
+      throw new Error('Chưa thấy ô tải ảnh tham chiếu. Kiểm tra nút Thêm / Tải lên của dịch vụ.');
+    }
+    if(choices.length!==1)throw new Error('Có nhiều ô tải tệp; chưa xác định được ô ảnh tham chiếu của scene.');
+    return {input:choices[0]};
+  }
+  function attachReferences(input,files){
+    const transfer=new DataTransfer();
+    for(const file of files){
+      const data=Uint8Array.from(atob(file.data),c=>c.charCodeAt(0));
+      transfer.items.add(new File([data],file.name,{type:file.mime}));
+    }
+    input.files=transfer.files;
+    input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
+  }
+  function referenceUploads(message,field){
+    const files=message.references||[],root=composer(field),signature=files.map(f=>f.name).join('|');
+    let upload=owned.referenceUpload;
+    const present=previews(root);
+    if(upload?.verified&&upload.jobId!==message.jobId&&!present.length){delete owned.referenceUpload;upload=undefined}
+    if(upload&&upload.signature!==signature&&present.length){
+      // Only remove attachment previews installed by this adapter. Never clear
+      // a user's upload or a historical image to make room for our references.
+      for(const image of present){
+        if(!upload.nodes?.includes(image)&&!upload.urls?.includes(source(image)))
+          throw new Error('Ô nhập có ảnh tham chiếu bạn đã thêm. Kiểm tra ảnh trước khi tiếp tục Bridge.');
+        let parent=image.parentElement,remove;
+        while(parent&&root.contains(parent)){
+          remove=find(/^(?:Remove|Delete|Close|Clear|Xóa|Đóng|close)(?:\s|$)|Remove (?:file|image)|Xóa (?:tệp|ảnh)/i,parent);
+          if(remove||parent===root)break;parent=parent.parentElement;
+        }
+        if(!remove)throw new Error('Không gỡ được ảnh tham chiếu cũ trong ô nhập. Hãy gỡ ảnh rồi tiếp tục.');
+        remove.click();return {ready:false,message:'Đang thay ảnh nhân vật tham chiếu…'};
+      }
+    }
+    if(!files.length){delete owned.referenceUpload;owned.referencesReady=message.jobId;return {ready:true}}
+    if(files.length>3||files.some(f=>!/^sf_ref_[a-f0-9]{16}\.jpg$/.test(f.name)||f.mime!=='image/jpeg'||!f.data))
+      throw new Error('Ảnh tham chiếu không hợp lệ');
+    if(upload?.signature===signature){
+      const loaded=upload.loaded||files.length;
+      const added=present.filter(e=>!upload.before?.includes(e));
+      const names=files.slice(0,loaded).every(f=>norm(root.textContent).includes(f.name)||root.querySelector('[data-file-name="'+f.name+'"]'));
+      const progressing=[...root.querySelectorAll('[role="progressbar"],[aria-busy="true"]')].some(visible);
+      if(present.length>loaded)throw new Error('Ô nhập có thêm ảnh ngoài các ảnh tham chiếu đã chọn. Kiểm tra ảnh trước khi tiếp tục.');
+      const proof=names||added.length>=loaded||upload.verified&&present.length>=loaded;
+      if(!proof||progressing)return {ready:false,message:'Đang chờ tải đủ ảnh nhân vật tham chiếu…'};
+      const urls=present.map(source).join('|');
+      if(upload.previewSignature!==urls){upload.previewSignature=urls;upload.stableAt=Date.now();return {ready:false}}
+      if(Date.now()-upload.stableAt<2000)return {ready:false,message:'Đang chờ ảnh tham chiếu sẵn sàng…'};
+      if(loaded<files.length){
+        const selected=referenceInput(root);if(!selected.input)return selected;
+        const next=files.slice(loaded,selected.input.multiple?files.length:loaded+1);
+        upload.loaded=loaded+next.length;delete upload.previewSignature;
+        attachReferences(selected.input,next);return {ready:false,message:'Đang tải ảnh nhân vật tham chiếu tiếp theo…'};
+      }
+      upload.verified=true;upload.names=files.map(f=>f.name);upload.nodes=present;upload.urls=present.map(source);upload.jobId=message.jobId;owned.referencesReady=message.jobId;
+      return {ready:true};
+    }
+    if(present.length)throw new Error('Ô nhập có ảnh bạn đã thêm. Bridge không thay ảnh đó.');
+    const selected=referenceInput(root);if(!selected.input)return selected;
+    const first=selected.input.multiple?files:files.slice(0,1);
+    owned.referenceUpload={jobId:message.jobId,signature,before:present,loaded:first.length,stableAt:Date.now()};
+    attachReferences(selected.input,first);
+    return {ready:false,message:'Đang tải ảnh nhân vật tham chiếu vào '+(message.provider==='flow'?'Flow':'Gemini')+'…'};
+  }
+  function referencesIntact(message){
+    if(owned.referencesReady!==message.jobId)return false;
+    const root=composer(),present=previews(root),upload=owned.referenceUpload;
+    if(!upload)return present.length===0;
+    const labels=upload.nodes?.length||upload.names?.every(name=>norm(root.textContent).includes(name)||root.querySelector('[data-file-name="'+name+'"]'));
+    return upload.verified&&labels&&present.length===upload.nodes.length&&present.every(e=>upload.nodes.includes(e)||upload.urls.includes(source(e)))&&
+      ![...root.querySelectorAll('[role="progressbar"],[aria-busy="true"]')].some(visible);
+  }
   function resultNode(message){
-    const items=mediaItems(message.provider);
+    let items=mediaItems(message.provider);
+    if(message.provider==='gemini'){
+      if(message.result?.jobId&&message.result.jobId!==message.jobId)return;
+      const response=geminiResponse(message);if(!response)return;
+      items=items.filter(e=>response.contains(e));
+    }
     // AI Studio swaps playback packet URLs while the same completed result is
     // playing. The authorized job and unchanged editor identify that result;
     // an old packet URL must not prevent its full Download action.
@@ -293,9 +416,15 @@
       if(owned.setupJobId!==message.jobId){
         owned.setupJobId=message.jobId;
         delete owned.flowConfigured;delete owned.flowVerified;delete owned.flowChoices;
+        delete owned.recoverySignature;delete owned.modelAttempts;delete owned.referencesReady;
       }
-      if(busy(provider))return {ready:false,message:'Dịch vụ đang tạo nội dung trước, đang chờ hoàn tất…'};
-      if(provider==='aistudio'){const setup=setupStudio();if(!setup.ready)return setup}
+      if(busy(provider)){delete owned.recoverySignature;return {ready:false,message:'Dịch vụ đang tạo nội dung trước, đang chờ hoàn tất…'}}
+      if(message.recovery){
+        const signature=JSON.stringify(snapshot(provider));
+        if(signature!==owned.recoverySignature){owned.recoverySignature=signature;owned.recoveryAt=Date.now();return {ready:false}}
+        if(Date.now()-owned.recoveryAt<5000)return {ready:false,message:'Đang chờ kết quả cũ ổn định trước scene tiếp theo…'};
+      }
+      if(provider==='aistudio'){const setup=setupStudio(message);if(!setup.ready)return setup}
       if(provider==='flow'&&!owned.flowConfigured){const setup=flowSetup();if(!setup.ready)return setup}
       const field=editor();
       if(field!==stableEditor){stableEditor=field;stableAt=Date.now();return {ready:false}}
@@ -306,6 +435,9 @@
       const field=editor(),existing=text(field);
       if(existing&&existing!==norm(message.prompt)&&existing!==owned.lastPrompt&&existing!==norm(message.previousPrompt))
         throw new Error('Ô nhập có nội dung bạn đang soạn. Bridge không xóa nội dung đó.');
+      if(provider==='gemini'||provider==='flow'){
+        const upload=referenceUploads(message,field);if(!upload.ready)return upload;
+      }
       const baseline=snapshot(provider);
       owned.baselineNodes=mediaItems(provider);
       setEditor(field,message.prompt);
@@ -313,10 +445,12 @@
       owned.lastPrompt=norm(message.prompt);
       return {baseline};
     }
-    if(action==='media-ready')return {ready:!busy(provider)&&text(editor())===norm(message.prompt)&&!!run(provider)};
+    if(action==='media-ready')return {ready:!busy(provider)&&text(editor())===norm(message.prompt)&&!!run(provider)&&
+      (!(provider==='gemini'||provider==='flow')||referencesIntact(message))};
     if(action==='media-send'){
       if(owned.sent?.includes(message.jobId))return {submitted:true};
       if(busy(provider)||text(editor())!==norm(message.prompt))throw new Error('Ô nhập đã thay đổi trước khi tạo media');
+      if((provider==='gemini'||provider==='flow')&&!referencesIntact(message))throw new Error('Chưa xác minh đủ ảnh tham chiếu cho scene này');
       const button=run(provider);
       if(!button)throw new Error('Chưa có nút Run / Tạo khả dụng');
       owned.sent=[...(owned.sent||[]),message.jobId];button.click();return {submitted:true};
@@ -324,9 +458,12 @@
     if(action==='media-poll'){
       if(provider==='flow')return flowResponse(flowResult(message));
       if(busy(provider))return {ready:false};
-      const items=mediaItems(provider).filter(e=>!(message.baseline||[]).includes(provider==='aistudio'?sourceKey(e):source(e))&&
+      const response=provider==='gemini'?geminiResponse(message):document;
+      if(!response)return {ready:false,message:'Đang chờ câu trả lời thuộc đúng prompt scene này…'};
+      const items=mediaItems(provider).filter(e=>response.contains(e)&&!(message.baseline||[]).includes(provider==='aistudio'?sourceKey(e):source(e))&&
         !(provider==='aistudio'&&(message.baseline||[]).includes(source(e)))&&
         !(provider==='flow'&&e.tagName==='IMG'&&owned.baselineNodes?.includes(e)));
+      if(provider==='gemini'&&new Set(items.map(source)).size>1)throw new Error('Có nhiều ảnh mới trong câu trả lời scene này. Chọn kết quả thủ công trong Tài Nguyên.');
       const node=items.find(e=>e.tagName==='VIDEO')||items.at(-1);
       if(!node)return {ready:false};
       const button=downloadButton(node,provider);
@@ -335,7 +472,7 @@
       const expectedDuration=provider==='aistudio'?studioDuration(node,button):undefined;
       const signature=(provider==='aistudio'?message.jobId:url)+'|'+(expectedDuration??'');
       if(owned.resultSignature!==signature){owned.resultSignature=signature;owned.resultAt=Date.now();return {ready:false}}
-      return {ready:Date.now()-owned.resultAt>=4000,result:{...(provider==='aistudio'?{jobId:message.jobId}:{url}),...(expectedDuration>0?{expectedDuration}:{})}};
+      return {ready:Date.now()-owned.resultAt>=4000,result:{jobId:message.jobId,...(provider==='aistudio'?{}:{url}),...(expectedDuration>0?{expectedDuration}:{})}};
     }
     if(action==='media-download-info'){
       const flow=provider==='flow'?flowResult(message):undefined;

@@ -10,6 +10,8 @@ import math
 import os
 import re
 import shutil
+import base64
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,7 +21,9 @@ from .intelligence import digest, words
 from .media import project_folder, probe, safe_path, find_binary, run_process
 from .models import Asset, Chunk, Scene, Job, Project, Channel, Artifact, now, uid, serialize
 from .production_extras import thumbnail_prompt, scene_generation_prompt
+from .thumbnail_packaging import current_plan, variant_prompt, selection, image_checks, assign_thumbnail, plan_identifier
 from .providers import PROVIDER_URLS
+from .media_sessions import provider_page, TTS_OPTIONS, visual_identity
 
 
 MEDIA_KINDS = {"tts_context": "audio", "image_generation": "image", "video_generation": "video"}
@@ -45,6 +49,19 @@ def download_folder(title):
     if re.match(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", name, re.I):
         name = "StoryForge_" + name
     return name
+
+
+def project_download_folder(db, p):
+    """Reuse a project's established folder, including after it is renamed."""
+    saved = p.settings.get('media_download_folder') or p.settings.get('media_automation', {}).get('folder')
+    if isinstance(saved, str) and saved and download_folder(saved) == saved:
+        return saved
+    folder = download_folder(p.title)
+    for other in db.query(Project).filter(Project.id != p.id):
+        prior = other.settings.get('media_download_folder') or other.settings.get('media_automation', {}).get('folder') or download_folder(other.title)
+        if str(prior).casefold() == folder.casefold():
+            return folder[:78].rstrip(' .') + ' - ' + p.id[:8]
+    return folder
 
 
 def target_hash(target):
@@ -89,16 +106,44 @@ class MediaAutomation:
         images = sum(s.visual_type != "VIDEO" for s in scenes)
         videos = len(scenes) - images
         fingerprint = digest([p.id, p.story_version, p.draft, self.thumbnail(db, p, [serialize(s) for s in scenes]),
-                              [(target_hash(s), s.asset_id) for s in scenes], p.publish.get("thumbnail_asset_id")])
+                              [(target_hash(s), s.asset_id) for s in scenes], p.publish.get("thumbnail_asset_id"),
+                              p.settings.get('character_references', {})])
+        folder = project_download_folder(db, p)
         return {"image_count": images, "video_count": videos, "thumbnail_count": 1,
-                "confirmation": fingerprint, "folder": download_folder(p.title),
-                "download_path": str(downloads_root() / download_folder(p.title)), "flow": FLOW_OPTIONS}
+                "confirmation": fingerprint, "folder": folder,
+                "download_path": str(downloads_root() / folder), "flow": FLOW_OPTIONS}
 
     @staticmethod
-    def thumbnail(db, p, scenes):
+    def thumbnail(db, p, scenes, variant=None):
+        plan = current_plan(db, p)
+        if plan:
+            return variant_prompt(plan, variant or selection(p, plan))
         direction = db.query(Artifact).filter_by(project_id=p.id, kind='content_direction').order_by(Artifact.created_at.desc()).first()
         channel = db.get(Channel, p.channel_id)
         return thumbnail_prompt(serialize(p), scenes, serialize(channel) if channel else {}, direction.content if direction else {})
+
+    @staticmethod
+    def visuals_approval_hash(db, p):
+        scenes = db.query(Scene).filter_by(project_id=p.id).order_by(Scene.number).all()
+        return digest([p.story_version, p.draft, [(target_hash(s), s.asset_id) for s in scenes],
+                       p.publish.get('thumbnail_asset_id'), p.settings.get('character_references', {})])
+
+    def resume_thumbnail_visuals(self, project_id, job_id):
+        with self.database.session() as db:
+            p = self.project(db, project_id)
+            pending = (p.settings or {}).get('thumbnail_pending_visuals', {})
+            if pending.get('job_id') != job_id:
+                return
+            body = pending['body']
+            valid = pending['resource_hash'] == self.visuals_approval_hash(db, p) and current_plan(db, p)
+            p.settings = {k: v for k, v in p.settings.items() if k != 'thumbnail_pending_visuals'}
+            if not valid:
+                p.settings = {**p.settings, 'production_queue_notice': 'The visual plan changed. Confirm image/video counts again.'}
+                db.commit()
+                return
+            report = self.preview(db, p)
+            db.commit()
+        self.start(project_id, {**body, 'confirmation': report['confirmation']})
 
     def start(self, id, body):
         from .workflow import settings_for
@@ -108,7 +153,7 @@ class MediaAutomation:
             if settings_for(db, db.get(Channel, p.channel_id))["provider_mode"] != "browser":
                 raise ValueError("Choose Browser Bridge mode before generating media")
             kind = body.get("kind")
-            if kind not in ("tts", "visuals"):
+            if kind not in ("tts", "visuals", "thumbnails"):
                 raise ValueError("Choose narration or visuals")
             active = db.query(Job).filter(Job.project_id == id, Job.status.in_(["queued", "running", "waiting_user"])).all()
             if active:
@@ -141,16 +186,42 @@ class MediaAutomation:
                     items.append({"kind": "tts_context", "provider": "aistudio", "target_type": "chunk", "target_id": chunk.id,
                                   "source_hash": target_hash(chunk), "filename": f"tts_{chunk.number:03}.wav",
                                   "prompt": chunk.text, "voice": "Enzo", "style": "Friendly"})
+            elif kind == 'thumbnails':
+                plan = current_plan(db, p)
+                if not plan or body.get('plan_hash') != plan_identifier(plan):
+                    raise ValueError('Create current thumbnail concepts before generating their images')
+                variants = body.get('variants', [selection(p, plan)])
+                if not isinstance(variants, list) or not 1 <= len(variants) <= 3 or any(not isinstance(v,str) or v not in {'A','B','C'} for v in variants) or len(set(variants)) != len(variants):
+                    raise ValueError('Choose one or up to three different thumbnail variants')
+                for variant in variants:
+                    prompt = variant_prompt(plan, variant)
+                    items.append({'kind':'image_generation', 'provider':'gemini', 'target_type':'thumbnail', 'target_id':id,
+                                  'variant_id':variant, 'plan_hash':plan_identifier(plan),
+                                  'source_hash':digest(prompt), 'filename':f'thumbnail_{variant}.png', 'prompt':prompt})
             else:
                 report = self.preview(db, p)
                 if body.get("confirmation") != report["confirmation"] or body.get("image_count") != report["image_count"] or body.get("video_count") != report["video_count"]:
                     raise ValueError("Confirm the current image and video counts before automatic generation")
+                if not current_plan(db, p):
+                    if not db.query(Scene).filter_by(project_id=id).count():
+                        raise ValueError('Create a visual plan before automatic generation')
+                    preparation = Job(project_id=id, kind='thumbnail_plan', payload={'auto_continue':False})
+                    db.add(preparation);db.flush()
+                    p.settings = {**p.settings, 'thumbnail_pending_visuals': {'job_id':preparation.id, 'body':body,
+                                  'resource_hash':self.visuals_approval_hash(db, p)}}
+                    db.commit()
+                    self.workflow.executor.submit(self.workflow.run, preparation.id)
+                    return {**serialize(preparation), 'step':'Creating three thumbnail concepts before the approved visual batch'}
                 scenes = db.query(Scene).filter_by(project_id=id).order_by(Scene.number).all()
+                bible = db.query(Artifact).filter_by(project_id=id, kind='story_bible').order_by(Artifact.created_at.desc()).first()
+                identity = visual_identity(bible.content if bible else {})
                 if not scenes:
                     raise ValueError("Choose image/video counts and create a visual plan first")
                 if regenerate or not self.available(db, p.publish.get("thumbnail_asset_id"), "image", p.story_version):
                     prompt = self.thumbnail(db, p, [serialize(s) for s in scenes])
+                    plan = current_plan(db, p)
                     items.append({"kind": "image_generation", "provider": "gemini", "target_type": "thumbnail", "target_id": id,
+                                  'variant_id':selection(p, plan), 'plan_hash':plan_identifier(plan),
                                   "source_hash": digest(prompt), "filename": "thumbnail.png", "prompt": prompt})
                 else:
                     skipped += 1
@@ -164,15 +235,10 @@ class MediaAutomation:
                     items.append({"kind": media_kind + "_generation", "provider": "flow" if media_kind == "video" else "gemini",
                                   "target_type": "scene", "target_id": scene.id, "source_hash": target_hash(scene),
                                   "filename": f"scene_{scene.number:03}.{'mp4' if media_kind == 'video' else 'png'}",
-                                  "prompt": scene_generation_prompt(serialize(scene)),
+                                  "prompt": scene_generation_prompt(serialize(scene)) + identity,
                                   **({"flow": FLOW_OPTIONS} if media_kind == "video" else {})})
-            folder = download_folder(p.title)
-            # Equal project titles must not share a directory accidentally.
-            for other in db.query(Project).filter(Project.id != id).all():
-                prior = (other.settings or {}).get("media_automation", {})
-                if prior.get("folder") == folder:
-                    folder += " - " + id[:8]
-                    break
+            folder = project_download_folder(db, p)
+            p.settings = {**p.settings, 'media_download_folder': folder}
             state = {"id": uid(), "kind": kind, "phase": "running" if items else "completed", "story_version": p.story_version,
                      "draft_hash": digest(p.draft), "folder": folder, "download_path": str(downloads_root() / folder),
                      "total": len(items), "completed": 0, "failed": 0, "skipped": skipped, "pending": items, "current_job_id": None,
@@ -191,8 +257,10 @@ class MediaAutomation:
         pending = list(state["pending"])
         if pending:
             item = pending.pop(0)
-            descriptor = {**item, "batch_id": state["id"], "folder": state["folder"], "download_path": state["download_path"],
+            descriptor = {**item, "project_id": p.id, "batch_id": state["id"], "folder": state["folder"], "download_path": state["download_path"],
                           "story_version": state["story_version"]}
+            if item['provider'] == 'aistudio':
+                descriptor['tts'] = TTS_OPTIONS
             payload = {"_media": descriptor, "_draft_hash": state["draft_hash"], "_story_version": state["story_version"], "auto_continue": False}
             job = Job(project_id=p.id, kind=item["kind"], provider=item["provider"], attempts=1, status="waiting_user",
                       step="Đang chờ Bridge tạo và tải tài nguyên", progress=20, payload=payload, prompt=item["prompt"],
@@ -218,7 +286,11 @@ class MediaAutomation:
             raise ValueError("The story changed; start media generation for the new version")
         if media["target_type"] == "thumbnail":
             scenes = [serialize(s) for s in db.query(Scene).filter_by(project_id=p.id).order_by(Scene.number)]
-            current_hash = digest(self.thumbnail(db, p, scenes))
+            current_hash = digest(self.thumbnail(db, p, scenes, media.get('variant_id')))
+            if media.get('plan_hash'):
+                plan = current_plan(db, p)
+                if not plan or media['plan_hash'] != plan_identifier(plan):
+                    current_hash = None
         else:
             target = db.get(Chunk if media["target_type"] == "chunk" else Scene, media["target_id"])
             current_hash = target_hash(target) if target and target.project_id == p.id else None
@@ -247,6 +319,105 @@ class MediaAutomation:
             job.payload = {**job.payload, "_media_claim": claim}
             db.commit()
             return {"send": send, "claim": claim}
+
+    def owned(self, db, id, body):
+        job = db.get(Job, id)
+        if not job:
+            raise ValueError('Media job not found')
+        claim = job.payload.get('_media_claim', {})
+        if claim.get('owner') != body.get('owner') or claim.get('attempt') != body.get('attempt'):
+            raise ValueError('This browser does not own the media job')
+        p, state, media = self.validate_job(db, job, body)
+        return job, p, state, media
+
+    def save_session(self, id, body):
+        with self.workflow.deletion_lock, self.database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            job, p, _, media = self.owned(db, id, body)
+            page = provider_page(job.provider, body.get('url'))
+            if not page:
+                return {'saved': False}
+            previous = p.settings.get('media_sessions', {}).get(job.provider, {})
+            # An established chat/project must not silently be rebound to another.
+            if previous.get('url') and previous['url'] != page and job.provider != 'aistudio':
+                raise ValueError('The provider session belongs to a different chat or project')
+            if job.provider != 'aistudio':
+                for other in db.query(Project).filter(Project.id != p.id):
+                    if other.settings.get('media_sessions', {}).get(job.provider, {}).get('url') == page:
+                        raise ValueError('This provider session already belongs to another project')
+            last_prompt = job.prompt if job.payload.get('_media_claim', {}).get('phase') == 'sent' else previous.get('last_prompt')
+            session = {'url': page, 'updated_at': now(), **({'last_prompt': last_prompt} if last_prompt else {}),
+                       **({'tts': media.get('tts') or TTS_OPTIONS} if job.provider == 'aistudio' else {})}
+            p.settings = {**p.settings, 'media_sessions': {**p.settings.get('media_sessions', {}), job.provider: session}}
+            db.commit()
+            return {'saved': True, 'session': session}
+
+    def reference_assets(self, db, p):
+        saved = p.settings.get('character_references', {})
+        ids = saved.get('asset_ids', []) if saved.get('story_version') == p.story_version else []
+        selected = [db.get(Asset, id) for id in ids]
+        if not ids and not (saved.get('manual') and saved.get('story_version') == p.story_version):
+            # A scene image is a better face reference than a typographic thumbnail.
+            for scene in db.query(Scene).filter_by(project_id=p.id, story_version=p.story_version).order_by(Scene.number):
+                asset = db.get(Asset, scene.asset_id) if scene.asset_id else None
+                if asset and asset.kind == 'image' and scene.visual_type != 'VIDEO':
+                    selected = [asset]
+                    break
+        return [a for a in selected if a and a.project_id == p.id and a.kind == 'image' and safe_path(self.root, a.path).is_file()][:3]
+
+    def configure_references(self, id, body):
+        ids = body.get('asset_ids')
+        if not isinstance(ids, list) or len(ids) > 3 or any(not isinstance(v, str) for v in ids) or len(ids) != len(set(ids)):
+            raise ValueError('Choose up to three character reference images')
+        with self.workflow.deletion_lock, self.database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p = self.project(db, id)
+            active = db.query(Job).filter(Job.project_id == id, Job.status.in_(['queued', 'running', 'waiting_user']))
+            if any(j.payload.get('_media') and j.provider in ('gemini', 'flow') for j in active):
+                raise ValueError('Finish or stop visual generation before changing character references')
+            for identifier in ids:
+                asset = db.get(Asset, identifier)
+                if not asset or asset.project_id != id or asset.kind != 'image' or not safe_path(self.root, asset.path).is_file():
+                    raise ValueError('Character references must be image assets from this project')
+            p.settings = {**p.settings, 'character_references': {'asset_ids': ids, 'manual': bool(ids), 'story_version': p.story_version}}
+            db.commit()
+            return {'saved': True}
+
+    def references(self, id, body):
+        from PIL import Image, ImageOps
+        with self.workflow.deletion_lock, self.database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            job, p, _, media = self.owned(db, id, body)
+            if job.provider not in ('gemini', 'flow') or media['target_type'] not in ('scene', 'thumbnail'):
+                return {'files': []}
+            snapshot = job.payload.get('_media_references')
+            if snapshot is None:
+                snapshot = []
+                for asset in self.reference_assets(db, p):
+                    with safe_path(self.root, asset.path).open('rb') as handle:
+                        checksum = hashlib.file_digest(handle, 'sha256').hexdigest()
+                    snapshot.append({'id': asset.id, 'sha256': asset.sha256, 'file_hash': checksum})
+                job.payload = {**job.payload, '_media_references': snapshot}
+                db.commit()
+            files = []
+            for saved in snapshot:
+                asset = db.get(Asset, saved['id'])
+                if not asset or asset.project_id != p.id or asset.kind != 'image' or asset.sha256 != saved['sha256']:
+                    raise ValueError('The character reference changed; stop and restart this visual request')
+                path = safe_path(self.root, asset.path)
+                if not path.is_file():
+                    raise ValueError('The character reference is missing; choose it again before starting visuals')
+                with path.open('rb') as handle:
+                    checksum = hashlib.file_digest(handle, 'sha256').hexdigest()
+                if checksum != saved['file_hash']:
+                    raise ValueError('The character reference file changed; stop and restart this visual request')
+                with Image.open(path) as picture:
+                    picture = ImageOps.exif_transpose(picture).convert('RGB')
+                    picture.thumbnail((1536, 1536))
+                    data = io.BytesIO(); picture.save(data, format='JPEG', quality=92)
+                files.append({'name': 'sf_ref_' + checksum[:16] + '.jpg', 'mime': 'image/jpeg',
+                              'data': base64.b64encode(data.getvalue()).decode(), 'asset_id': asset.id})
+            return {'files': files}
 
     def check_stalled(self, current_time=None):
         """A frozen entire browser cannot report failure from its own worker.
@@ -349,6 +520,8 @@ class MediaAutomation:
                         sha.update(data)
                 checksum = sha.hexdigest()
                 asset = db.query(Asset).filter_by(project_id=p.id, sha256=checksum, story_version=p.story_version, kind=kind).first()
+                if media['target_type'] == 'thumbnail' and media.get('variant_id'):
+                    asset = None  # Distinct variant ownership, even when returned pixels coincide.
                 if not asset:
                     destination = folder / f"{checksum[:10]}_{media['filename']}"
                     temporary.replace(destination)
@@ -359,13 +532,23 @@ class MediaAutomation:
                     db.add(asset)
                     db.flush()
                 if media["target_type"] == "thumbnail":
-                    asset.metadata_json = {**asset.metadata_json, "role": "thumbnail", "title": p.publish.get("title") or p.title}
-                    p.publish = {**(p.publish or {}), "thumbnail_asset_id": asset.id}
+                    asset.metadata_json = {**asset.metadata_json, 'role':'thumbnail',
+                        'thumbnail_variant':media.get('variant_id'), 'thumbnail_plan_hash':media.get('plan_hash'),
+                        'thumbnail_image_checks':image_checks(self.root, asset)}
+                    plan = current_plan(db, p)
+                    if not plan or not media.get('variant_id') or selection(p, plan) == media['variant_id']:
+                        assign_thumbnail(p, asset)
                 else:
                     target = db.get(Chunk if media["target_type"] == "chunk" else Scene, media["target_id"])
+                    first_reference = isinstance(target, Scene) and asset.kind == 'image' and not self.reference_assets(db, p)
                     target.asset_id, target.status, target.story_version = asset.id, "ATTACHED", p.story_version
                     if isinstance(target, Chunk):
                         target.real_duration = asset.duration
+                    elif first_reference:
+                        # Preserve the first verified scene as the project's default anchor.
+                        prior = p.settings.get('character_references', {})
+                        if not prior.get('manual') or prior.get('story_version') != p.story_version:
+                            p.settings = {**p.settings, 'character_references': {'asset_ids': [asset.id], 'manual': False, 'story_version': p.story_version}}
                 p.publish = {**(p.publish or {}), "final_reviewed": False}
                 job.result = {"asset_id": asset.id, "download_id": body["download_id"], "filename": media["filename"],
                               **({"duration": asset.duration} if kind == "audio" else {})}
@@ -400,7 +583,11 @@ class MediaAutomation:
             failure = {'job_id': job.id, 'target_type': media['target_type'], 'target_id': media['target_id'],
                        'filename': media['filename'], 'provider': media['provider'], 'reason': reason,
                        'stage': str(body.get('stage', ''))[:80], 'story_version': p.story_version, 'time': now()}
-            previous = [f for f in p.settings.get('resource_failures', []) if f.get('target_id') != media['target_id']]
+            if media.get('variant_id'):
+                failure.update(variant_id=media['variant_id'], plan_hash=media.get('plan_hash'))
+            def failure_key(item):
+                return (item.get('target_type'), item.get('target_id'), item.get('variant_id'), item.get('plan_hash'))
+            previous = [f for f in p.settings.get('resource_failures', []) if failure_key(f) != failure_key(failure)]
             p.settings = {**p.settings, 'resource_failures': [*previous, failure][-250:]}
             job.status, job.step, job.error = 'failed', 'Đã bỏ qua tài nguyên lỗi; xem Tài nguyên để tạo thủ công', reason
             job.result = {'skipped': True, 'missing': failure}
@@ -410,7 +597,8 @@ class MediaAutomation:
         return {'accepted': True, **job.result}
 
     def missing(self, db, p):
-        failures = {f['target_id']: f for f in p.settings.get('resource_failures', []) if f.get('story_version') == p.story_version}
+        current_failures = [f for f in p.settings.get('resource_failures', []) if f.get('story_version') == p.story_version]
+        failures = {f['target_id']: f for f in current_failures if f.get('target_type') != 'thumbnail'}
         result = []
         for model, kind, prefix, ext in ((Chunk, 'audio', 'tts', 'wav'), (Scene, ('image', 'video'), 'scene', 'mp4')):
             for target in db.query(model).filter_by(project_id=p.id).order_by(model.number):
@@ -425,9 +613,21 @@ class MediaAutomation:
                                    'filename': f'{prefix}_{target.number:03}.{suffix}',
                                    'reason': failures.get(target.id, {}).get('reason', 'Chưa gán tài nguyên hợp lệ'),
                                    'automatic_failure': target.id in failures})
-        thumbnail = failures.get(p.id)
-        if thumbnail and not self.available(db, p.publish.get('thumbnail_asset_id'), 'image', p.story_version):
-            result.insert(0, thumbnail)
+        plan = current_plan(db, p)
+        images = db.query(Asset).filter_by(project_id=p.id, story_version=p.story_version, kind='image').all()
+        for thumbnail in current_failures:
+            if thumbnail.get('target_type') != 'thumbnail':
+                continue
+            if thumbnail.get('variant_id'):
+                if not plan or thumbnail.get('plan_hash') != plan_identifier(plan):
+                    continue
+                available = any((a.metadata_json or {}).get('thumbnail_variant') == thumbnail['variant_id']
+                                and (a.metadata_json or {}).get('thumbnail_plan_hash') == thumbnail['plan_hash']
+                                and self.available(db, a.id, 'image', p.story_version) for a in images)
+            else:
+                available = self.available(db, p.publish.get('thumbnail_asset_id'), 'image', p.story_version)
+            if not available:
+                result.insert(0, {**thumbnail, 'automatic_failure':True})
         return result
 
     def stop(self, id):
@@ -436,6 +636,11 @@ class MediaAutomation:
             p = db.get(Project, id)
             if not p:raise ValueError('Project not found')
             state = {**(p.settings or {}).get("media_automation", {})}
+            pending = (p.settings or {}).get('thumbnail_pending_visuals', {})
+            preparation = db.get(Job, pending.get('job_id')) if pending else None
+            if preparation and preparation.kind == 'thumbnail_plan' and preparation.status in ('queued','running','waiting_user'):
+                preparation.status, preparation.step = 'cancelled', 'Thumbnail preparation stopped'
+            p.settings = {k:v for k,v in p.settings.items() if k != 'thumbnail_pending_visuals'}
             job = db.get(Job, state.get("current_job_id")) if state.get("current_job_id") else None
             if job and job.status in ("queued", "running", "waiting_user"):
                 job.status, job.step = "cancelled", "Đã dừng tự động tạo tài nguyên"

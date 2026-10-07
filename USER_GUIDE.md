@@ -1,3 +1,11 @@
+## Luồng mới v3.1.26
+
+**Dùng Hồ sơ truyện có sẵn:** Tạo dự án → Nguồn cảm hứng → Đã có Hồ sơ truyện → chọn thời lượng và tạo dự án. Ở Hồ sơ truyện bấm Nhập hồ sơ truyện, dán JSON hoặc chọn file .json. Có thể tải mẫu JSON và Kiểm tra JSON để xem trước. Hồ sơ cần summary, mảng characters có tên riêng và mảng world_rules; các trường khác được giữ nguyên. Bấm Lưu hồ sơ truyện, rồi Tiếp tục quy trình. Dàn ý và Bản nháp sử dụng đúng hồ sơ đã lưu; Định hướng và Ý tưởng truyện được bỏ qua. Muốn dùng hồ sơ khác sau khi đã tạo Dàn ý, hãy tạo dự án mới.
+
+**Tự động có kiểm duyệt:** Chọn chế độ này trong Thiết lập → Chung. Tool tạo và thử nghiệm Ý tưởng 1, tự chọn nó, phát triển truyện rồi dừng ở Khóa truyện. Xem truyện và kết quả kiểm định, bấm duyệt Khóa truyện để bắt đầu chuẩn bị/tạo TTS. Trong lúc TTS chạy, chốt số lượng ảnh/video ở Đạo diễn hình ảnh; yêu cầu hình ảnh có thể xếp hàng sau TTS. Khi đủ tài nguyên và đã đồng bộ dòng thời gian, tool dừng ở Dựng bản đầu tiên để bạn kiểm tra cài đặt và bắt đầu dựng. Sau dựng vẫn cần xem và xác nhận video final.
+
+**Ý tưởng 1:** Khi có nguồn, đây là biến thể giữ hook, cơ chế sợ/bí ẩn, nhịp khám phá và lời hứa cảm xúc của nguồn, nhưng phải thay đổi rõ nhân vật, bối cảnh cụ thể, cơ chế, trình tự, cao trào và kết thúc. Vị trí số 1 không phụ thuộc tổng điểm các ý tưởng khác. Tool kiểm tra các trường bắt buộc và ngưỡng điểm ước lượng; nếu chưa đạt thì tạo lại riêng số 1 tối đa hai lần. Lỗi chưa giải quyết được sẽ được báo để kiểm tra, không âm thầm chọn số 2. Các điểm này là tiêu chí AI ước lượng, không phải số liệu YouTube hay bảo đảm hiệu quả. Kênh khác thể loại kinh dị giữ đúng thể loại; dự án không có nguồn dùng Ý tưởng gốc ưu tiên theo DNA kênh.
+
 # Hướng dẫn StoryForge US
 
 Từ **3.1.14**, app có thể xử lý dấu ngoặc kép chưa escape trong lời thoại trích dẫn của JSON kiểm định, giữ nguyên nội dung và mức độ từng lỗi. Dán lại toàn bộ câu trả lời vào tác vụ đang chờ; không cần tạo lại kiểm định nếu bản nháp chưa đổi. Để Bridge tự lấy kết quả theo cách này, cài app mới và Reload extension **1.1.12** tại trang Extensions của trình duyệt. JSON bị cắt dở, thiếu dấu phân cách hoặc trường bắt buộc vẫn bị từ chối để tránh mất dữ liệu.
@@ -59,6 +67,9 @@ Không bypass đăng nhập, CAPTCHA, quota hay paywall. Đóng popup trong lúc
 
 ### Tự động tạo và tải tài nguyên (3.1.12)
 
+- Bản local **3.1.24 / Bridge 1.1.27** lưu riêng chat Gemini, hộp thoại AI Studio và project Flow theo mã dự án. Khi scene lỗi, Bridge giữ đường dẫn phiên, chờ kết quả cũ ổn định rồi chạy scene tiếp theo. Nếu không khôi phục được phiên đã lưu, tài nguyên được báo thiếu để bạn tạo thủ công; không gửi trùng prompt đã gửi. AI Studio kiểm tra lại model **Gemini 3.8 Flash TTS / Enzo / Friendly**; hộp thoại chưa lưu có thể phải tạo lại sau khi tải lại trang.
+- Trong **Đạo diễn hình ảnh → Ảnh nhân vật tham chiếu**, có thể chọn tối đa 3 ảnh đã nhập của dự án. Để trống để tự dùng ảnh scene đầu tiên hoàn thành. Bridge đính kèm cùng ảnh tham chiếu vào Gemini và Flow; có thể thay lựa chọn trong lúc TTS chạy, nhưng cần kết thúc hoặc dừng hàng đợi hình ảnh/video trước khi thay. Các nút mở dịch vụ sẽ mở đúng phiên đã lưu của dự án. Ảnh tham chiếu và mô tả nhân vật hỗ trợ sự đồng nhất; vẫn cần kiểm tra hình ảnh đầu ra.
+- Trong **Dựng & kiểm tra**, bấm **final_video.mp4** để lưu trực tiếp vào thư mục dự án trong **Downloads**, cùng thư mục tài nguyên đã tải. App hiện đường dẫn khi lưu xong; các lần tải sau thêm `(1)`, `(2)` để giữ file cũ. Phần xem video và tải các file âm thanh/phụ đề khác giữ nguyên.
 - Mở app và Bridge đã ghép nối, bật chế độ tự động của Bridge và đăng nhập AI Studio, Gemini, Flow bằng trình duyệt thông thường. Bridge cần quyền **Downloads / Tải xuống**; bản Bridge cũ chưa tự tải media.
 - Trong Comet, mở **Settings → Downloads** và tắt **Ask where to save each file before downloading** (Hỏi nơi lưu từng file). Khi bật tùy chọn này, Comet có thể vẫn hiện Save As dù Bridge yêu cầu tải tự động. Thiết lập này áp dụng cho các lượt tải của trình duyệt.
 - Nếu đã hủy hộp thoại lưu, tắt tùy chọn trên rồi bấm **Tiếp tục tải tài nguyên** trong popup Bridge. Bridge tải lại kết quả có sẵn; không tạo lại âm thanh/ảnh/video.
@@ -108,3 +119,34 @@ Upload YouTube thủ công. Lưu URL, ngày đăng, title, description, thumbnai
 Publish cung cấp project ZIP, ZIP gồm media và **Xuất project CapCut**. Chọn Xuất project CapCut, kiểm tra thư mục dự án (CapCut Settings → Draft location), rồi bấm xuất. Tool sao chép tài nguyên đã gán vào một project mới, sắp xếp scene và âm thanh theo timeline, thêm phụ đề/sóng nhạc/logo theo tùy chọn hiện tại. Mở project này trong CapCut Home (khởi động lại CapCut nếu chưa thấy), rồi bấm Export. Đã kiểm tra trên CapCut International 9.5 Windows. Project dùng bản sao media riêng, vì vậy cần giữ toàn bộ thư mục project; mỗi lần xuất tạo bản mới, không ghi đè project đã chỉnh sửa. Không cần dựng video trước trong StoryForge. Settings → Backup & storage hỗ trợ database backup/restore và đổi data root. Restore áp dụng ở lần khởi động sau, tự backup database hiện tại. Media không nằm trong database backup.
 
 Đổi data root: copy sang folder trống, giữ nguyên bản cũ, rồi restart ngay. Stop StoryForge dùng helper trong Start Menu. Logs có file riêng và xuất diagnostics ZIP.
+
+
+## Metadata YouTube theo nội dung truyện — v3.1.25
+
+Ở bước **Xuất bản**, bấm **Tạo bằng ChatGPT** (hoặc **Tạo lại bằng ChatGPT** cho metadata đã có). Tool đọc bản thảo, Hồ sơ truyện, dàn ý và kênh hiện tại; không thay đổi truyện.
+
+Kết quả gồm 3 chiến lược: A — sự bất thường cụ thể, B — bối cảnh/tìm kiếm, C — ngôi thứ nhất/tò mò. Mỗi tiêu đề có trích dẫn hỗ trợ và điểm biên tập 0–100. Điểm chất lượng càng cao càng tốt; điểm rủi ro càng thấp càng tốt. Đây là giả thuyết để thử nghiệm, không phải dự đoán CTR, giữ người xem hoặc lượt xem. Tiêu đề không tự thêm hậu tố thể loại.
+
+**Dữ liệu cho chiến lược metadata (không bắt buộc)** cho phép lưu tỷ lệ Đề xuất/Duyệt xem/Tìm kiếm và tư liệu từ khóa theo kênh để các dự án sau dùng lại. Để trống số liệu chưa có; 0 là số liệu đo được bằng 0. Tư liệu quan sát cần nguồn thực tế hoặc mục Analytics. Tool không tự xác minh nhu cầu tìm kiếm từ tư liệu do người dùng nhập. Thiếu dữ liệu vẫn tạo được metadata theo ngữ nghĩa câu chuyện.
+
+Nhập **Chữ thực tế trên thumbnail** nếu ảnh tải lên/tạo bằng AI có chữ. Chỉ áp dụng cho dự án, ảnh đang chọn và phiên bản truyện này. Tool không đọc chữ từ ảnh hoặc suy đoán chữ từ prompt. Khi chưa xác nhận ảnh thực tế, phần trùng chữ chỉ là phép so sánh từ. Sau khi kiểm tra ảnh ở **Đạo diễn hình ảnh**, metadata có thể đánh giá sự bổ trợ của tiêu đề với ý tưởng ảnh đã xác nhận; điểm này vẫn là ước lượng biên tập, được hiển thị riêng với tỷ lệ từ trùng nhau.
+
+Thông báo truyện hư cấu mặc định bật và có thể tùy chỉnh theo kênh. Tắt đoạn thông báo không cho phép metadata gọi truyện hư cấu là sự kiện có thật.
+
+Bấm **Chọn tiêu đề A/B/C**, sau đó **Dùng cho biểu mẫu xuất bản** và xác nhận để áp dụng. Các cài đặt xuất bản khác giữ nguyên. **Tải TXT ChatGPT** gồm trường sẵn sàng sao chép, cả 3 chiến lược và ghi chú. Hashtags được trình bày riêng để sao chép khi cần. Các mô tả cũ vẫn xem/xuất được; tạo lại để dùng cấu trúc mới. Dữ liệu truyện/kênh/thumbnail thay đổi sẽ yêu cầu tạo lại metadata.
+
+YouTube có [thử nghiệm tiêu đề/thumbnail](https://support.google.com/youtube/answer/16391400) theo điều kiện tài khoản và video. StoryForge tạo phương án để bạn thử trong YouTube Studio; không tự chạy thử nghiệm hay xuất bản video.
+
+## Ba phương án thumbnail theo truyện — v3.1.25
+
+Trong **Đạo diễn hình ảnh**, phần **Ý tưởng thumbnail theo nội dung truyện** đọc truyện đã khóa, Hồ sơ truyện và dàn ý để tạo A — chi tiết bất thường cụ thể, B — tình huống của nhân vật, C — bối cảnh/không khí. B hoặc C có thể dùng bằng chứng khác nếu phù hợp hơn. Mỗi phương án có trích dẫn, bố cục, prompt, giải thích kết hợp với tiêu đề và điểm ý tưởng 0–100. Đây không phải kiểm định ảnh đã tạo hay dự đoán CTR.
+
+Mặc định, hàng đợi tài nguyên tạo **một thumbnail** của phương án đã chọn/được đề xuất. Nếu chưa có ý tưởng hiện hành, ChatGPT tạo ba ý tưởng trước rồi hàng đợi tiếp tục với số scene đã xác nhận. TTS vẫn tạo theo luồng hiện có; tạo scene ảnh/video vẫn cần xác nhận số lượng. Thay đổi kế hoạch trong khi chờ ý tưởng sẽ yêu cầu xác nhận lại, không tự gửi prompt của kế hoạch cũ.
+
+**Phong cách thumbnail của kênh (không bắt buộc)** cho phép chọn không có chữ, chữ ngắn 1–4 từ hoặc để nội dung quyết định. Mặc định giữ cách dùng 2–3 font và hai màu nhấn tương phản; có thể đổi sang một font đậm và màu theo ánh sáng/bối cảnh. Lưu lựa chọn trước khi tạo lại ý tưởng. Tư liệu nghiên cứu là tùy chọn: nhập nguồn thực tế, loại bằng chứng và ngày quan sát. Lượt xem công khai không chứng minh riêng thumbnail đã tạo ra kết quả.
+
+Chọn **Tạo ảnh thumbnail đã chọn** hoặc **Tạo ảnh A/B/C**. **Tạo cả ba ảnh thumbnail** yêu cầu xác nhận dùng ba lượt tạo; Bridge làm lần lượt trong cùng cuộc trò chuyện Gemini của dự án. Các file `thumbnail_A.png`, `thumbnail_B.png`, `thumbnail_C.png` được tải vào thư mục Downloads của dự án, lưu bản riêng trong app và không tự đổi tiêu đề. Chỉ ảnh thuộc phương án đang chọn được gán làm thumbnail; chọn **Dùng ảnh B/C** để đổi. Ảnh cũ được giữ lại. Lỗi từng phương án được báo riêng trong **Tài nguyên**, kể cả khi đã có một thumbnail khác.
+
+Bấm **Kiểm tra ảnh A/B/C** để xem ảnh gốc và bản nhỏ 320 × 180. Tool tự kiểm tra file, tỷ lệ 16:9 và tối thiểu 1280 × 720 cho so sánh thumbnail. Người dùng kiểm tra nội dung, chi tiết bất thường, khả năng nhìn trên điện thoại, chữ/nhãn và mức tiết lộ truyện; nhập đúng chữ thực tế nếu có. Có thể lưu kết quả chưa đạt để tạo lại ảnh. Tool chưa tự đọc chữ hoặc xác minh nội dung hình ảnh. Kết quả kiểm tra gắn với đúng file và kế hoạch, không chuyển sang ảnh khác.
+
+**Xuất ý tưởng thumbnail và kế hoạch thử nghiệm** tải JSON gồm các phương án, nguồn nghiên cứu và kiểm tra ảnh. Thử nghiệm A/B/C thực hiện trong YouTube Studio khi tài khoản/video đủ điều kiện; đánh giá theo thời gian xem và có thể không có kết quả phân biệt rõ. Đề xuất trong app chỉ là lựa chọn biên tập ban đầu. Thumbnail thủ công vẫn có trong phần mở rộng bên dưới.

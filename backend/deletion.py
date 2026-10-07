@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, text
 
-from .models import Artifact, Job, Novelty, Project, Source, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, CalendarEntry, Channel, DNAVersion
+from .models import Artifact, Job, Novelty, Project, Source, Premise, PremiseUsage, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, CalendarEntry, Channel, DNAVersion
 from .providers import PROVIDERS
 from .project_files import private_file_plan, remove_planned_files
 
@@ -72,6 +72,16 @@ class Deletions:
         removes_memory = request.kind in ("projects", "channels") and db.query(Novelty).filter(or_(Novelty.project_id.in_(project_ids), Novelty.channel_id.in_(channel_ids))).count() > 0
         candidates = db.query(Job).filter(or_(Job.status.in_(self.active_statuses), Job.id.in_(self.workflow.active_jobs))).order_by(Job.id).all()
         blockers = []
+        if request.kind == 'projects':
+            protected = db.query(PremiseUsage).filter(PremiseUsage.pool_project_id.in_(project_ids),
+                or_(PremiseUsage.project_id.is_(None), PremiseUsage.project_id != PremiseUsage.pool_project_id)).all()
+            for pool_id in sorted({usage.pool_project_id for usage in protected}):
+                pool = db.get(Project, pool_id)
+                message = 'This project stores the shared idea list. Keep it so the remaining ideas and usage history stay available.'
+                warnings.add(message)
+                blockers.append({'id': pool_id, 'kind': 'Shared idea list', 'status': 'Protected',
+                                 'project_title': pool.title, 'source_title': '', 'worker_active': False,
+                                 'message': message})
         for job in candidates:
             project = db.get(Project, job.project_id) if job.project_id else None
             related = job.project_id in project_ids or job.source_id in source_ids
@@ -94,7 +104,7 @@ class Deletions:
         if request.kind in ("projects", "channels"):
             # Include dependent changes in the confirmation fingerprint, even if
             # editing a child record did not update the project's timestamp.
-            for model in (Artifact, Job, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, Novelty, CalendarEntry):
+            for model in (Artifact, Job, Premise, PremiseUsage, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, Novelty, CalendarEntry):
                 condition = model.project_id.in_(project_ids)
                 if request.kind == "channels" and hasattr(model, 'channel_id'):
                     condition = or_(condition, model.channel_id.in_(channel_ids))
@@ -134,6 +144,8 @@ class Deletions:
             db.execute(text("BEGIN IMMEDIATE"))
             report = self.report(db, request)
             if report["blocked"]:
+                if any(b.get('status') == 'Protected' for b in report['blockers']):
+                    raise HTTPException(409, 'This project stores the shared idea list. Keep it so the remaining ideas and usage history stay available.')
                 raise HTTPException(409, "Related work is active. Wait for completion or cancel it before deleting.")
             if not hmac.compare_digest(report["confirmation"], request.confirmation):
                 raise HTTPException(409, "The selected content changed. Review the deletion warning again.")

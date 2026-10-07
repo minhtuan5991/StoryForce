@@ -149,9 +149,9 @@ def test_schema_migration_preserves_old_rows_and_adds_optional_fields(tmp_path):
     first.engine.dispose()
     with sqlite3.connect(tmp_path/'storyforge.db') as db:
         db.execute('ALTER TABLE premises DROP COLUMN packaging');db.execute('ALTER TABLE analytics DROP COLUMN metrics')
-        db.execute('DELETE FROM schema_migrations WHERE version=2')
+        db.execute('DELETE FROM schema_migrations WHERE version>=2')
     updated=Database(tmp_path)
     with updated.session() as db:
         assert db.get(Project,pid).title=='Preserved project' and not db.get(Project,pid).settings
-        assert db.execute(__import__('sqlalchemy').text('SELECT MAX(version) FROM schema_migrations')).scalar()==2
+        assert db.execute(__import__('sqlalchemy').text('SELECT MAX(version) FROM schema_migrations')).scalar()==3
     updated.engine.dispose()

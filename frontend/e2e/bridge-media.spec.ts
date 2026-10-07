@@ -49,11 +49,12 @@ test('AI Studio creates one dialog, selects Enzo/Friendly and replaces only its 
 });
 
 test('Gemini captures only the new generated image and the exact full-download blob',async({page})=>{
-  const invoke=await fixture(page,'gemini',`<main><div contenteditable="true" role="textbox"></div><button aria-label="Send message">Send</button><model-response><img src="/old.svg"><button>Download</button></model-response></main>`);
+  const invoke=await fixture(page,'gemini',`<main><div contenteditable="true" role="textbox"></div><button aria-label="Send message">Send</button><user-query>Old request.</user-query><model-response><img src="/old.svg"><button>Download</button></model-response></main>`);
   await page.locator('img').evaluate(async image=>{await (image as HTMLImageElement).decode()});
   const prepared=await invoke({action:'media-prepare'});expect(prepared.ok).toBe(true);
   expect((await invoke({action:'media-poll',baseline:prepared.baseline})).ready).toBe(false);
   await page.evaluate(()=>{
+    const query=document.createElement('user-query');query.textContent='The first complete narration.';document.querySelector('main')!.append(query);
     const response=document.createElement('model-response');response.innerHTML='<img src="/new.svg"><button aria-label="Download full size image">Download</button>';document.querySelector('main')!.append(response);
     (response.querySelector('button') as HTMLElement).onclick=()=>{const a=document.createElement('a');a.download='generated.png';a.href=URL.createObjectURL(new Blob(['image bytes'],{type:'image/png'}));a.click();URL.revokeObjectURL(a.href)};
   });
@@ -93,28 +94,31 @@ test('Flow verifies requested settings and waits when the requested model is una
   result=await invoke({action:'media-setup'});expect(result.ok).toBe(false);expect(result.error).toContain('Omni 1.1 Flash');
 });
 
-test('Flow opens only its new thumbnail and downloads the original 720p clip from the player menu',async({page})=>{
+test('Flow opens only its new thumbnail, clicks Done and downloads the original 720p clip from its tile',async({page})=>{
   const invoke=await fixture(page,'flow',`<main><textarea></textarea><button aria-label="Bắt đầu tạo">arrow_forward</button><img alt="Hình thu nhỏ của video đã tạo" src="/old.svg"></main>`);
   const prepared=await invoke({action:'media-prepare'});
   await page.evaluate(()=>{
-    const tile=document.createElement('div');tile.innerHTML='<img alt="Hình thu nhỏ của video đã tạo" src="/new.svg">';
+    const tile=document.createElement('div');tile.innerHTML='<img alt="Hình thu nhỏ của video đã tạo" src="/new.svg"><button hidden aria-label="Tuỳ chọn khác">more_vert</button>';
     document.querySelector('main')!.append(tile);
-    tile.onclick=()=>{
-      document.querySelector('main')!.innerHTML='<video src="https://flow.google.com/generated.mp4"></video><button aria-label="Tuỳ chọn khác">more_vert</button>';
-      document.querySelector('button')!.onclick=()=>{
+    tile.querySelector('img')!.onclick=()=>{
+      const editor=document.createElement('section');editor.innerHTML='<video src="https://flow.google.com/generated.mp4"></video><button>Xong</button>';document.body.append(editor);
+      document.querySelector('main')!.hidden=true;
+      editor.querySelector('button')!.onclick=()=>{editor.remove();document.querySelector('main')!.hidden=false;tile.querySelector('button')!.hidden=false;(window as any).doneClicks=((window as any).doneClicks||0)+1};
+    };
+    tile.querySelector('button')!.onclick=()=>{
         const menu=document.createElement('div');menu.setAttribute('role','menu');menu.innerHTML='<button role="menuitem">Tải nội dung nghe nhìn xuống</button>';document.body.append(menu);
         (menu.firstChild as HTMLElement).onclick=()=>{
           const submenu=document.createElement('div');submenu.setAttribute('role','menu');submenu.innerHTML='<button role="menuitem">270p Ảnh GIF động</button><button role="menuitem">720p Kích thước gốc</button><button role="menuitem">1080p Đã tăng độ phân giải</button>';document.body.append(submenu);
           (submenu.children[1] as HTMLElement).onclick=()=>{const a=document.createElement('a');a.download='original.mp4';a.href=URL.createObjectURL(new Blob(['owned video'],{type:'video/mp4'}));a.click();URL.revokeObjectURL(a.href);(window as any).originalDownloads=((window as any).originalDownloads||0)+1};
           (submenu.children[2] as HTMLElement).onclick=()=>{throw Error('Must not upscale')};
         };
-      };
     };
   });
   await page.clock.install();
   for(let i=0;i<7;i++){await invoke({action:'media-poll',baseline:prepared.baseline});await page.clock.runFor(2100)}
   const result=await invoke({action:'media-poll',baseline:prepared.baseline});
-  expect(result.ready).toBe(true);expect(result.result.url).toContain('generated.mp4');
+  expect(result.ready).toBe(true);expect(result.result.url).toContain('/new.svg');
+  expect(await page.evaluate(()=>(window as any).doneClicks)).toBe(1);
   expect((await invoke({action:'media-download-info',result:result.result})).direct).toBe(false);
   await page.evaluate(armDownloadCapture,'flowticket');
   await invoke({action:'media-download-click',result:result.result});

@@ -20,6 +20,7 @@ def production(client, project, monkeypatch, tmp_path):
         db.add_all([Chunk(project_id=p.id,story_version=1,number=i,text=f'Audio {i}.',word_count=2,status='PENDING') for i in (1,2)])
         db.add_all([Scene(project_id=p.id,story_version=1,number=i,scene_key=f'scene_{i:03}',visual_type='VIDEO' if i==2 else 'IMAGE',prompt=f'Visual {i}.') for i in (1,2)])
         db.commit()
+    job(client, project, 'thumbnail_plan')
     client.patch('/api/settings',json={'provider_mode':'browser'})
     token=client.post('/api/settings/pair-bridge').json()['token']
     return {'path':'/api/projects/'+project['id']+'/media-automation', 'headers':{'X-Bridge-Token':token},'download':download,'id':project['id']}
@@ -32,6 +33,16 @@ def media_job(client,p):
 def start(client,p,kind='tts',**body):
     response=client.post(p['path']+'/start',json={'kind':kind,**body})
     assert response.status_code==200,response.text
+    if response.json().get('kind') == 'thumbnail_plan':
+        # Emulate the text provider's reply before exercising the media Bridge.
+        workflow = client.app.state.workflow
+        with client.app.state.database.session() as db:
+            preparation = db.get(Job, response.json()['id'])
+            context = workflow.context(db, preparation)
+            output = workflow.mock.generate(preparation.kind, context, preparation.prompt)
+            attempt = preparation.attempts
+        workflow.complete_ai(response.json()['id'], output, expected_attempt=attempt)
+        return client.get('/api/projects/'+p['id']).json()['settings']['media_automation']
     return response.json()
 
 
@@ -135,6 +146,7 @@ def test_new_visual_direction_matches_copy_and_batch_preserves_existing_plan(cli
     assert video['generation_prompt'] == video['prompt'] + '\nAvoid: ' + video['negative_prompt']
     preview = client.get(p['path'] + '/preview').json()
     start(client, p, 'visuals', **{k: preview[k] for k in ('confirmation', 'image_count', 'video_count')})
+    detail = client.get('/api/projects/' + p['id']).json()
     current = media_job(client, p)
     assert current['media']['target_type'] == 'thumbnail'
     assert current['prompt'] == detail['thumbnail_prompt']

@@ -35,10 +35,14 @@ from .channel_learning import learning_data, normalize_snapshot, reminders
 from .production_extras import tts_scene_context, thumbnail_prompt, scene_generation_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
 from .ai_result import parse_ai_result
+from .story_import import imported_bible, validate_import
+from . import premise_policy
 from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets, timeline_from_audio, render_options, validate_logo, validate_waveform_video
 from .visual_planning import visual_budget
 from .portability import project_archive, inspect_database
-from .youtube_metadata import metadata_fingerprint, upload_text
+from .youtube_metadata import MetadataInputs, metadata_inputs, metadata_fingerprint, upload_text
+from .thumbnail_packaging import (ThumbnailStyle, ImageReview, current_plan, plan_state, variant_prompt,
+                                  save_review, assign_thumbnail, export_plan, plan_identifier)
 from launcher import updater
 import threading
 
@@ -319,8 +323,12 @@ def create_app(data_root: str | Path | None = None):
             channel=get(db,Channel,body.channel_id)
             if body.source_id:get(db,Source,body.source_id)
             data=body.model_dump()
+            entry_mode=data.pop('entry_mode')
+            if entry_mode=='existing_bible' and body.source_id:
+                raise ValueError('Choose an existing Bible or a source inspiration, not both')
             if body.duration_mode=="Auto":data["target_minutes"]=channel.default_duration
-            item=Project(**data, settings={'audience_policy': 1});db.add(item);db.commit()
+            item=Project(**data, stage='BIBLE' if entry_mode=='existing_bible' else 'DIRECTION',
+                         settings={'audience_policy': 1, 'entry_mode':entry_mode});db.add(item);db.commit()
             project_folder(root,item.id)
             return serialize(item)
 
@@ -345,14 +353,16 @@ def create_app(data_root: str | Path | None = None):
                 chunk['scene_context']=tts_scene_context(chunk,serialize(p),channel,scenes,start)
                 start+=chunk['word_count']
             return {**serialize(p),"channel":serialize(db.get(Channel,p.channel_id)),"source":serialize(db.get(Source,p.source_id)) if p.source_id else None,
-                    "thumbnail_prompt":thumbnail_prompt(serialize(p),scenes,channel,artifacts.get('content_direction',{}).get('content',{})),
+                    "thumbnail_prompt":media_automation.thumbnail(db,p,scenes),
+                    "thumbnail_packaging":plan_state(db,p),
                     "visual_budget":visual_budget(serialize(p),config),
                     "youtube_metadata_current":bool(artifacts.get('youtube_metadata') and artifacts['youtube_metadata']['content'].get('content_fingerprint')==metadata_fingerprint(db,p)),
                     "workflow_settings":{key:config[key] for key in ("pipeline_mode","default_premise_count")},
                     "premise_reuse":workflow.premise_reuse(db,p),
+                    "premise_pool":workflow.premise_pool(db,p),
                     "audience_readiness":audience.readiness(db,p,gate_lock(db,p,include_audience=False)['can_lock']),
                     "missing_resources":media_automation.missing(db,p),
-                    "artifacts":artifacts,"premises":[serialize(v) for v in db.query(Premise).filter_by(project_id=id)],
+                    "artifacts":artifacts,"premises":[premise_policy.record(v) for v in premise_policy.ordered(db,id)],
                     "issues":[serialize(v) for v in db.query(Issue).filter_by(project_id=id).order_by(desc(Issue.cycle))],
                     "versions":[serialize(v) for v in db.query(StoryVersion).filter_by(project_id=id).order_by(desc(StoryVersion.version))],
                     "chunks":chunks,
@@ -411,11 +421,49 @@ def create_app(data_root: str | Path | None = None):
     def select_premise(id:str,body:dict=Body(...)):
         return workflow.select_premise(id,body.get("premise_id"))
 
+    @app.post('/api/projects/{id}/story-bible/import')
+    def import_bible(id:str, body:dict=Body(...)):
+        content=validate_import(body.get('content'))
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p=get(db,Project,id)
+            if not imported_bible(p):raise ValueError('Use a project created with Already have a Story Bible')
+            if p.locked or p.draft or latest(db,id,'outline') or latest(db,id,'outline_rewrite'):
+                raise ValueError('Import the Bible before creating the outline. Start a new project for a different Bible.')
+            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish or cancel active jobs before importing a Bible')
+            previous=latest(db,id,'story_bible')
+            checksum=digest(content)
+            if previous and previous.output_hash==checksum:return serialize(previous)
+            item=Artifact(project_id=id,kind='story_bible',provider='manual_import',content=content,
+                          raw_result=json.dumps(content,ensure_ascii=False),template_version='import-1.0',
+                          inputs_hash=previous.output_hash if previous else None,output_hash=checksum,story_version=p.story_version)
+            db.add(item);p.stage='OUTLINE';db.commit();return serialize(item)
+
+    @app.post('/api/projects/{id}/story-bible/validate')
+    def validate_bible(id:str, body:dict=Body(...)):
+        with database.session() as db:
+            if not imported_bible(get(db,Project,id)):raise ValueError('Use a project created with Already have a Story Bible')
+        return {'valid':True,'content':validate_import(body.get('content'))}
+
     @app.post("/api/projects/{id}/lock")
     def lock(id:str,body:dict|None=Body(default=None)):
-        with database.session() as db:
+        start_tts=False;chunk_needed=False;browser_mode=False
+        with workflow.deletion_lock, database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
-            p=get(db,Project,id);result=lock_story(db,p,body);db.commit();return result
+            p=get(db,Project,id)
+            already_locked=p.locked
+            result=lock_story(db,p,body)
+            config=settings_for(db,db.get(Channel,p.channel_id))
+            start_tts=not already_locked and config['pipeline_mode']=='auto'
+            chunk_needed=workflow.next_step(db,p).get('kind')=='chunk_tts'
+            browser_mode=config['provider_mode']=='browser'
+            db.commit()
+        if start_tts and chunk_needed:
+            workflow.submit('chunk_tts',project_id=id,payload={'auto_continue':True})
+        elif start_tts and browser_mode:
+            media_automation.start(id,{'kind':'tts'})
+        return result
 
     @app.post('/api/projects/{id}/opening-choice')
     def choose_opening(id:str, body:dict=Body(...)):
@@ -458,10 +506,14 @@ def create_app(data_root: str | Path | None = None):
             # Selection already continued up to the configured human checkpoint.
             with database.session() as db:return workflow.next_step(db,get(db,Project,id))
         with database.session() as db:
-            p=get(db,Project,id);next_action=workflow.next_step(db,p)
-            if not p.locked and next_action.get('gate',{}).get('can_lock'):
+            p=get(db,Project,id)
+            config=settings_for(db,db.get(Channel,p.channel_id))
+            workflow.auto_choose_premise(db,p,config)
+            db.commit()
+            next_action=workflow.next_step(db,p)
+            if not p.locked and next_action.get('gate',{}).get('can_lock') and config['pipeline_mode']!='auto':
                 lock_story(db,p);db.commit();next_action=workflow.next_step(db,p)
-            auto_continue=settings_for(db,db.get(Channel,p.channel_id))["pipeline_mode"]!="manual"
+            auto_continue=config["pipeline_mode"]!="manual"
         if "kind" not in next_action:return next_action
         return workflow.submit(next_action["kind"],project_id=id,payload={"auto_continue":auto_continue})
 
@@ -684,11 +736,104 @@ def create_app(data_root: str | Path | None = None):
                     result['valid']=False;result['missing'].append(str(exc))
             return result
 
+    @app.post("/api/projects/{id}/download-final")
+    def download_final(id:str):
+        from .final_download import save_final
+        return save_final(workflow, id)
+
+    @app.get('/api/projects/{id}/thumbnail-packaging')
+    def thumbnail_packaging_state(id: str):
+        with database.session() as db:
+            return plan_state(db, get(db, Project, id))
+
+    @app.patch('/api/projects/{id}/thumbnail-style')
+    def thumbnail_style(id: str, body: ThumbnailStyle):
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            project = get(db, Project, id)
+            active = db.query(Job).join(Project, Job.project_id==Project.id).filter(Project.channel_id==project.channel_id, Job.status.in_(['queued','running','waiting_user'])).all()
+            if any(j.kind=='thumbnail_plan' or j.payload.get('_media', {}).get('target_type')=='thumbnail' for j in active):
+                raise ValueError('Finish or stop thumbnail creation in this channel before changing its settings')
+            channel = get(db, Channel, project.channel_id)
+            channel.settings = {**(channel.settings or {}), 'thumbnail_style':body.model_dump()}
+            db.commit()
+            return body.model_dump()
+
+    @app.post('/api/projects/{id}/thumbnail-select')
+    def select_thumbnail(id: str, body: dict=Body(...)):
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            project = get(db, Project, id)
+            plan = current_plan(db, project)
+            variant = body.get('variant')
+            if not plan or body.get('plan_hash') != plan_identifier(plan) or variant not in ('A','B','C'):
+                raise ValueError('Choose a variant from the current thumbnail plan')
+            if db.query(Job).filter(Job.project_id==id, Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish or stop the active resource queue before changing its thumbnail')
+            project.settings = {**(project.settings or {}), 'thumbnail_selection': {'variant':variant, 'plan_hash':body['plan_hash']}}
+            if body.get('asset_id'):
+                asset = get(db, Asset, body['asset_id'])
+                if asset.project_id != id or asset.kind != 'image' or asset.story_version != project.story_version or asset.metadata_json.get('thumbnail_variant') != variant or asset.metadata_json.get('thumbnail_plan_hash') != body['plan_hash']:
+                    raise ValueError('The image does not belong to this thumbnail variant')
+                if not safe_path(root, asset.path).is_file():
+                    raise ValueError('The thumbnail file is missing')
+                assign_thumbnail(project, asset)
+            db.commit()
+            return plan_state(db, project)
+
+    @app.post('/api/projects/{id}/thumbnail-review/{asset_id}')
+    def review_thumbnail(id: str, asset_id: str, body: ImageReview):
+        with database.session() as db:
+            result = save_review(db, root, get(db, Project, id), get(db, Asset, asset_id), body)
+            db.commit()
+            return result
+
+    @app.get('/api/assets/{id}/thumbnail-preview')
+    def thumbnail_preview(id: str):
+        import io
+        from PIL import Image, ImageOps
+        with database.session() as db:
+            asset = get(db, Asset, id)
+            if asset.kind != 'image':raise ValueError('Choose an image thumbnail')
+            path = safe_path(root, asset.path)
+            if not path.is_file():raise HTTPException(404, 'Thumbnail file is missing')
+            with Image.open(path) as original:
+                picture = ImageOps.exif_transpose(original).convert('RGB')
+                picture.thumbnail((320,180))
+                output = io.BytesIO();picture.save(output, 'JPEG', quality=92)
+            return Response(output.getvalue(), media_type='image/jpeg', headers={'Cache-Control':'no-store'})
+
+    @app.get("/api/projects/{id}/metadata-settings")
+    def get_metadata_settings(id: str):
+        with database.session() as db:
+            project = get(db, Project, id)
+            return metadata_inputs(project, get(db, Channel, project.channel_id))
+
+    @app.patch("/api/projects/{id}/metadata-settings")
+    def save_metadata_settings(id: str, body: MetadataInputs):
+        with database.session() as db:
+            project = get(db, Project, id)
+            channel = get(db, Channel, project.channel_id)
+            # A scoped transaction preserves all production, Bridge and publishing settings.
+            channel.settings = {**(channel.settings or {}), 'youtube_metadata': body.channel_preferences.model_dump()}
+            project.settings = {**(project.settings or {}), 'youtube_metadata': {
+                **(project.settings or {}).get('youtube_metadata', {}), 'thumbnail_text': body.thumbnail_text,
+                'thumbnail_story_version': project.story_version, 'thumbnail_asset_id':project.publish.get('thumbnail_asset_id')}}
+            db.commit()
+            return metadata_inputs(project, channel)
+
     @app.get("/api/projects/{id}/download/{name}")
     def download_output(id:str,name:str):
         with database.session() as db:
             p=get(db,Project,id)
             folder=project_folder(root,id)
+            if name == 'thumbnail_plan.json':
+                plan = latest(db,id,'thumbnail_plan')
+                if not plan:raise HTTPException(404,'Create thumbnail concepts first')
+                state = plan_state(db,p)
+                content = export_plan({**plan.content, 'current':state['current'], 'selected_variant':state['selected_variant'],
+                                       'images':state['assets'], 'generation_prompts':state['generation_prompts']})
+                return Response(content.encode('utf-8'), media_type='application/json', headers={'Content-Disposition':'attachment; filename="thumbnail_plan.json"','Cache-Control':'no-store'})
             if name == 'youtube_metadata.txt':
                 metadata=latest(db,id,'youtube_metadata')
                 if not metadata:raise HTTPException(404,'Generate YouTube metadata first')
@@ -909,7 +1054,17 @@ def create_app(data_root: str | Path | None = None):
 
     @app.get("/api/bridge/jobs")
     def bridge_jobs():
-        with database.session() as db:return {"items":[{"id":j.id,"kind":j.kind,"provider":j.provider,"prompt":j.prompt,"url":PROVIDER_URLS.get(j.provider),"step":j.step,"attempt":j.attempts,"auto_claim":j.payload.get("_bridge_auto",{}),"media":j.payload.get("_media"),"media_claim":j.payload.get("_media_claim",{}),"timeout":settings_for(db)["browser_timeout"]} for j in db.query(Job).filter_by(status="waiting_user").filter(~Job.provider.like("mock:%")).order_by(Job.created_at).limit(20)]}
+        with database.session() as db:
+            items = []
+            for j in db.query(Job).filter_by(status='waiting_user').filter(~Job.provider.like('mock:%')).order_by(Job.created_at).limit(20):
+                p = db.get(Project, j.project_id) if j.project_id else None
+                media = j.payload.get('_media')
+                items.append({'id': j.id, 'project_id': j.project_id, 'kind': j.kind, 'provider': j.provider, 'prompt': j.prompt,
+                    'url': PROVIDER_URLS.get(j.provider), 'step': j.step, 'attempt': j.attempts,
+                    'auto_claim': j.payload.get('_bridge_auto', {}), 'media': {**media, 'project_id': j.project_id} if media else None,
+                    'media_session': p.settings.get('media_sessions', {}).get(j.provider, {}) if p and media else {},
+                    'media_claim': j.payload.get('_media_claim', {}), 'timeout': settings_for(db)['browser_timeout']})
+            return {'items': items}
 
     @app.get('/api/projects/{id}/media-automation/preview')
     def preview_media(id:str):
@@ -935,6 +1090,18 @@ def create_app(data_root: str | Path | None = None):
     @app.post('/api/bridge/media/{id}/failure')
     def failed_media(id:str,body:dict=Body(...)):
         return media_automation.failure(id,body)
+
+    @app.post('/api/bridge/media/{id}/session')
+    def save_media_session(id:str,body:dict=Body(...)):
+        return media_automation.save_session(id,body)
+
+    @app.post('/api/bridge/media/{id}/references')
+    def media_references(id:str,body:dict=Body(...)):
+        return media_automation.references(id,body)
+
+    @app.post('/api/projects/{id}/media-automation/references')
+    def set_media_references(id:str,body:dict=Body(...)):
+        return media_automation.configure_references(id,body)
 
     @app.post("/api/bridge/jobs/{id}/claim")
     def bridge_claim(id:str,body:dict=Body(...)):

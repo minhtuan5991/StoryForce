@@ -3,6 +3,7 @@ import {Download,AudioLines,Image,Square} from 'lucide-react';
 import {api,type Row} from './api';
 import {Button,Modal,Progress,Section} from './components';
 import {tr} from './i18n';
+import {MediaSessions} from './MediaSessions';
 
 export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'tts'|'visuals',active:boolean,act:(fn:()=>Promise<any>,message?:string)=>Promise<any>}){
   const [busy,setBusy]=useState(false),[preview,setPreview]=useState<Row|null>(null),[regenerate,setRegenerate]=useState(false);
@@ -26,12 +27,13 @@ export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'t
   return <Section title={tr('Automatically create and download resources')} caption={kind==='tts'?'Enzo / Friendly · one AI Studio tab · sequential audio segments':'Gemini images / Flow videos · one tab per service · thumbnail first'}>
     <p>{tr(kind==='tts'?'Start to generate missing narration segments and download them immediately. No count confirmation is needed.':'Choose your image/video counts in the visual plan below. Automatic creation starts only after you confirm the final counts.')}</p>
     <p className="muted">{tr('Keep StoryForge and the paired Browser Bridge open with automation enabled. Completed downloads are automatically attached to their audio segment or scene.')}</p>
+    <MediaSessions project={p} kind={kind} act={act}/>
     <label className="check-field"><input type="checkbox" checked={regenerate} disabled={blocked||busy} onChange={e=>setRegenerate(e.target.checked)}/>{tr('Generate again, including already assigned resources')}</label>
     <div className="inline wrap">
       <Button primary disabled={!p.locked||blocked||busy||(kind==='tts'?!p.chunks.length:!p.scenes.length)} onClick={()=>kind==='tts'?start({}):review()}>
         {kind==='tts'?<AudioLines size={16}/>:<Image size={16}/>} {tr(kind==='tts'?'Create and download narration':'Review image/video counts')}
       </Button>
-      {running&&<Button disabled={busy} onClick={()=>act(()=>api('/projects/'+p.id+'/media-automation/stop','POST'),'Media generation stopped')}><Square size={16}/>{tr('Stop resource automation')}</Button>}
+      {(running||kind==='visuals'&&p.settings?.thumbnail_pending_visuals)&&<Button disabled={busy} onClick={()=>act(()=>api('/projects/'+p.id+'/media-automation/stop','POST'),'Media generation stopped')}><Square size={16}/>{tr('Stop resource automation')}</Button>}
     </div>
     {kind==='visuals'&&ttsBusy&&<p className="notice compact">{tr('Narration is running. Confirmed visual requests will start after the audio queue finishes.')}</p>}
     {kind==='visuals'&&queued.length>0&&<p role="status" className="notice compact">{tr('Visual request queued after narration. A newer plan replaces the queued plan.')}</p>}

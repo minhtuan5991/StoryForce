@@ -1,4 +1,37 @@
+## v3.1.26 — Nhập Hồ sơ truyện và ưu tiên Ý tưởng 1 (local)
+
+- Thêm “Đã có Hồ sơ truyện” khi tạo dự án. Khóa hai bước Định hướng/Ý tưởng, nhập JSON bằng nội dung dán hoặc file, kiểm tra và lưu hồ sơ rồi tiếp tục từ Dàn ý.
+- Kiểm tra summary, characters có tên và world_rules; giữ trường bổ sung, không ghi đè hồ sơ cũ khi nhập lỗi. Lưu từng bản nhập và dấu SHA256. Hồ sơ đã chạy Dàn ý không được thay thế âm thầm bằng lần nhập khác.
+- Ý tưởng 1 cố định là biến thể bám sát DNA nguồn; nếu không có nguồn thì là ý tưởng gốc theo kênh. Trích source_core, mô tả phần giữ/chuyển đổi, tách độ bám sát DNA khỏi rủi ro sao chép cách thể hiện. Tạo lại riêng Ý tưởng 1 tối đa hai lần khi các tiêu chí chưa đạt; giữ nguyên các ý tưởng còn lại.
+- Chế độ Tự động có kiểm duyệt luôn chọn Ý tưởng 1 sau thử nghiệm, kể cả khi ý tưởng khác có tổng điểm cao hơn. Dừng để người dùng duyệt Khóa truyện, chốt số lượng ảnh/video và bắt đầu dựng bản đầu tiên. Sau duyệt Khóa truyện, TTS chạy độc lập trong lúc chờ chốt hình ảnh. Vẫn cần xem và xác nhận video cuối.
+- Giữ luồng Thủ công/Có hỗ trợ và các tính năng tài nguyên, Bridge, render, thumbnail, metadata hiện có. Cập nhật local; chưa đẩy GitHub.
+
 # Changelog
+
+## 3.1.25 — 2026-10-07 (local only)
+
+- Replace generic SEO metadata with story packaging: extract concrete anchors and anomalies from the Bible, outline and current draft; generate three title strategies with exact supporting quotes and an optional genre suffix.
+- Add a primary semantic keyword cluster, usually 4–8 tags and 2–3 hashtags, natural spoiler-light descriptions and configurable channel fiction disclosure. Preserve platform limits and reject positive true-event claims for fiction.
+- Store optional channel traffic percentages and attributed keyword evidence; reuse them across projects. Keep missing data unknown and distinguish story/editorial inference from creator-supplied research.
+- Show editorial scores, recommendation notes and thumbnail word-overlap risk without claiming CTR or retention predictions. Let the user choose a variant before applying metadata to the publishing form; extend TXT exports while retaining legacy fields.
+- Add three story-grounded thumbnail concepts: a concrete anomaly, human stakes and setting/atmosphere, with evidence-based alternatives when needed. Default to one selected image; optionally generate A/B/C sequentially in the existing Gemini project conversation.
+- Make thumbnail overlay text optional or a short 1–4-word headline. Reuse optional channel treatment, retain the existing 2–3-font/two-accent preferences and store attributed research observations without claiming causal performance.
+- Show actual 320 × 180 image previews and file/dimension checks separately from editorial concept scores. Bind creator image reviews to the exact asset and plan; use confirmed visual concepts for semantic title/image pairing without substituting lexical overlap for quality.
+- Export thumbnail concepts, evidence and image reviews for manual YouTube Studio testing. Preserve earlier thumbnails and report missing A/B/C variants independently; keep the existing narration queue, scene count confirmation and rendering behavior.
+- Preserve story content, render settings, resource automation and Bridge 1.1.27. Existing metadata can be regenerated with the new contract. No GitHub publication.
+
+## 3.1.24 — 2026-10-06 (local only)
+
+- Keep project-scoped Gemini chats, AI Studio dialogs and Flow projects through failed scenes and browser restarts; restore recorded pages and narration settings without resending a failed prompt. Save session URLs and owned prompt evidence locally; report missing resources when a session cannot be recovered.
+- Attach consistent character references to Gemini/Flow scene prompts. Default to the first verified scene image, allow up to three optional image references and preserve a fixed reference snapshot for each request. Scope Gemini downloads to the submitted scene prompt and wait for old results and reference uploads to settle.
+- Save final_video.mp4 directly to the project's Downloads folder, reuse its existing media folder and avoid overwriting previous downloads. Preserve playback and other output downloads. Include Browser Bridge 1.1.27.
+- Preserve idea usage after deleting a derived project; block reuse of deleted used ideas and protect the shared original pool from individual/bulk project deletion.
+- Mark projects developed from a selected idea, link back to the original pool and open an existing derived project from a used idea. Backfill history for existing projects without changing their stories/settings.
+
+- Mark selected and previously used ideas in the original pool and prevent selecting them again.
+- Create a separate project containing only the chosen idea, preserving its channel, source and content direction; start directly at Story Bible.
+- Skip premise regeneration once an idea is selected, including pipeline continuation; supersede legacy paused generation when branching from an approved finished project.
+- Preserve the finished project, video and all other features/settings. Not published to GitHub.
 
 ## 3.1.23 — 2026-10-05 (local only)
 

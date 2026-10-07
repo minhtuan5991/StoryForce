@@ -28,6 +28,7 @@ class SourceCreate(BaseModel):
 class ProjectCreate(BaseModel):
     channel_id: str
     source_id: str | None = None
+    entry_mode: Literal['standard', 'existing_bible'] = 'standard'
     title: str = Field(min_length=1, max_length=300)
     duration_mode: str = "10"
     target_minutes: float = Field(10, ge=1, le=240)

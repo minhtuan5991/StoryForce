@@ -14,6 +14,8 @@ def project_archive(db, root: Path, project, include_media=False):
     for model in (Artifact, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics):
         related[model.__tablename__] = [serialize(item) for item in db.query(model).filter_by(project_id=project.id).all()]
     metadata = {"format": "storyforge-project", "version": 1, "project": serialize(project), "channel": serialize(db.get(Channel,project.channel_id)), **related}
+    pool_id = (project.settings or {}).get('premise_origin', {}).get('project_id') or project.id
+    metadata['premise_usage'] = [serialize(item) for item in db.query(PremiseUsage).filter_by(pool_project_id=pool_id)]
     output = root / "exports" / f"{project.id}-project-v{project.story_version}.zip"
     with zipfile.ZipFile(output,"w",zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("project.json", json.dumps(metadata,ensure_ascii=False,indent=2))
@@ -74,7 +76,7 @@ def _inspect_connection(connection):
         if not required <= tables:
             raise ValueError("This is not a StoryForge database")
         version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-        if version not in (1, 2):
+        if version not in (1, 2, 3):
             raise ValueError("Unsupported schema version")
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import Column, String, Text, Integer, Float, Boolean, JSON, ForeignKey, Index
+from sqlalchemy import Column, String, Text, Integer, Float, Boolean, JSON, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -108,6 +108,17 @@ class Premise(Record, Base):
     warnings = Column(JSON, default=list)
     signature = Column(JSON, default=dict)
     packaging = Column(JSON, default=dict)
+
+
+class PremiseUsage(Record, Base):
+    """A choice remains used even when its derived project is deleted."""
+    __tablename__ = "premise_usage"
+    __table_args__ = (UniqueConstraint('pool_project_id', 'premise_id'),)
+    channel_id = Column(String, ForeignKey('channels.id', ondelete='CASCADE'), nullable=False, index=True)
+    pool_project_id = Column(String, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    premise_id = Column(String, nullable=False)
+    project_id = Column(String, ForeignKey('projects.id', ondelete='SET NULL'), nullable=True)
+    title = Column(String(300), nullable=False)
 
 
 class StoryVersion(Record, Base):

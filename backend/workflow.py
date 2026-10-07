@@ -19,7 +19,10 @@ from . import audience
 from .channel_learning import learning_data
 from .production_extras import outro_chunk, scene_generation_prompt
 from .visual_planning import visual_budget, validate_visual_output, narration_clock, balance_scene_ranges, DEFAULT_VIDEO_SECONDS
-from .youtube_metadata import YouTubeMetadata, metadata_context, metadata_fingerprint, upload_text
+from .youtube_metadata import CONTRACT_VERSION, validate_metadata, metadata_context, metadata_fingerprint, upload_text
+from .thumbnail_packaging import thumbnail_context, plan_fingerprint, validate_plan
+from .story_import import imported_bible
+from . import premise_policy
 from .media import project_folder, probe, timeline_from_audio, write_subtitles, render_project, safe_path, validate_assets, render_inputs_hash, render_options
 
 STORY_STEPS = ["content_direction", "premise_generation", "premise_mini_test", "story_bible", "outline", "outline_audit", "outline_rewrite", "opening_variants", "full_draft", "gemini_story_audit", "chatgpt_cross_review", "disagreement_resolver", "targeted_rewrite", "retention_audit", "final_verify_gemini", "final_verify_chatgpt"]
@@ -168,12 +171,15 @@ class Workflow:
         project = db.get(Project, job.project_id) if job.project_id else None
         if job.kind == 'youtube_metadata' and project:
             return metadata_context(db, project)
+        if job.kind == 'thumbnail_plan' and project:
+            return thumbnail_context(db, project)
         channel = db.get(Channel, project.channel_id if project else job.channel_id) if (project or job.channel_id) else None
         source = db.get(Source, job.source_id or (project.source_id if project else None)) if (job.source_id or project and project.source_id) else None
         artifacts = {}
         if project:
             for a in db.query(Artifact).filter_by(project_id=project.id).order_by(Artifact.created_at).all():
-                artifacts[a.kind] = a.content
+                if a.kind not in ('youtube_metadata', 'thumbnail_plan'):
+                    artifacts[a.kind] = a.content
         config = settings_for(db, channel)
         payload = {k:v for k,v in (job.payload or {}).items() if not k.startswith("_")}
         if job.kind == 'retention_audit' and project:
@@ -191,13 +197,26 @@ class Workflow:
             }
         if job.kind == "premise_generation":
             payload.setdefault("count", config["default_premise_count"])
+            repair = job.payload.get('_premise_repair')
+            if repair:
+                payload.update(count=1, repair_candidate_one=True, correction_feedback=repair['reasons'],
+                               previous_candidate=repair['batch']['premises'][0],
+                               remaining_candidates=repair['batch']['premises'][1:])
         if job.kind == 'visual_director' and project:
             payload = {**payload, **visual_budget(serialize(project),config,payload)}
             payload['video_seconds'] = DEFAULT_VIDEO_SECONDS
             payload['minimum_video_words'] = math.ceil(DEFAULT_VIDEO_SECONDS * project.wpm / 60)
-        return {"project": serialize(project) if project else {}, "channel": serialize(channel) if channel else {}, "source": serialize(source) if source else {},
+        project_context = serialize(project) if project else {}
+        channel_context = serialize(channel) if channel else {}
+        # Packaging inputs must not become creative directions for the story or media.
+        for record in (project_context, channel_context):
+            if 'settings' in record:
+                record['settings'] = {key: value for key, value in (record['settings'] or {}).items()
+                                      if key not in ('youtube_metadata', 'thumbnail_style', 'thumbnail_selection', 'thumbnail_pending_visuals')}
+        return {"project": project_context, "channel": channel_context, "source": serialize(source) if source else {},
                 "selected_premise": serialize(db.get(Premise, project.selected_premise_id)) if project and project.selected_premise_id else {},
-                "artifacts": artifacts, "premises": [serialize(p) for p in db.query(Premise).filter_by(project_id=job.project_id).all()] if project else [],
+                "artifacts": artifacts, "premises": [premise_policy.record(p) for p in premise_policy.ordered(db, job.project_id)] if project else [],
+                "story_origin": 'imported_bible' if project and imported_bible(project) else 'selected_premise',
                 "issues": [serialize(i) for i in active_issues(db, project)] if project else [],
                 "sources": [serialize(s) for s in db.query(Source).filter_by(channel_id=channel.id).limit(100).all()] if channel else [],
                 "novelty_memory": [serialize(n) for n in db.query(Novelty).order_by(desc(Novelty.updated_at)).limit(500).all()],
@@ -222,13 +241,19 @@ class Workflow:
             raise ValueError("This step requires a project")
         if not p:
             return
-        if job.kind == 'youtube_metadata' and (not p.locked or not p.draft.strip()):
+        if imported_bible(p) and job.kind in ('content_direction', 'premise_generation', 'premise_mini_test', 'story_bible'):
+            raise ValueError('This project starts from an imported Story Bible. Import the JSON in Story Bible and continue to Outline.')
+        if job.kind == 'premise_generation' and p.selected_premise_id:
+            raise ValueError('A premise is already selected. Choose another existing premise after final approval.')
+        if (p.settings or {}).get('premise_origin') and job.kind in ('content_direction', 'premise_generation', 'premise_mini_test'):
+            raise ValueError('This project develops its selected premise directly from Story Bible.')
+        if job.kind in ('youtube_metadata', 'thumbnail_plan') and (not p.locked or not p.draft.strip()):
             raise ValueError('Lock a finished story before generating YouTube metadata')
         if job.kind == "premise_generation" and not latest(db, p.id, "content_direction"):
             raise ValueError("Create content direction first")
         if job.kind == "premise_mini_test" and not db.query(Premise).filter_by(project_id=p.id).count():
             raise ValueError("Generate premises first")
-        if job.kind in ("story_bible", "outline", "outline_audit", "outline_rewrite", "full_draft") and not p.selected_premise_id:
+        if job.kind in ("story_bible", "outline", "outline_audit", "outline_rewrite", "full_draft") and not p.selected_premise_id and not imported_bible(p):
             raise ValueError("Select a premise first")
         required = {"outline": "story_bible", "outline_audit": "outline", "outline_rewrite": "outline_audit", "full_draft": "outline_rewrite", "chatgpt_cross_review": "gemini_story_audit", "disagreement_resolver": "chatgpt_cross_review", "targeted_rewrite": "chatgpt_cross_review", "final_verify_gemini": "chatgpt_cross_review", "final_verify_chatgpt": "chatgpt_cross_review"}
         if job.kind in required and not latest(db, p.id, required[job.kind]):
@@ -238,7 +263,7 @@ class Workflow:
         if job.kind == 'opening_variants' and not latest(db, p.id, 'outline_rewrite'):
             raise ValueError('Revise the outline before comparing openings')
         if job.kind in ('retention_audit', 'retention_rewrite'):
-            if not p.draft or not p.selected_premise_id:
+            if not p.draft or not (p.selected_premise_id or imported_bible(p)):
                 raise ValueError('Create a draft and choose a premise before assessing retention')
             if p.locked:
                 raise ValueError('Create an unlocked draft version before retention changes')
@@ -262,6 +287,9 @@ class Workflow:
         with self.database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
             job = Job(kind=kind, project_id=project_id, source_id=source_id, channel_id=channel_id, payload=payload or {})
+            project = db.get(Project, project_id) if project_id else None
+            if project and kind in STORY_STEPS and settings_for(db, db.get(Channel, project.channel_id))['pipeline_mode'] == 'auto':
+                job.payload = {'auto_continue': True, **job.payload}
             self.validate_step(db, job)
             active = db.query(Job).filter(Job.project_id==project_id, Job.status.in_(["queued", "running", "waiting_user"])).all() if project_id else []
             if active:
@@ -323,8 +351,10 @@ class Workflow:
         """An approved current render can seed another project without resetting it."""
         if not project.selected_premise_id:
             return {"ready": False, "reason": "Select a premise first."}
-        if db.query(Job).filter(Job.project_id == project.id,
-                (Job.status.in_(['queued', 'running', 'waiting_user'])) | (Job.id.in_(self.active_jobs))).count():
+        jobs = db.query(Job).filter(Job.project_id == project.id,
+                (Job.status.in_(['queued', 'running', 'waiting_user'])) | (Job.id.in_(self.active_jobs))).all()
+        if any(not (j.kind == 'premise_generation' and j.status == 'waiting_user'
+                    and j.id not in self.active_jobs) for j in jobs):
             return {"ready": False, "reason": "Finish the active project job first."}
         report = latest(db, project.id, 'render_report')
         if not report or report.story_version != project.story_version or report.content.get('story_version') != project.story_version:
@@ -345,15 +375,58 @@ class Workflow:
             return {"ready": False, "reason": "Watch and approve the final video in Render & QA first."}
         return {"ready": True, "reason": "Choose another premise to create a new project. Your finished project and video will be kept."}
 
+    def premise_pool(self, db, project):
+        origin = (project.settings or {}).get('premise_origin', {})
+        pool_id = origin.get('project_id') or project.id
+        pool = db.get(Project, pool_id)
+        used = {pool.selected_premise_id} if pool and pool.selected_premise_id else set()
+        used_projects = {}
+        if pool and pool.selected_premise_id:
+            used_projects[pool.selected_premise_id] = {'project_id': pool.id, 'title': pool.title, 'deleted': False}
+        for usage in db.query(PremiseUsage).filter_by(pool_project_id=pool_id, channel_id=project.channel_id):
+            used.add(usage.premise_id)
+            target = db.get(Project, usage.project_id) if usage.project_id else None
+            used_projects[usage.premise_id] = {'project_id': target.id if target else None,
+                                             'title': target.title if target else usage.title, 'deleted': target is None}
+        for child in db.query(Project).filter_by(channel_id=project.channel_id):
+            child_origin = (child.settings or {}).get('premise_origin', {})
+            if child_origin.get('project_id') == pool_id:
+                used.add(child_origin.get('premise_id'))
+                used_projects[child_origin.get('premise_id')] = {'project_id': child.id, 'title': child.title, 'deleted': False}
+        return {'project_id': pool_id, 'project_exists': pool is not None,
+                'used_premise_ids': sorted(v for v in used if v), 'used_projects': used_projects}
+
+    def remember_premise(self, db, project, pool_id, premise_id, title):
+        usage = db.query(PremiseUsage).filter_by(pool_project_id=pool_id, premise_id=premise_id).first()
+        if usage:
+            if usage.project_id != project.id:
+                raise ValueError('This idea has already been used. Choose another unused idea.')
+            return
+        db.add(PremiseUsage(channel_id=project.channel_id, pool_project_id=pool_id,
+                           premise_id=premise_id, project_id=project.id, title=title))
+
     def branch_premise(self, db, original, premise):
         # BEGIN IMMEDIATE in select_premise serializes retries/double clicks.
         origin = {'project_id': original.id, 'premise_id': premise.id}
+        usage = db.query(PremiseUsage).filter_by(pool_project_id=original.id, premise_id=premise.id).first()
+        if usage:
+            existing = db.get(Project, usage.project_id) if usage.project_id else None
+            if existing:
+                return existing, None
+            raise ValueError('This idea has already been used. Its project was deleted; choose another unused idea.')
         for existing in db.query(Project).filter_by(channel_id=original.channel_id):
             if (existing.settings or {}).get('premise_origin') == origin:
                 return existing, None
         gate = self.premise_reuse(db, original)
         if not gate['ready']:
             raise ValueError(gate['reason'])
+        selected = db.get(Premise, original.selected_premise_id)
+        if selected:
+            self.remember_premise(db, original, original.id, selected.id, selected.title)
+        # Old releases could send premise generation after a choice and pause
+        # on its result. It cannot replace the pool or block a finished story.
+        for job in db.query(Job).filter_by(project_id=original.id, kind='premise_generation', status='waiting_user'):
+            job.status, job.step = 'cancelled', 'Superseded by selection from the existing premise pool'
         settings = {'premise_origin': origin, 'audience_policy': 1}
         if 'visual_options' in (original.settings or {}):
             settings['visual_options'] = deepcopy(original.settings['visual_options'])
@@ -363,7 +436,7 @@ class Workflow:
         db.add(p)
         db.flush()
         selected = None
-        for candidate in db.query(Premise).filter_by(project_id=original.id).all():
+        for candidate in [premise]:
             data = deepcopy(serialize(candidate))
             for key in ('id', 'created_at', 'updated_at', 'project_id'):
                 data.pop(key)
@@ -387,6 +460,13 @@ class Workflow:
             p, pr = db.get(Project, project_id), db.get(Premise, premise_id)
             if not p or not pr or pr.project_id != project_id:
                 raise ValueError("Premise does not belong to this project")
+            if imported_bible(p):
+                raise ValueError('This project develops its imported Bible directly, without selecting a premise')
+            if (not p.selected_premise_id and settings_for(db, db.get(Channel, p.channel_id))['pipeline_mode'] == 'auto'
+                    and premise_policy.ordered(db, p.id)[0].id != pr.id):
+                raise ValueError('Auto mode reserves Idea 1. Switch to manual or assisted mode to choose another idea.')
+            if (p.settings or {}).get('premise_origin') and p.selected_premise_id != pr.id:
+                raise ValueError('Choose unused ideas from the original project premise pool.')
             if any(w.get("level") == "BLOCK" for w in pr.warnings):
                 raise ValueError("This premise failed a similarity or duration gate. Regenerate it.")
             if p.selected_premise_id and p.selected_premise_id != pr.id:
@@ -402,6 +482,9 @@ class Workflow:
                 p.selected_premise_id, p.title, p.stage = pr.id, pr.title, "BIBLE"
                 p.publish = {**p.publish, "thumbnail_concept": pr.packaging.get('thumbnail_concept') or pr.mini_test.get("thumbnail_concept", "")}
                 p.settings = {**p.settings, 'selected_packaging': pr.packaging}
+            origin = (p.settings or {}).get('premise_origin', {})
+            self.remember_premise(db, p, origin.get('project_id') or p.id,
+                                 origin.get('premise_id') or pr.id, pr.title)
             # Mini-tests help choose a premise. An explicit choice supersedes
             # unfinished testing, including a browser response that failed JSON.
             for job in active:
@@ -468,6 +551,11 @@ class Workflow:
                 if job.kind == "story_bible":
                     job.prompt = "Develop only INPUT JSON.selected_premise, the user's explicit choice. Do not choose another candidate.\n\n" + job.prompt
                 if job.kind == 'premise_generation':
+                    job.payload = {**job.payload, '_premise_contract_version': premise_policy.CONTRACT_VERSION}
+                    job.prompt = ("Idea 1 is reserved. Keep it at index 0; never replace it by another ranked candidate. "
+                                  "Extract source_core first when source text exists. Distinguish source DNA alignment from surface similarity risk. "
+                                  "When payload.repair_candidate_one is true, return ONLY one corrected candidate plus source_core. "
+                                  "All remaining candidates are immutable; avoid repeating them.\n\n" + job.prompt)
                     job.prompt += ('\n\nAdditional YouTube preparation contract: include each premise.packaging with primary_title_concept, alternative_angles (array), '
                                    'thumbnail_concept, visual_focal_point, core_curiosity_question, viewer_promise, click_risk, likely_misinterpretation, '
                                    'one_sentence_pitch (TEXT, not a score) and abstract_pattern (general narrative mechanism without names/places). '
@@ -475,11 +563,22 @@ class Workflow:
                                    'browse_feed_potential and impossible_element_clarity (null when the genre does not use an impossible element). '
                                    'AI scores are estimates, never observed YouTube metrics. channel_learning.learned_patterns are observational hypotheses only; '
                                    'use abstract appeal, vary mechanism, settings, occupations and beat sequence, and protect novelty. No analytics is required.\n')
+                    job.prompt += premise_policy.POLICY_PROMPT
+                if job.kind == 'premise_mini_test' and config['pipeline_mode'] == 'auto':
+                    job.prompt += ('\nAlways include premises[0] (Idea 1) in the mini-tests, plus up to two strongest other qualified candidates. '
+                                   'Idea 1 is the reserved automatic selection; do not replace it with another candidate.\n')
                 if job.kind in ('outline', 'outline_rewrite'):
+                    if context['story_origin'] == 'imported_bible':
+                        job.prompt = ('Use artifacts.story_bible as the authoritative story input supplied by the user. '
+                                      'No premise or direction generation is needed. Preserve its characters, world rules, timeline and ending; '
+                                      'adapt the outline to duration_profile without silently rewriting Bible facts.\n\n' + job.prompt)
                     job.prompt += ('\nFor each outline scene also include retention_role, escalation_type, new_information, unanswered_question, '
                                    'payoff_or_setup, tension_delta (-100 to 100), risk_of_stall, estimated_start_seconds and estimated_end_seconds. '
                                    'Maintain the selected packaging promise and introduce meaningful progression throughout the target duration.\n')
                 if job.kind == 'full_draft':
+                    if context['story_origin'] == 'imported_bible':
+                        job.prompt = ('Develop ONLY artifacts.story_bible and artifacts.outline_rewrite. '
+                                      'The imported Bible supplies the premise and story promise. Do not invent an alternative premise.\n\n' + job.prompt)
                     job.prompt += ('\nUse artifacts.opening_choice as the opening direction when available, preserving Bible facts and continuous forward momentum. '
                                    'Deliver selected_premise.packaging.viewer_promise. Do not reset after the hook into a background introduction. '
                                    'Time zones 0–10, 10–30, 30–60, 60–90 seconds need concrete interest, stakes, new evidence and progress, adapted to genre. '
@@ -495,7 +594,9 @@ class Workflow:
                     job.prompt = str(context["payload"].get("prompt", "")) + "\nAvoid: " + str(context["payload"].get("negative_prompt", ""))
                 job.payload = {**(job.payload or {}), "_inputs_hash": digest(context), "_draft_hash": digest(context["project"].get("draft", "")), "_template_version": digest(template)[:12], "_story_version": context["project"].get("story_version", 0)}
                 if job.kind == 'youtube_metadata':
-                    job.payload = {**job.payload, '_metadata_hash': digest(context)}
+                    job.payload = {**job.payload, '_metadata_hash': digest(context), '_metadata_contract_version': CONTRACT_VERSION}
+                if job.kind == 'thumbnail_plan':
+                    job.payload = {**job.payload, '_thumbnail_hash': plan_fingerprint(db, db.get(Project, job.project_id))}
                 if job.kind in ('retention_audit', 'retention_rewrite', 'opening_variants'):
                     job.payload = {**job.payload, '_audience_hash': audience.fingerprint(db, db.get(Project, job.project_id))}
                 job.provider = "mock:" + PROVIDERS[job.kind] if config["provider_mode"] == "mock" else PROVIDERS[job.kind]
@@ -543,8 +644,31 @@ class Workflow:
                 raise ValueError("The draft changed while this job was pending. Cancel and rerun with current inputs.")
             if job.kind == 'youtube_metadata' and job.payload.get('_metadata_hash') != metadata_fingerprint(db,project):
                 raise ValueError('The video or channel changed. Generate YouTube metadata again for the current content.')
+            if job.kind == 'thumbnail_plan' and job.payload.get('_thumbnail_hash') != plan_fingerprint(db, project):
+                raise ValueError('Story, title or thumbnail settings changed. Create thumbnail concepts again.')
             if job.kind in ('retention_audit', 'retention_rewrite', 'opening_variants') and job.payload.get('_audience_hash') != audience.fingerprint(db, project):
                 raise ValueError('Story, outline or packaging changed. Rerun this assessment with current inputs')
+            if job.kind == 'premise_generation' and job.payload.get('_premise_contract_version', 1) >= 2:
+                repair = job.payload.get('_premise_repair')
+                if repair:
+                    if len(output.get('premises', [])) != 1:
+                        raise ValueError('Idea 1 repair must return exactly one candidate')
+                    output = {**deepcopy(repair['batch']), **{k: v for k, v in output.items() if k != 'premises'},
+                              'premises': [output['premises'][0], *deepcopy(repair['batch']['premises'][1:])]}
+                context = self.context(db, job)
+                try:
+                    output = premise_policy.validate_batch(output, context['source'], context['channel'],
+                                                           int(job.payload.get('count', settings_for(db, db.get(Channel, project.channel_id))['default_premise_count'])))
+                except premise_policy.CandidateRepairNeeded as exc:
+                    count = (repair or {}).get('count', 0) + 1
+                    if count > 2:
+                        raise ValueError('Idea 1 still fails its quality gate after two repairs. Review it manually: ' + '; '.join(exc.reasons)) from exc
+                    job.payload = {**job.payload, '_premise_repair': {'count': count, 'batch': exc.batch, 'reasons': exc.reasons}}
+                    job.status, job.step, job.error = 'queued', f'Repairing Idea 1 ({count}/2)', ''
+                    job.logs = [*(job.logs or []), {'time': now(), 'message': str(exc)}]
+                    db.commit()
+                    self.executor.submit(self.run, job.id)
+                    return {'repairing_candidate_one': True, 'repair_count': count}
             self.apply_output(db, job, project, output)
             artifact = Artifact(project_id=job.project_id, source_id=job.source_id, channel_id=job.channel_id,
                 kind=job.kind, provider=job.provider, content=output, raw_result=json.dumps(output, ensure_ascii=False),
@@ -599,11 +723,15 @@ class Workflow:
     def apply_output(self, db, job, p, output):
         kind = job.kind
         if kind == 'youtube_metadata':
-            validated = YouTubeMetadata.model_validate(output).model_dump()
+            validated = validate_metadata(output, metadata_context(db, p),
+                                          require_contract=job.payload.get('_metadata_contract_version', 1) >= 2)
             output.clear();output.update(validated)
             output['content_fingerprint'] = job.payload['_metadata_hash']
             output['story_version'] = p.story_version
             output['text_file'] = f'projects/{p.id}/publish/youtube_metadata-{job.id}.txt'
+        elif kind == 'thumbnail_plan':
+            validated = validate_plan(output, thumbnail_context(db, p))
+            output.clear();output.update(validated)
         elif kind == "story_dna":
             dna = StoryDNA.model_validate(output).model_dump()
             source = db.get(Source, job.source_id)
@@ -647,11 +775,17 @@ class Workflow:
                     if repeats >= 3:
                         item['scores']['channel_repetition'] = max(item['scores'].get('channel_repetition', 0), min(75, repeats * 10))
                         warnings.append({'level': 'WARN', 'scope': 'LEARNED_PATTERN', 'title': 'This abstract pattern has been used repeatedly. Vary its mechanism and beat sequence.', 'score': repeats * 10})
+                if item.get('number'):
+                    signature = {**signature, '_premise': {key: deepcopy(item[key]) for key in
+                                 ('number', 'premise_role', 'rank_role', 'source_relationship', 'signature_rule') if key in item}}
                 db.add(Premise(project_id=p.id, title=item["title"], logline=item["logline"], category=item.get("category", "Core"), scores=item["scores"], signature=signature, warnings=warnings, packaging=packaging))
             p.stage = "PREMISES"
         elif kind == "premise_mini_test":
             if not output.get("tests"):
                 raise ValueError("Return a tests array")
+            first = premise_policy.ordered(db, p.id)[0]
+            if settings_for(db, db.get(Channel, p.channel_id))['pipeline_mode'] == 'auto' and not any(t.get('premise_id') == first.id for t in output['tests']):
+                raise ValueError('The automatic workflow requires a mini-test of Idea 1. Include its exact premise ID.')
             for test in output["tests"]:
                 premise = db.get(Premise, test["premise_id"])
                 if not premise or premise.project_id != p.id:
@@ -873,9 +1007,18 @@ class Workflow:
                 return {"kind": "sync"}
             report = latest(db, p.id, "render_report")
             if not report or report.story_version != p.story_version or report.content.get("inputs_hash") != render_inputs_hash(serialize(p), chunks, scenes, assets, config) or not safe_path(self.root, report.content.get("file", "missing")).is_file():
+                if config['pipeline_mode'] == 'auto':
+                    return {'checkpoint': 'Review render settings and click Render first cut.', 'action_kind': 'render'}
                 return {"kind": "render"}
             return {"checkpoint": "Review the rendered video. Use Render again after any changes."}
         for step in STORY_STEPS:
+            if imported_bible(p) and step in ('content_direction', 'premise_generation', 'premise_mini_test', 'story_bible'):
+                if step == 'story_bible' and not latest(db, p.id, 'story_bible'):
+                    return {'checkpoint': 'Import your Story Bible JSON, save it, then continue the pipeline.', 'action_kind': 'import_bible'}
+                continue
+            if p.selected_premise_id and (step in ('premise_generation', 'premise_mini_test')
+                    or (step == 'content_direction' and (p.settings or {}).get('premise_origin'))):
+                continue
             if step in ('opening_variants', 'retention_audit') and not p.settings.get('audience_policy'):
                 continue
             if step == 'retention_audit':
@@ -891,6 +1034,8 @@ class Workflow:
             if step == "premise_mini_test" and p.selected_premise_id:
                 continue
             if step == "story_bible" and not p.selected_premise_id:
+                if settings_for(db, db.get(Channel, p.channel_id))['pipeline_mode'] == 'auto':
+                    return {'checkpoint': 'Idea 1 must pass its quality gates and mini-test before automatic continuation.', 'action_kind': 'premises'}
                 return {"checkpoint": "Select one premise after reviewing the top mini-tests."}
             if step == "disagreement_resolver" and not any(i.final_status in ("RECHECK", "UNCERTAIN") for i in active_issues(db,p)):
                 continue
@@ -903,6 +1048,24 @@ class Workflow:
                 return {"kind": step}
         return {"checkpoint": "Review and approve Story Lock.", "gate": gate_lock(db,p)}
 
+    def auto_choose_premise(self, db, p, config):
+        if p.selected_premise_id or imported_bible(p) or not self.next_step(db, p).get('checkpoint'):
+            return
+        rows = premise_policy.ordered(db, p.id)
+        if config['pipeline_mode'] == 'auto':
+            eligible = rows[:1]
+        elif config.get('auto_select_premise'):
+            eligible = sorted(rows, key=lambda pr: sum(pr.mini_test.get('scores', {}).values()), reverse=True)
+        else:
+            return
+        chosen = next((pr for pr in eligible if pr.mini_test and not any(w.get('level') == 'BLOCK' for w in pr.warnings)), None)
+        if chosen:
+            p.selected_premise_id, p.title, p.stage = chosen.id, chosen.title, 'BIBLE'
+            p.publish = {**(p.publish or {}), 'thumbnail_concept': chosen.packaging.get('thumbnail_concept') or chosen.mini_test.get('thumbnail_concept', '')}
+            p.settings = {**(p.settings or {}), 'selected_packaging': deepcopy(chosen.packaging)}
+            self.remember_premise(db, p, p.id, chosen.id, chosen.title)
+            db.flush()
+
     def continue_pipeline(self, job_id):
         with self.database.session() as db:
             job = db.get(Job,job_id)
@@ -910,8 +1073,13 @@ class Workflow:
                 return
             p = db.get(Project,job.project_id)
             config = settings_for(db, db.get(Channel,p.channel_id))
+            if job.kind == 'thumbnail_plan':
+                db.commit()
+                if self.media_automation:
+                    self.media_automation.resume_thumbnail_visuals(p.id, job.id)
+                return
             verified = job.kind in ('final_verify_gemini', 'final_verify_chatgpt', 'retention_audit') and not p.locked and gate_lock(db, p)['can_lock']
-            if verified:
+            if verified and config['pipeline_mode'] != 'auto':
                 lock_story(db, p)
                 db.commit()
                 next_action = self.next_step(db, p)
@@ -941,14 +1109,10 @@ class Workflow:
                 return
             else:
                 next_action = self.next_step(db,p)
-            if next_action.get("checkpoint") and not p.selected_premise_id and config.get("auto_select_premise"):
-                premises = [pr for pr in db.query(Premise).filter_by(project_id=p.id).all() if pr.mini_test and not any(w.get("level")=="BLOCK" for w in pr.warnings)]
-                if premises:
-                    best = max(premises,key=lambda pr:sum(pr.mini_test.get("scores",{}).values()))
-                    p.selected_premise_id = best.id
-                    db.commit()
-                    next_action = self.next_step(db,p)
-            if "gate" in next_action and next_action["gate"]["can_lock"]:
+            self.auto_choose_premise(db, p, config)
+            db.commit()
+            next_action = self.next_step(db, p)
+            if "gate" in next_action and next_action["gate"]["can_lock"] and config['pipeline_mode'] != 'auto':
                 lock_story(db,p)
                 db.commit()
                 next_action = self.next_step(db,p)

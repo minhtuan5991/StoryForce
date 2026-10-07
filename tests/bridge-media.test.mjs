@@ -10,6 +10,7 @@ function fixture(provider='aistudio'){
   const state={jobs:[makeJob(1)],tabStatus:'complete',ready:true,generated:true,lostRun:false};
   const chrome={storage:{local:{get:async k=>({[k]:structuredClone(storage[k])}),set:async values=>Object.assign(storage,structuredClone(values))}},
     tabs:{create:async()=>({id:++tabCount,url:makeJob(1).url,status:state.tabStatus}),get:async id=>({id,url:makeJob(1).url,status:state.tabStatus}),
+      update:async(id,options)=>({id,url:options.url||makeJob(1).url,status:state.tabStatus}),
       sendMessage:async(id,m)=>{
         messages.push(m.action);state.lastMessage=m;
         if(m.action==='media-setup'||m.action==='media-ready')return {ok:true,ready:state.ready};
@@ -37,7 +38,7 @@ function fixture(provider='aistudio'){
   return {storage,state,messages,downloads,chrome,request,create,tick,counts:()=>({tabCount,runs,imports}),advance:ms=>time+=ms};
 }
 
-test('a stuck AI tab skips the owned scene, reopens for the next scene, and never resends the failed prompt',async()=>{
+test('a stuck AI tab skips the owned scene, restores its dialog for the next scene, and never resends the failed prompt',async()=>{
   const f=fixture();f.state.ready=false;
   const original=f.state.jobs[0],next={...original,id:'media2',prompt:'Audio 2',media:{...original.media,filename:'tts_002.wav'}};
   let failed=[];
@@ -51,7 +52,7 @@ test('a stuck AI tab skips the owned scene, reopens for the next scene, and neve
   assert.equal(failed.length,1);assert.equal((await worker.read()).phase,'idle');assert.equal(f.counts().runs,0);
   f.state.ready=true;
   for(let i=0;i<5;i++)await worker.tick();
-  assert.equal(f.counts().runs,1);assert.equal(f.counts().tabCount,2);
+  assert.equal(f.counts().runs,1);assert.equal(f.counts().tabCount,1);
   assert.equal((await worker.read()).jobId,'media2');
   assert.ok(f.messages.filter(m=>m==='media-send').length===1);
 });

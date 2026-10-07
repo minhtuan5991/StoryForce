@@ -44,3 +44,43 @@ test('Vietnamese media controls confirm visuals before creation and start narrat
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.screenshot({path:'../.runtime/media-ui/audio-mobile.png',fullPage:true});
 });
+
+test('project session links, optional references and final local download work on desktop and mobile',async({page})=>{
+  const project:any={id:'p',title:'Dự án kiểm tra',channel_id:'c',channel:{name:'Channel',color:'blue'},target_minutes:5,wpm:150,
+    story_version:1,locked:true,stage:'LOCKED',jobs:[],issues:[],publish:{},workflow_settings:{},
+    settings:{media_sessions:{gemini:{url:'https://gemini.google.com/app/project-test'},flow:{url:'https://flow.google.com/project/project-test'}}},
+    draft:'A complete story.',word_count:3,profile:{word_range:[690,810]},lock_gate:{can_lock:true,reasons:[]},versions:[],
+    chunks:[],scenes:[],assets:[{id:'image-1',name:'nhân vật.png',kind:'image',story_version:1}],premises:[],
+    artifacts:{render_report:{id:'render-current',story_version:1,content:{status:'READY',story_version:1,file:'projects/p/render/v1/run/final_video.mp4',checks:{},warnings:[]}}}};
+  const downloads:any[]=[],refs:any[]=[];
+  const savedPath='C:\\Users\\Admin\\Downloads\\Dự án kiểm tra\\final_video.mp4';
+  await page.addInitScript(()=>localStorage.setItem('storyforge-interface-language','vi'));
+  await page.route('**/api/**',async route=>{
+    const path=new URL(route.request().url()).pathname;
+    if(path.endsWith('/assets/image-1/file')){await route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="40"><rect width="64" height="40" fill="#7ba7dd"/></svg>'});return}
+    let result:any={items:[],total:0};
+    if(path==='/api/dashboard')result={settings:{provider_mode:'browser'},active_jobs:0,sources:0};
+    if(path==='/api/session')result={token:'test'};
+    if(path==='/api/projects/p')result=project;
+    if(path==='/api/projects/p/validate')result={valid:true,missing:[],narration:[0,0],visuals:[0,0],warnings:[]};
+    if(path.endsWith('/media-automation/references')){refs.push(route.request().postDataJSON());result={saved:true}}
+    if(path.endsWith('/download-final')){downloads.push({method:route.request().method(),path});result={saved:true,path:savedPath}}
+    await route.fulfill({json:result});
+  });
+  await page.goto('/#/projects/p/visuals');
+  await expect(page.getByRole('link',{name:'Mở chat Gemini của dự án'})).toHaveAttribute('href','https://gemini.google.com/app/project-test');
+  await expect(page.getByRole('link',{name:'Mở project Flow của dự án'})).toHaveAttribute('href','https://flow.google.com/project/project-test');
+  await page.getByText('Ảnh nhân vật tham chiếu (không bắt buộc)',{exact:true}).click();
+  await page.getByRole('checkbox',{name:'nhân vật.png'}).check();
+  await page.getByRole('button',{name:'Lưu ảnh nhân vật tham chiếu'}).click();
+  await expect.poll(()=>refs).toEqual([{asset_ids:['image-1']}]);
+  await page.screenshot({path:'../.runtime/media-ui/project-references-desktop.png',fullPage:true});
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.goto('/#/projects/p/render');
+  await page.getByRole('button',{name:'final_video.mp4',exact:true}).click();
+  await expect(page.getByText(savedPath,{exact:true})).toBeVisible();
+  expect(downloads).toEqual([{method:'POST',path:'/api/projects/p/download-final'}]);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:'../.runtime/media-ui/final-download-mobile.png',fullPage:true});
+});

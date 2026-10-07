@@ -36,6 +36,6 @@ export function MissingResources({project:p}:{project:Row}){
   const missing=p.missing_resources||[];
   if(!missing.length)return null;
   return <Section title={tr('Resources still missing')} caption={tr('Failed browser items are skipped so the queue can continue. Create these items manually, then upload and assign them here.')}>
-    <div className="table-wrap"><table><thead><tr><th>{tr('Expected file')}</th><th>{tr('Reason')}</th><th>{tr('Manual creation')}</th></tr></thead><tbody>{missing.map((m:Row)=><tr key={m.target_id}><td>{m.filename}</td><td>{m.reason}</td><td><a className="button small" href={'#/projects/'+p.id+'/'+(m.target_type==='chunk'?'tts':'visuals')}>{tr(m.target_type==='chunk'?'TTS studio':'Visual director')}</a></td></tr>)}</tbody></table></div>
+    <div className="table-wrap"><table><thead><tr><th>{tr('Expected file')}</th><th>{tr('Reason')}</th><th>{tr('Manual creation')}</th></tr></thead><tbody>{missing.map((m:Row)=><tr key={m.target_id+':'+(m.variant_id||'')}><td>{m.filename}</td><td>{m.reason}</td><td><a className="button small" href={'#/projects/'+p.id+'/'+(m.target_type==='chunk'?'tts':'visuals')}>{tr(m.target_type==='chunk'?'TTS studio':'Visual director')}</a></td></tr>)}</tbody></table></div>
   </Section>;
 }
