@@ -1,3 +1,4 @@
+from backend.project_storage import project_path
 import pytest
 
 from backend.models import Artifact, CalendarEntry, Channel, DNAVersion, Job, Project, Source
@@ -13,7 +14,7 @@ def test_delete_channel_previews_all_projects_and_preserves_library_and_other_ch
     dna = add(client, DNAVersion(channel_id=channel_id, dna={'tone': 'Warm'}))
     calendar = add(client, CalendarEntry(channel_id=channel_id, project_id=project['id'], title='Schedule'))
     source_analysis = add(client, Artifact(source_id=project['source_id'], channel_id=channel_id, kind='story_dna', content={'keep': 1}))
-    media = client.app.state.root / 'projects' / project['id'] / 'final_video.mp4'
+    media = project_path(client.app.state.root, project['id']) / 'final_video.mp4'
     media.write_bytes(b'Keep exported work by default')
     report = preview(client, 'channels', channel_id)
     assert {p['id'] for p in report['projects']} == {project['id'], second['id']}
@@ -57,7 +58,7 @@ def test_new_project_after_preview_invalidates_channel_confirmation(client, proj
 
 def test_channel_file_cleanup_uses_project_ids_and_keeps_external_files(client, project):
     root = client.app.state.root
-    private = root / 'projects' / project['id'] / 'audio.wav'
+    private = project_path(root, project['id']) / 'audio.wav'
     private.write_bytes(b'private')
     external = root / 'external-original.wav'
     external.write_bytes(b'original')

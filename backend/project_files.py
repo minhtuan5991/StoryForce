@@ -4,6 +4,7 @@ import stat
 from pathlib import Path
 from .models import Asset, Artifact, Chunk, Scene, Project
 from .config import safe_path
+from .project_storage import project_path
 
 def linked(path):
     info=path.lstat()
@@ -12,7 +13,7 @@ def linked(path):
 def checked_folder(root, project_id):
     if not project_id or Path(project_id).name!=project_id or project_id in ('.','..') or '/' in project_id or '\\' in project_id:
         raise ValueError('Invalid project storage folder')
-    folder=root/'projects'/project_id
+    folder=project_path(root,project_id)
     for path in (root,root/'projects',folder):
         if path.exists() and linked(path):
             raise ValueError('Project storage contains a link; files will not be deleted')
@@ -72,7 +73,7 @@ def remove_planned_files(root, ids, plan):
     for item in plan['files']:
         try:
             path=root/item['path']
-            folder=next((checked_folder(root,id) for id in ids if path.is_relative_to(root/'projects'/id)),None)
+            folder=next((checked_folder(root,id) for id in ids if path.is_relative_to(checked_folder(root,id))),None)
             if folder is None:raise ValueError('File is not owned by the selected projects')
             # Recheck every ancestor; refuse symlinks/junctions replaced after preview.
             cursor=path

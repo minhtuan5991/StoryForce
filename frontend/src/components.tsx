@@ -17,7 +17,7 @@ export function Modal({title,onClose,children,wide=false}:{title:string,onClose:
   const ref=useRef<HTMLDialogElement>(null);
   const titleId=useId();
   useEffect(()=>{const dialog=ref.current;dialog?.showModal();return ()=>dialog?.close()},[]);
-  return <dialog ref={ref} aria-modal="true" aria-labelledby={titleId} className={'modal '+(wide?'wide':'')} onCancel={onClose} onClick={e=>{if(e.target===e.currentTarget)onClose()}}><div className="modal-head"><h2 id={titleId}><ViewText text={title}/></h2><button className="icon-button" aria-label={tr("Close dialog")} onClick={onClose}><X size={20}/></button></div>{children}</dialog>
+  return <dialog ref={ref} aria-modal="true" aria-labelledby={titleId} className={'modal '+(wide?'wide':'')} onCancel={e=>{e.preventDefault();onClose()}} onClick={e=>{if(e.target===e.currentTarget)onClose()}}><div className="modal-head"><h2 id={titleId}><ViewText text={title}/></h2><button className="icon-button" aria-label={tr("Close dialog")} onClick={onClose}><X size={20}/></button></div>{children}</dialog>
 }
 export function JsonEditor({value,onSave,title='Structured data',readOnly=false}:{value:any,onSave?:(value:any)=>Promise<any>,title?:string,readOnly?:boolean}) {
   const [text,setText]=useState(pretty(value)),[error,setError]=useState(''),[busy,setBusy]=useState(false),[mode,setMode]=useState('read');

@@ -162,18 +162,13 @@
     if(!trigger||!summary)throw new Error('Chưa xác minh được Video / 720p / 10 giây / x1 trong Flow. Kiểm tra cài đặt rồi tiếp tục.');
     return clickOne(trigger,'Đang đóng bảng cài đặt Flow…');
   }
-  function setEditor(field,prompt){
-    field.focus();
-    if(field instanceof HTMLTextAreaElement||field instanceof HTMLInputElement){
-      const prototype=field instanceof HTMLTextAreaElement?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
-      Object.getOwnPropertyDescriptor(prototype,'value').set.call(field,prompt);
-      field.dispatchEvent(new Event('input',{bubbles:true}));
-    }else{
-      const selection=getSelection(),range=document.createRange();range.selectNodeContents(field);selection.removeAllRanges();selection.addRange(range);
-      if(!document.execCommand('insertText',false,prompt))throw new Error('Không nhập được nội dung media');
-      field.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:prompt}));
-    }
-    field.dispatchEvent(new Event('change',{bubbles:true}));
+  async function setEditor(field,prompt,provider){
+    if(!globalThis.storyForgePaste)throw new Error('Reload Browser Bridge để áp dụng cách nhập bằng Paste.');
+    await globalThis.storyForgePaste.into(field,prompt,{validate:()=>{
+      checkpoint();
+      if(busy(provider))throw Object.assign(new Error('Dịch vụ vẫn đang tạo media; chưa Paste scene tiếp theo.'),{code:'INPUT_NOT_READY'});
+      if(editor()!==field)throw Object.assign(new Error('Ô nhập media vừa tải lại; chưa Paste.'),{code:'EDITOR_CHANGED'});
+    }});
   }
   const mediaSelector={aistudio:'audio',gemini:'model-response img,model-response image-preview img,[data-test-id="generated-image"] img',flow:'video,img[alt]'};
   function mediaItems(provider){return [...document.querySelectorAll(mediaSelector[provider])].filter(e=>
@@ -440,7 +435,7 @@
       }
       const baseline=snapshot(provider);
       owned.baselineNodes=mediaItems(provider);
-      setEditor(field,message.prompt);
+      await setEditor(field,message.prompt,provider);
       if(text(field)!==norm(message.prompt))throw Object.assign(new Error('Ô nhập chưa nhận đủ nội dung'),{code:'INPUT_NOT_READY'});
       owned.lastPrompt=norm(message.prompt);
       return {baseline};

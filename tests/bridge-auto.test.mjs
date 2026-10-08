@@ -12,6 +12,7 @@ function fixture(options={pageSettleMs:0}){
     if(message.action==='auto-ready'){if(state.hungReady)return new Promise(()=>{});return {ok:true,ready:state.editorReady!==false}}
     if(message.action==='auto-prepare'){
       if(state.prepareError)return {ok:false,error:state.prepareError,code:state.prepareCode};
+      if(state.preparingFile)return {ok:true,ready:false,message:'Đang chờ xử lý tệp văn bản; chưa gửi.'};
       return {ok:true,baseline:{count:1,last:'Old answer'}};
     }
     if(message.action==='auto-check-send'&&state.checkError)return {ok:false,error:state.checkError,code:state.checkCode};
@@ -52,6 +53,16 @@ function fixture(options={pageSettleMs:0}){
   const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},now:()=>time,readTimeoutMs:20,...options});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
   return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:(ms=31000)=>{time+=ms}};
 }
+
+test('pasted text file preparation stays in the same tab and never authorizes Send before upload completes',async()=>{
+  const f=fixture(),a=f.create();f.state.preparingFile=true;
+  await a.setEnabled(true);
+  for(let i=0;i<3;i++)await a.tick();
+  assert.equal((await a.read()).phase,'opening');assert.equal(f.created(),1);
+  assert.equal(f.counts().sent,0);assert.equal(f.calls.includes('auto-check-send'),false);
+  f.state.preparingFile=false;await a.tick();
+  assert.equal((await a.read()).phase,'submitted');assert.equal(f.counts().sent,1);assert.equal(f.created(),1);
+});
 
 test('retention evidence rejection waits before one corrected request and never saves a false pass',async()=>{
   const f=fixture(),a=f.create();f.state.jobs[0].kind='retention_audit';

@@ -1,6 +1,7 @@
 import {test as base,expect,type Page} from '@playwright/test';
 import path from 'node:path';
 import {copyResponseSource} from '../../browser-extension/raw-response.js';
+import {installPasteFixture} from '../../tests/helpers/media-paste-fixture.mjs';
 
 // Keep Comet's browser-level page lifecycle isolated between fixture cases.
 const test=base.extend({
@@ -8,6 +9,11 @@ const test=base.extend({
     const browser=await playwright[browserName].launch({...launchOptions,headless,channel});
     try{await use(await browser.newContext(contextOptions))}finally{await browser.close()}
   },
+});
+// These cases test readiness/collection around an isolated clipboard dependency;
+// bridge-paste-native.spec.mjs separately loads the real permitted extension.
+test.beforeEach(async({page})=>{
+  await page.addInitScript({content:'('+installPasteFixture.toString()+')(window)'});
 });
 
 async function chatgptFixture(page:Page,body:string,url='https://chatgpt.com/'){

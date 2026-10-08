@@ -13,17 +13,21 @@ from sqlalchemy import desc, text as sql_text
 from .config import DEFAULT_SETTINGS, RESOURCE_ROOT
 from .models import *
 from .schemas import StoryDNA, AuditResult, AIIssue, Verification
-from .intelligence import digest, words, tokens, novelty_check, duration_profile, chunk_text
+from .intelligence import digest, words, tokens, novelty_check, duration_profile, chunk_text, WORD_PATTERN
 from .providers import MockProvider, BrowserBridgeProvider, PROVIDERS
 from . import audience
 from .channel_learning import learning_data
 from .production_extras import outro_chunk, scene_generation_prompt
-from .visual_planning import visual_budget, validate_visual_output, narration_clock, balance_scene_ranges, DEFAULT_VIDEO_SECONDS
+from .visual_planning import visual_budget, validate_visual_output, narration_clock, balance_scene_ranges, opening_layout, DEFAULT_VIDEO_SECONDS
+from .opening_policy import OPENING_PROMPT
+from .media_sessions import visual_identity
 from .youtube_metadata import CONTRACT_VERSION, validate_metadata, metadata_context, metadata_fingerprint, upload_text
 from .thumbnail_packaging import thumbnail_context, plan_fingerprint, validate_plan
 from .story_import import imported_bible
 from . import premise_policy
 from .media import project_folder, probe, timeline_from_audio, write_subtitles, render_project, safe_path, validate_assets, render_inputs_hash, render_options
+from .project_storage import migrate_project_folders, project_path
+from .resource_cleanup import archived, archived_final_matches, PRODUCTION
 
 STORY_STEPS = ["content_direction", "premise_generation", "premise_mini_test", "story_bible", "outline", "outline_audit", "outline_rewrite", "opening_variants", "full_draft", "gemini_story_audit", "chatgpt_cross_review", "disagreement_resolver", "targeted_rewrite", "retention_audit", "final_verify_gemini", "final_verify_chatgpt"]
 
@@ -206,6 +210,14 @@ class Workflow:
             payload = {**payload, **visual_budget(serialize(project),config,payload)}
             payload['video_seconds'] = DEFAULT_VIDEO_SECONDS
             payload['minimum_video_words'] = math.ceil(DEFAULT_VIDEO_SECONDS * project.wpm / 60)
+            if (job.payload or {}).get('_opening_layout_version') == 1:
+                chunks = [serialize(c) for c in db.query(Chunk).filter_by(project_id=project.id, story_version=project.story_version)]
+                clock, timing = narration_clock(project.draft, project.wpm, chunks)
+                spans = opening_layout(payload, clock)
+                matches = list(WORD_PATTERN.finditer(project.draft))
+                payload['narration_scenes'] = [{**span, 'text': project.draft[matches[span['start_word']].start():matches[span['end_word']-1].end()]}
+                                              for span in spans]
+                payload['narration_timing'] = timing
         project_context = serialize(project) if project else {}
         channel_context = serialize(channel) if channel else {}
         # Packaging inputs must not become creative directions for the story or media.
@@ -241,6 +253,8 @@ class Workflow:
             raise ValueError("This step requires a project")
         if not p:
             return
+        if archived(p) and job.kind in PRODUCTION:
+            raise ValueError('Resources were cleaned. Choose Recreate resources in Overview before importing or generating media.')
         if imported_bible(p) and job.kind in ('content_direction', 'premise_generation', 'premise_mini_test', 'story_bible'):
             raise ValueError('This project starts from an imported Story Bible. Import the JSON in Story Bible and continue to Outline.')
         if job.kind == 'premise_generation' and p.selected_premise_id:
@@ -284,6 +298,9 @@ class Workflow:
                 raise ValueError("Resolve disputed issues before targeted rewriting")
 
     def submit(self, kind, project_id=None, source_id=None, channel_id=None, payload=None):
+        if project_id:
+            with self.deletion_lock:
+                migrate_project_folders(self.database,self.root,[project_id])
         with self.database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
             job = Job(kind=kind, project_id=project_id, source_id=source_id, channel_id=channel_id, payload=payload or {})
@@ -363,7 +380,8 @@ class Workflow:
             return {"ready": False, "reason": "Resolve the final technical QA failures first."}
         config = settings_for(db, db.get(Channel, project.channel_id))
         rows = [[serialize(r) for r in db.query(model).filter_by(project_id=project.id)] for model in (Chunk, Scene, Asset)]
-        if report.content.get('inputs_hash') != render_inputs_hash(serialize(project), *rows, config):
+        if (report.content.get('inputs_hash') != render_inputs_hash(serialize(project), *rows, config)
+                and not archived_final_matches(self.root,project,report,config)):
             return {"ready": False, "reason": "Render again to apply the latest changes."}
         try:
             present = bool(report.content.get('file')) and safe_path(self.root, report.content['file']).is_file()
@@ -502,9 +520,11 @@ class Workflow:
                 job_id = job.id
             db.commit()
             result = serialize(p)
+        with self.deletion_lock:
+            migrate_project_folders(self.database, self.root, [result['id']])
+        project_folder(self.root, result['id'])
         if job_id:
             self.executor.submit(self.run, job_id)
-        project_folder(self.root, result['id'])
         return result
 
     def log_progress(self, job_id, amount, step):
@@ -527,6 +547,8 @@ class Workflow:
                 self.validate_step(db, job)
                 job.status, job.progress, job.step = "running", 10, "Preparing inputs"
                 job.attempts += 1
+                if job.kind == 'visual_director':
+                    job.payload = {**job.payload, '_opening_layout_version': 1}
                 context = self.context(db, job)
                 channel_id=context["channel"].get("id")
                 config = settings_for(db, db.get(Channel, channel_id) if channel_id else None)
@@ -546,8 +568,12 @@ class Workflow:
                     job.prompt = (f"Required visual budget: exactly {budget['image_count']} IMAGE scenes and {budget['video_count']} VIDEO scenes, in narration order. "
                                   "Use scene_001, scene_002, etc. Select the main story beats, concrete actions, reveals and climax; avoid redundant angles. "
                                   f"Reserve at least {DEFAULT_VIDEO_SECONDS} seconds of corresponding narration for every VIDEO scene (at least {budget['minimum_video_words']} words at the project's WPM before real audio is available). "
-                                  "Choose video moments with enough narration. Images absorb the remaining time; each video plays once at native duration without looping. Keep image coverage between separated video moments. "
+                                  f"The first {budget['opening_video_count']} scenes are consecutive opening VIDEO clips, about 10 seconds each, starting at the beginning. "
+                                  "Follow payload.narration_scenes exactly: scene IDs, media types, word ranges and narration excerpts. Do not move a later climax into an opening clip. "
+                                  "Describe only the action in that scene's supplied excerpt. Additional requested videos are placed later as specified. "
+                                  "Images absorb the remaining time; each video plays once at native duration without looping. "
                                   "This budget overrides duration_profile scene counts and video_ratio.\n\n" + job.prompt)
+                    job.payload = {**job.payload, '_visual_layout': budget['narration_scenes']}
                 if job.kind == "story_bible":
                     job.prompt = "Develop only INPUT JSON.selected_premise, the user's explicit choice. Do not choose another candidate.\n\n" + job.prompt
                 if job.kind == 'premise_generation':
@@ -591,7 +617,9 @@ class Workflow:
                                                           'text': scene.text if scene and scene.project_id == job.project_id else '',
                                                           'continuity': scene.continuity if scene and scene.project_id == job.project_id else {}})
                 elif job.kind == "video_generation":
-                    job.prompt = str(context["payload"].get("prompt", "")) + "\nAvoid: " + str(context["payload"].get("negative_prompt", ""))
+                    job.prompt = scene_generation_prompt({**context['payload'], 'visual_type': 'VIDEO'})
+                if job.kind in ('image_generation', 'video_generation'):
+                    job.prompt += visual_identity(context['artifacts'].get('story_bible', {}))
                 job.payload = {**(job.payload or {}), "_inputs_hash": digest(context), "_draft_hash": digest(context["project"].get("draft", "")), "_template_version": digest(template)[:12], "_story_version": context["project"].get("story_version", 0)}
                 if job.kind == 'youtube_metadata':
                     job.payload = {**job.payload, '_metadata_hash': digest(context), '_metadata_contract_version': CONTRACT_VERSION}
@@ -599,6 +627,10 @@ class Workflow:
                     job.payload = {**job.payload, '_thumbnail_hash': plan_fingerprint(db, db.get(Project, job.project_id))}
                 if job.kind in ('retention_audit', 'retention_rewrite', 'opening_variants'):
                     job.payload = {**job.payload, '_audience_hash': audience.fingerprint(db, db.get(Project, job.project_id))}
+                if job.kind in ('premise_generation', 'premise_mini_test', 'story_bible', 'outline', 'outline_rewrite',
+                                'opening_variants', 'full_draft', 'retention_audit', 'retention_rewrite'):
+                    # Apply the current policy even when a workspace has an older custom template.
+                    job.prompt = OPENING_PROMPT + '\n\n' + job.prompt
                 job.provider = "mock:" + PROVIDERS[job.kind] if config["provider_mode"] == "mock" else PROVIDERS[job.kind]
                 db.commit()
                 result = (self.mock if config["provider_mode"] == "mock" else self.bridge).generate(job.kind, context, job.prompt)
@@ -675,7 +707,7 @@ class Workflow:
                 template_version=job.payload.get("_template_version"), inputs_hash=job.payload.get("_inputs_hash"), output_hash=digest(output), story_version=project.story_version if project else 0)
             db.add(artifact)
             if job.kind == 'youtube_metadata':
-                folder = safe_path(self.root, f'projects/{project.id}/publish')
+                folder = project_path(self.root, project.id) / 'publish'
                 folder.mkdir(parents=True,exist_ok=True)
                 target = folder/f'youtube_metadata-{job.id}.txt'
                 target.write_text(upload_text(output,project.title,project.story_version),encoding='utf-8-sig')
@@ -728,7 +760,7 @@ class Workflow:
             output.clear();output.update(validated)
             output['content_fingerprint'] = job.payload['_metadata_hash']
             output['story_version'] = p.story_version
-            output['text_file'] = f'projects/{p.id}/publish/youtube_metadata-{job.id}.txt'
+            output['text_file'] = str((project_path(self.root, p.id) / 'publish' / f'youtube_metadata-{job.id}.txt').relative_to(self.root))
         elif kind == 'thumbnail_plan':
             validated = validate_plan(output, thumbnail_context(db, p))
             output.clear();output.update(validated)
@@ -883,13 +915,24 @@ class Workflow:
             all_words = words(p.draft)
             chunks = [serialize(c) for c in db.query(Chunk).filter_by(project_id=p.id, story_version=p.story_version)]
             clock, timing = narration_clock(p.draft, p.wpm, chunks)
+            opening = job.payload.get('_opening_layout_version') == 1
+            if opening:
+                layout = job.payload.get('_visual_layout') or self.context(db, job)['payload']['narration_scenes']
+                if [item['visual_type'] for item in items] != [span['visual_type'] for span in layout]:
+                    raise ValueError('Keep the opening video order and exact media types from narration_scenes; do not reorder scene prompts')
+                for item, span in zip(items, layout):
+                    item.update(start_word=span['start_word'], end_word=span['end_word'],
+                                continuity={'timing_policy': {'version': 2, 'opening_video_count': min(3, sum(s['visual_type']=='VIDEO' for s in items))}})
             ranges = balance_scene_ranges(items, clock)
             # Validate time before replacing a plan that may already own media.
             db.query(Scene).filter_by(project_id=p.id).delete()
             for i, (item, span) in enumerate(zip(items, ranges)):
                 start, end = span['start_word'], span['end_word']
                 item['scene_id'] = f'scene_{i+1:03}'
-                item['timing_policy'] = {'version': 1, 'video_seconds': DEFAULT_VIDEO_SECONDS, 'wpm': p.wpm, 'narration_word_count': len(all_words)}
+                item['timing_policy'] = {'version': 2 if opening else 1, 'video_seconds': DEFAULT_VIDEO_SECONDS,
+                                        'opening_video_count': min(3, sum(s['visual_type']=='VIDEO' for s in items)) if opening else 0,
+                                        'wpm': p.wpm, 'narration_word_count': len(all_words)}
+                item.pop('continuity', None)
                 item['narration_duration'] = span['narration_duration']
                 item['narration_timing'] = timing
                 db.add(Scene(project_id=p.id, story_version=p.story_version, number=i+1, scene_key=item['scene_id'], text=" ".join(all_words[start:end]), start_word=start, end_word=end, visual_type=item.get("visual_type", "IMAGE"), prompt=item["prompt"], negative_prompt=item.get("negative_prompt", "No text or logos"), continuity={k:v for k,v in item.items() if k not in ("prompt", "negative_prompt")}))
@@ -986,6 +1029,8 @@ class Workflow:
         return result
 
     def next_step(self, db, p):
+        if archived(p):
+            return {'checkpoint': 'Resources were cleaned. The final video is kept. Choose Recreate resources in Overview to render again.', 'action_kind': 'archived_resources'}
         if p.locked:
             chunks_current = db.query(Chunk).filter_by(project_id=p.id).all()
             if not chunks_current or any(c.status=='STALE' or c.story_version!=p.story_version for c in chunks_current):

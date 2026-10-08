@@ -23,7 +23,8 @@ from .models import Asset, Chunk, Scene, Job, Project, Channel, Artifact, now, u
 from .production_extras import thumbnail_prompt, scene_generation_prompt
 from .thumbnail_packaging import current_plan, variant_prompt, selection, image_checks, assign_thumbnail, plan_identifier
 from .providers import PROVIDER_URLS
-from .media_sessions import provider_page, TTS_OPTIONS, visual_identity
+from .media_sessions import provider_page, TTS_OPTIONS, visual_identity, character_reference_prompt, reference_characters
+from .resource_cleanup import archived
 
 
 MEDIA_KINDS = {"tts_context": "audio", "image_generation": "image", "video_generation": "video"}
@@ -92,6 +93,8 @@ class MediaAutomation:
         p = db.get(Project, id)
         if not p:
             raise ValueError("Project not found")
+        if archived(p):
+            raise ValueError('Resources were cleaned. Choose Recreate resources in Overview before importing or generating media.')
         if not p.locked:
             raise ValueError("Lock the story before production")
         return p
@@ -225,6 +228,13 @@ class MediaAutomation:
                                   "source_hash": digest(prompt), "filename": "thumbnail.png", "prompt": prompt})
                 else:
                     skipped += 1
+                opening_plan = any((s.continuity or {}).get('timing_policy', {}).get('version') == 2 and
+                                   (s.continuity or {}).get('timing_policy', {}).get('opening_video_count', 0) > 0 for s in scenes)
+                reference_prompt = character_reference_prompt(bible.content if bible else {})
+                if opening_plan and reference_prompt and not self.reference_assets(db, p):
+                    items.append({'kind': 'image_generation', 'provider': 'gemini', 'target_type': 'character_reference',
+                                  'target_id': id, 'source_hash': digest(reference_prompt), 'filename': 'character_reference.png',
+                                  'prompt': reference_prompt})
                 for scene in scenes:
                     media_kind = "video" if scene.visual_type == "VIDEO" else "image"
                     if scene.story_version != p.story_version or scene.status == "STALE":
@@ -291,6 +301,9 @@ class MediaAutomation:
                 plan = current_plan(db, p)
                 if not plan or media['plan_hash'] != plan_identifier(plan):
                     current_hash = None
+        elif media['target_type'] == 'character_reference':
+            bible = db.query(Artifact).filter_by(project_id=p.id, kind='story_bible').order_by(Artifact.created_at.desc()).first()
+            current_hash = digest(character_reference_prompt(bible.content if bible else {})) if media['target_id'] == p.id else None
         else:
             target = db.get(Chunk if media["target_type"] == "chunk" else Scene, media["target_id"])
             current_hash = target_hash(target) if target and target.project_id == p.id else None
@@ -357,8 +370,12 @@ class MediaAutomation:
         ids = saved.get('asset_ids', []) if saved.get('story_version') == p.story_version else []
         selected = [db.get(Asset, id) for id in ids]
         if not ids and not (saved.get('manual') and saved.get('story_version') == p.story_version):
+            board = next((a for a in db.query(Asset).filter_by(project_id=p.id, story_version=p.story_version, kind='image')
+                          if (a.metadata_json or {}).get('role') == 'character_reference' and safe_path(self.root, a.path).is_file()), None)
+            if board:
+                selected = [board]
             # A scene image is a better face reference than a typographic thumbnail.
-            for scene in db.query(Scene).filter_by(project_id=p.id, story_version=p.story_version).order_by(Scene.number):
+            for scene in (() if selected else db.query(Scene).filter_by(project_id=p.id, story_version=p.story_version).order_by(Scene.number)):
                 asset = db.get(Asset, scene.asset_id) if scene.asset_id else None
                 if asset and asset.kind == 'image' and scene.visual_type != 'VIDEO':
                     selected = [asset]
@@ -520,7 +537,7 @@ class MediaAutomation:
                         sha.update(data)
                 checksum = sha.hexdigest()
                 asset = db.query(Asset).filter_by(project_id=p.id, sha256=checksum, story_version=p.story_version, kind=kind).first()
-                if media['target_type'] == 'thumbnail' and media.get('variant_id'):
+                if media['target_type'] == 'character_reference' or media['target_type'] == 'thumbnail' and media.get('variant_id'):
                     asset = None  # Distinct variant ownership, even when returned pixels coincide.
                 if not asset:
                     destination = folder / f"{checksum[:10]}_{media['filename']}"
@@ -538,6 +555,12 @@ class MediaAutomation:
                     plan = current_plan(db, p)
                     if not plan or not media.get('variant_id') or selection(p, plan) == media['variant_id']:
                         assign_thumbnail(p, asset)
+                elif media['target_type'] == 'character_reference':
+                    bible = db.query(Artifact).filter_by(project_id=p.id, kind='story_bible').order_by(Artifact.created_at.desc()).first()
+                    asset.metadata_json = {**asset.metadata_json, 'role': 'character_reference',
+                                           'character_names': [c['name'] for c in reference_characters(bible.content if bible else {})]}
+                    p.settings = {**p.settings, 'character_references': {'asset_ids': [asset.id], 'manual': False,
+                                                                        'story_version': p.story_version}}
                 else:
                     target = db.get(Chunk if media["target_type"] == "chunk" else Scene, media["target_id"])
                     first_reference = isinstance(target, Scene) and asset.kind == 'image' and not self.reference_assets(db, p)
@@ -615,6 +638,8 @@ class MediaAutomation:
                                    'automatic_failure': target.id in failures})
         plan = current_plan(db, p)
         images = db.query(Asset).filter_by(project_id=p.id, story_version=p.story_version, kind='image').all()
+        if not self.reference_assets(db, p):
+            result[:0] = [{**f, 'automatic_failure': True} for f in current_failures if f.get('target_type') == 'character_reference']
         for thumbnail in current_failures:
             if thumbnail.get('target_type') != 'thumbnail':
                 continue

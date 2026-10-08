@@ -40,6 +40,8 @@ from . import premise_policy
 from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets, timeline_from_audio, render_options, validate_logo, validate_waveform_video
 from .visual_planning import visual_budget
 from .portability import project_archive, inspect_database
+from .project_storage import migrate_project_folders, project_path
+from .resource_cleanup import ResourceCleanup, archived, recover_final_moves
 from .youtube_metadata import MetadataInputs, metadata_inputs, metadata_fingerprint, upload_text
 from .thumbnail_packaging import (ThumbnailStyle, ImageReview, current_plan, plan_state, variant_prompt,
                                   save_review, assign_thumbnail, export_plan, plan_identifier)
@@ -63,11 +65,14 @@ def create_app(data_root: str | Path | None = None):
             if sidecar.exists():
                 sidecar.unlink()
     database = Database(root)
+    recover_final_moves(database, root)
+    migrate_project_folders(database, root)
     workflow = Workflow(database,root)
     media_automation = MediaAutomation(workflow)
     workflow.media_automation = media_automation
     csrf = secrets.token_urlsafe(32)
     deletions = Deletions(database, workflow, csrf)
+    resource_cleanup = ResourceCleanup(database, workflow, csrf)
     log_handlers=[]
     for category in ("app","browser_bridge","render","ffmpeg","audit"):
         logger = logging.getLogger(category)
@@ -329,6 +334,7 @@ def create_app(data_root: str | Path | None = None):
             if body.duration_mode=="Auto":data["target_minutes"]=channel.default_duration
             item=Project(**data, stage='BIBLE' if entry_mode=='existing_bible' else 'DIRECTION',
                          settings={'audience_policy': 1, 'entry_mode':entry_mode});db.add(item);db.commit()
+            migrate_project_folders(database, root, [item.id])
             project_folder(root,item.id)
             return serialize(item)
 
@@ -352,7 +358,7 @@ def create_app(data_root: str | Path | None = None):
             for chunk in chunks:
                 chunk['scene_context']=tts_scene_context(chunk,serialize(p),channel,scenes,start)
                 start+=chunk['word_count']
-            return {**serialize(p),"channel":serialize(db.get(Channel,p.channel_id)),"source":serialize(db.get(Source,p.source_id)) if p.source_id else None,
+            return {**serialize(p),"storage_folder":str(project_path(root,id)),"channel":serialize(db.get(Channel,p.channel_id)),"source":serialize(db.get(Source,p.source_id)) if p.source_id else None,
                     "thumbnail_prompt":media_automation.thumbnail(db,p,scenes),
                     "thumbnail_packaging":plan_state(db,p),
                     "visual_budget":visual_budget(serialize(p),config),
@@ -392,6 +398,7 @@ def create_app(data_root: str | Path | None = None):
     def create_thumbnail(id:str,body:dict=Body(...)):
         with database.session() as db:
             p=get(db,Project,id);asset=get(db,Asset,str(body.get('asset_id','')))
+            if archived(p):raise ValueError('Reopen resource production before creating new media.')
             if asset.project_id!=id or asset.kind!='image':raise ValueError('Choose an image from this project')
             title=p.publish.get('title') or p.title
             folder=project_folder(root,id)/'images'
@@ -405,8 +412,10 @@ def create_app(data_root: str | Path | None = None):
 
     @app.patch("/api/projects/{id}")
     def update_project(id:str,body:dict=Body(...)):
-        with database.session() as db:
+        with workflow.deletion_lock, database.session() as db:
             p=get(db,Project,id)
+            if 'title' in body and p.title != body['title'] and (db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running'])).count() or any(db.get(Job,j) and db.get(Job,j).project_id==id for j in workflow.active_jobs)):
+                raise ValueError('Finish the active project job before changing the storage title.')
             if "draft" in body:result=set_draft(db,p,body["draft"])
             else:result={}
             for key in ("title","publish"):
@@ -415,7 +424,23 @@ def create_app(data_root: str | Path | None = None):
                 if p.locked:raise ValueError("Create a new draft version before changing locked production settings")
                 data=ProjectCreate.model_validate({**serialize(p),**body})
                 p.target_minutes,p.wpm,p.duration_mode=data.target_minutes,data.wpm,data.duration_mode
-            db.commit();return {**serialize(p),"change":result}
+            db.commit()
+            result={**serialize(p),"change":result}
+            if 'title' in body:
+                migrate_project_folders(database,root,[id])
+        return result
+
+    @app.get('/api/projects/{id}/resources/cleanup-preview')
+    def preview_resource_cleanup(id:str):
+        return resource_cleanup.preview(id)
+
+    @app.post('/api/projects/{id}/resources/cleanup')
+    def clean_project_resources(id:str,body:dict=Body(...)):
+        return resource_cleanup.confirm(id,body.get('confirmation'))
+
+    @app.post('/api/projects/{id}/resources/resume')
+    def resume_project_resources(id:str):
+        return resource_cleanup.resume(id)
 
     @app.post("/api/projects/{id}/select-premise")
     def select_premise(id:str,body:dict=Body(...)):
@@ -627,6 +652,8 @@ def create_app(data_root: str | Path | None = None):
         items=[]
         with database.session() as db:
             p=get(db,Project,id);config=settings_for(db)
+            if archived(p):
+                raise ValueError('Resources were cleaned. Choose Recreate resources in Overview before importing or generating media.')
             folder=project_folder(root,id)
 
             for upload in files:
@@ -826,7 +853,7 @@ def create_app(data_root: str | Path | None = None):
     def download_output(id:str,name:str):
         with database.session() as db:
             p=get(db,Project,id)
-            folder=project_folder(root,id)
+            folder=project_path(root,id)
             if name == 'thumbnail_plan.json':
                 plan = latest(db,id,'thumbnail_plan')
                 if not plan:raise HTTPException(404,'Create thumbnail concepts first')
@@ -1258,7 +1285,9 @@ def create_app(data_root: str | Path | None = None):
                 db.add(s);db.flush()
                 p=Project(channel_id=channels[i].id,source_id=s.id,title=["The Last Signal from Station Nine","When the City Went Quiet","A Story Waiting to Be Found"][i],target_minutes=[10,20,5][i],duration_mode=str([10,20,5][i]),is_demo=True)
                 db.add(p);db.flush();project_folder(root,p.id)
-            db.commit();return {"loaded":True,"message":"Three demo channels and projects created. All sample content is labeled demo; no real YouTube metrics are generated."}
+            db.commit()
+        migrate_project_folders(database,root)
+        return {"loaded":True,"message":"Three demo channels and projects created. All sample content is labeled demo; no real YouTube metrics are generated."}
 
     dist=RESOURCE_ROOT/"frontend"/"dist"
     if dist.exists():

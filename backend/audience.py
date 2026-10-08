@@ -78,7 +78,7 @@ def fingerprint(db, p):
 def timed_zones(text, wpm):
     matches = list(WORD_PATTERN.finditer(text))
     seconds = len(matches) * 60 / max(1, wpm)
-    spans = [(0, 10, 'Concrete interest / question'), (10, 30, 'Stakes and reason to continue'),
+    spans = [(0, 10, 'Concrete hook, curiosity and contradiction'), (10, 30, 'Immediate conflict, stakes and consequential choice'),
              (30, 60, 'Momentum without resetting the hook'), (60, 90, 'New evidence or escalation'),
              (90, 180, 'Meaningful change'), (180, 420, 'Escalation and partial payoff')]
     spans += [(start, start + 180, 'Sustained progression / payoff') for start in range(420, int(seconds), 180)]
@@ -90,7 +90,19 @@ def timed_zones(text, wpm):
         zones.append({'id': f'{start}-{end}', 'start_seconds': start, 'end_seconds': min(end, seconds),
                       'applicable': start < seconds, 'purpose': purpose, 'start_char': lo, 'end_char': hi,
                       'start_word': first, 'end_word': last, 'text': text[lo:hi]})
-    return {'estimated_seconds': round(seconds, 2), 'timing_basis': 'Estimated from words/WPM, not recorded narration', 'zones': zones}
+    windows = []
+    for label, lo_fraction, hi_fraction, purpose in (
+        ('midpoint', .4, .6, 'Main climax and central reversal around 45–55%'),
+        ('aftermath', .55, .9, 'Causal explanation, consequences and forward progress'),
+        ('ending', .9, 1, 'Resolution; optional earned ambiguity')):
+        first, last = int(len(matches) * lo_fraction), int(len(matches) * hi_fraction)
+        lo = matches[first].start() if first < len(matches) else len(text)
+        hi = matches[last - 1].end() if last > first else lo
+        windows.append({'id': label, 'start_seconds': seconds * lo_fraction, 'end_seconds': seconds * hi_fraction,
+                        'purpose': purpose, 'start_word': first, 'end_word': last, 'text': text[lo:hi]})
+    return {'estimated_seconds': round(seconds, 2), 'timing_basis': 'Estimated from words/WPM, not recorded narration',
+            'midpoint_target_seconds': [round(seconds * .45, 2), round(seconds * .55, 2)],
+            'structure_windows': windows, 'zones': zones}
 
 
 class RetentionEvidenceError(ValueError):

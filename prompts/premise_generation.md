@@ -1,5 +1,5 @@
 # StoryForge US · Premise Generation
-Template version: 2.0
+Template version: 2.1
 
 Produce payload.count premises (default 10), distributed 40% Core, 30% Adjacent, 20% Experimental and 10% Wildcard. Scores are 0–100; similarity/repetition scores are risks (lower is better). Respect the duration profile's character, scene, twist and subplot budget.
 
@@ -15,6 +15,7 @@ An observation-becomes-participation reversal is useful only when the source DNA
 Candidate #1's title should express a concrete abnormal event and immediate problem. Its logline must establish
 protagonist/job, normal situation, specific interruption, immediate stakes and unique mechanism.
 Use one short observable rule and a concrete visual contradiction. Generate no actual thumbnail here.
+Design for immediate curiosity and initial conflict in the first 30 seconds, then the main climax/plot reversal around 45–55% of the story. Reserve the remaining half for active explanation, consequences and a fitting closed or earned open ending. Increase drama through supported stakes and observable contradictions, not invented sensational claims or a generic final-minute shock.
 Keep high source DNA alignment and low surface copying risk. Never let ranking move candidate #1 away from index 0.
 If no source exists, candidate #1 is an original primary idea from channel DNA; do not fabricate a source relationship.
 If payload.repair_candidate_one is true, return exactly one corrected candidate and source_core when sourced.

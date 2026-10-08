@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {JSDOM} from '../frontend/node_modules/jsdom/lib/api.js';
-const adapter=readFileSync(new URL('../browser-extension/media-content.js',import.meta.url),'utf8');
+import {installPasteFixture} from './helpers/media-paste-fixture.mjs';
+const adapter='('+installPasteFixture.toString()+')(window);\n'+readFileSync(new URL('../browser-extension/media-content.js',import.meta.url),'utf8');
 
 function fixture(provider='gemini'){
   const {window}=new JSDOM('<main id="history"></main><form><input type="file" accept="image/*" multiple><div id="attachments"></div><textarea></textarea><button type="button" aria-label="'+(provider==='flow'?'Generate':'Send message')+'">Send</button></form>',

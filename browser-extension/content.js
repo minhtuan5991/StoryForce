@@ -101,6 +101,8 @@
   }
   // innerText includes CSS paragraph spacing; textContent omits block breaks.
   const inputText=element=>normalizeText(element.value??editorText(element));
+  const promptMatches=(element,message)=>globalThis.storyForgePaste?
+    globalThis.storyForgePaste.matches(element,message.prompt,message.jobKey):inputText(element)===normalizeText(message.prompt);
   let readiness;
   async function execute(message) {
     if(message.action==='ping')return {version:globalThis.storyForgeVersion};
@@ -124,11 +126,13 @@
     if(message.action==='auto-prepare'){
       if(first(a.busy))throw new Error('Trang AI đang trả lời. Chờ hoàn tất rồi tiếp tục.');
       const existing=promptField(a);
-      if(existing&&inputText(existing)&&inputText(existing)!==normalizeText(message.prompt))throw new Error('Ô nhập AI có nội dung chưa gửi. Kiểm tra nội dung đó rồi tiếp tục.');
+      if(existing&&inputText(existing)&&!promptMatches(existing,message)&&
+        !globalThis.storyForgePaste?.ownsDraft(existing,message.prompt,message.jobKey))throw new Error('Ô nhập AI có nội dung chưa gửi. Kiểm tra nội dung đó rồi tiếp tục.');
       const baseline=snapshot();
-      await execute({...message,action:'fill',preserveDraft:true});
+      const filled=await execute({...message,action:'fill',preserveDraft:true});
       const after=snapshot();
       if(after.count!==baseline.count||after.last!==baseline.last||first(a.busy))throw new Error('Nội dung trang đã thay đổi trong khi điền prompt. Kiểm tra tab AI rồi tiếp tục.');
+      if(filled.ready===false)return filled;
       return {baseline};
     }
     if(message.action==='auto-send'||message.action==='auto-check-send'){
@@ -144,7 +148,7 @@
       if(!message.baseline||current.count!==message.baseline.count||current.last!==message.baseline.last)throw new Error('Nội dung trang đã thay đổi. Kiểm tra thủ công để tránh lấy nhầm câu trả lời.');
       const input=promptField(a);
       if(!input)throw transient('Ô nhập đang tải lại. Đang chờ trang AI sẵn sàng.');
-      if(!input||inputText(input)!==normalizeText(message.prompt))throw new Error('Prompt trên trang không khớp tác vụ. Không tự gửi.');
+      if(!input||!promptMatches(input,message))throw new Error('Prompt trên trang không khớp tác vụ. Không tự gửi.');
       button=runButton(a);
       if(button)break;
       if(Date.now()>=deadline)throw Object.assign(new Error('Chưa có nút gửi khả dụng. Kiểm tra đăng nhập, quota hoặc chế độ trang AI.'),{code:'SEND_NOT_READY'});
@@ -173,34 +177,25 @@
       // Recheck AFTER the editor appears; a late-mounted draft belongs to the user too.
       if(message.preserveDraft){
         if(first(a.busy))throw new Error('AI đang tạo câu trả lời; không điền thêm prompt.');
-        if(inputText(element)&&inputText(element)!==normalizeText(message.prompt))throw new Error('Ô nhập AI có nội dung chưa gửi. Kiểm tra nội dung đó rồi tiếp tục.');
+        if(inputText(element)&&!promptMatches(element,message)&&
+          !globalThis.storyForgePaste?.ownsDraft(element,message.prompt,message.jobKey))throw new Error('Ô nhập AI có nội dung chưa gửi. Kiểm tra nội dung đó rồi tiếp tục.');
       }
-      if(inputText(element)===normalizeText(message.prompt))return {message:'Prompt đã có sẵn trong ô nhập.'};
-      element.focus();
-      if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
-        Object.getOwnPropertyDescriptor(element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set.call(element, message.prompt);
-        element.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:message.prompt}));
-      } else {
-        // Native editing preserves line breaks and updates rich-editor state.
-        // Assigning textContent collapses multiline prompts in contenteditables.
-        const selection=window.getSelection(),range=document.createRange();
-        range.selectNodeContents(element);
-        selection.removeAllRanges();selection.addRange(range);
-        if(!document.execCommand('insertText',false,message.prompt.replace(/\r\n?/g,'\n'))){
-          throw new Error('Không điền được ô soạn thảo AI. Hãy dán prompt thủ công rồi tiếp tục.');
-        }
-      }
-      element.dispatchEvent(new Event('change', {bubbles:true}));
-      // Let the provider reconcile its editor model before checking/sending.
-      await new Promise(resolve=>setTimeout(resolve,350));
+      if(promptMatches(element,message))return {message:'Prompt đã có sẵn trong ô nhập.'};
+      if(!globalThis.storyForgePaste)throw new Error('Reload Browser Bridge để áp dụng cách nhập bằng Paste.');
+      const filled=await globalThis.storyForgePaste.prepare(element,message.prompt,{jobKey:message.jobKey,
+        getField:()=>promptField(a),allowAttachment:a.host==='chatgpt.com',validate:()=>{
+          check();if(first(a.busy))throw new Error('AI đang tạo câu trả lời; chưa Paste prompt.');
+          if(promptField(a)!==element)throw transient('Ô soạn thảo vừa tải lại. Đang chờ trang ổn định.','EDITOR_CHANGED');
+        }});
+      if(filled.ready===false)return filled;
       check();
       const current=promptField(a);
       if(!element.isConnected||current!==element)throw transient('Ô soạn thảo vừa tải lại. Đang kết nối lại để điền prompt.','EDITOR_CHANGED');
-      if(inputText(current)!==normalizeText(message.prompt)){
+      if(!promptMatches(current,message)){
         if(!inputText(current))throw transient('Trang AI chưa giữ nội dung vừa nhập. Đang chờ rồi điền lại.','EDITOR_CHANGED');
         throw new Error('Nội dung trong ô nhập không khớp prompt. Kiểm tra tab AI để tránh ghi đè bản nháp.');
       }
-      return {message:'Prompt filled. Review the page before Send / Run.'};
+      return {message:filled.mode==='attachment'?'Tệp prompt đã sẵn sàng. Kiểm tra trước khi gửi.':'Prompt đã Paste đầy đủ. Kiểm tra trước khi Send / Run.'};
     }
     if (message.action === 'send') {
       if(first(a.busy))throw new Error('AI đang tạo câu trả lời; không gửi thêm.');

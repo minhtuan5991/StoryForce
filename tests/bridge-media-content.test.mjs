@@ -2,8 +2,9 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {JSDOM} from '../frontend/node_modules/jsdom/lib/api.js';
+import {installPasteFixture} from './helpers/media-paste-fixture.mjs';
 
-const adapter=readFileSync(new URL('../browser-extension/media-content.js',import.meta.url),'utf8');
+const adapter='('+installPasteFixture.toString()+')(window);\n'+readFileSync(new URL('../browser-extension/media-content.js',import.meta.url),'utf8');
 
 test('AI Studio downloads the assembled WAV, reads its visible duration, and waits for the total to stop changing',async()=>{
   const dom=new JSDOM(`<main><textarea>At 11:47 p.m., the story begins.</textarea>

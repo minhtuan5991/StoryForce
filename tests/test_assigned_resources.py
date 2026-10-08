@@ -1,3 +1,4 @@
+from backend.project_storage import project_path
 import io
 import json
 
@@ -73,7 +74,7 @@ def test_delete_assets_clears_maps_and_logo_keeps_shared_and_rendered_files(clie
     base='/api/projects/'+project['id']
     assert client.patch(base+'/render-options',json={'overlay':True,'logo_asset_id':image['id']}).status_code==200
     root=client.app.state.root
-    rendered=root/'projects'/project['id']/'render'/'final.mp4';rendered.write_bytes(b'previous video')
+    rendered=project_path(root, project['id'])/'render'/'final.mp4';rendered.write_bytes(b'previous video')
     result=client.post(base+'/assets/delete',json={'ids':[audio['id'],image['id']]}).json()
     assert result['count']==2
     assert not (root/audio['path']).exists() and not (root/image['path']).exists()

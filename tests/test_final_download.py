@@ -1,3 +1,4 @@
+from backend.project_storage import project_path
 from pathlib import Path
 
 from backend.models import Artifact, Project
@@ -6,7 +7,7 @@ from backend.models import Artifact, Project
 def rendered(client, project, name='Mystery project'):
     with client.app.state.database.session() as db:
         p = db.get(Project, project['id']); p.title = name; p.story_version = 1
-        file = client.app.state.root / 'projects' / p.id / 'render' / 'v1' / 'run' / 'final_video.mp4'
+        file = project_path(client.app.state.root, p.id) / 'render' / 'v1' / 'run' / 'final_video.mp4'
         file.parent.mkdir(parents=True, exist_ok=True); file.write_bytes(b'final MP4 ' + p.id.encode())
         db.add(Artifact(project_id=p.id, kind='render_report', story_version=1,
                         content={'file': str(file.relative_to(client.app.state.root)), 'story_version': 1}))

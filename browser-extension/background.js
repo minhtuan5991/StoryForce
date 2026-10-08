@@ -42,7 +42,7 @@ async function handle(message) {
   const tab=await chrome.tabs.get(tabId);
   if (!ALLOWED.includes(new URL(tab.url).hostname)) throw new Error('The tab is no longer on a supported provider.');
   await ensureContent(tabId);
-  const result=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:message.action,prompt:job.prompt});
+  const result=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:message.action,jobKey:job.id+':'+job.attempt,prompt:job.prompt});
   if (!result?.ok) {
     await request('/jobs/'+job.id+'/status','POST',{step:result?.error || 'Bridge unavailable; use manual mode'});
     throw new Error(result?.error || 'Reload this provider page to activate the extension.');
@@ -69,7 +69,7 @@ async function ensureContent(tabId){
   }
   const tab=await chrome.tabs.get(tabId);
   if(!ALLOWED.includes(new URL(tab.url).hostname))throw new Error('Unsupported provider tab');
-  await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},files:['adapters.js','media-content.js','content.js']}));
+  await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},files:['adapters.js','paste.js','media-content.js','content.js']}));
 }
 async function captureRaw(tabId,target){
   const tab=await chrome.tabs.get(tabId);

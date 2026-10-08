@@ -1,3 +1,4 @@
+from backend.project_storage import project_path
 import pytest
 
 from conftest import job
@@ -21,7 +22,7 @@ def finished(client, project):
         p.publish = {'final_reviewed': True, 'url': 'https://youtube.com/watch?v=finished'}
         p.settings = {'visual_options': {'mode': 'custom', 'image_count': 2, 'video_count': 1},
                       'render_options': {'overlay': True, 'logo_asset_id': 'old-logo'}, 'media_automation': {'old': 1}}
-        file = client.app.state.root / 'projects' / p.id / 'render' / 'v1' / 'final_video.mp4'
+        file = project_path(client.app.state.root, p.id) / 'render' / 'v1' / 'final_video.mp4'
         file.parent.mkdir(parents=True)
         file.write_bytes(b'original completed video')
         report = Artifact(project_id=p.id, kind='render_report', story_version=1,

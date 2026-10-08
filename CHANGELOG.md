@@ -1,3 +1,16 @@
+## v3.1.27 — Thư mục theo tên truyện, dọn tài nguyên và nhịp mở đầu
+
+- Đặt tên thư mục Projects theo tên truyện tiếng Anh, giữ ID và liên kết dự án. Tự chuyển thư mục cũ cùng đường dẫn media/báo cáo; khôi phục tên thư mục dự án đã xóa từ bản sao lưu khi có. Không sao chép hoặc mã hóa lại video. Tên trùng được thêm mã phân biệt; tên làm việc chưa có tiêu đề tiếng Anh dùng `Story Project` tạm thời.
+- Thêm **Xóa dữ liệu Tài Nguyên** ở Tổng quan: xem trước số file/dung lượng, xác nhận rồi dọn media, cache render, gói xuất và bản sao Downloads/CapCut đã được xác minh thuộc dự án. Giữ video final hiện tại, hồ sơ truyện, bản nháp, lịch sử ý tưởng và thông tin xuất bản. File dùng chung, liên kết ổ đĩa và bản gốc chưa được ghi nhận được giữ lại.
+- Chặn dọn hoặc đổi tên khi dự án đang chạy. Báo file bị khóa để dọn lại; phục hồi đường dẫn khi quá trình đổi thư mục hoặc chuyển final bị gián đoạn. Sau khi dọn, vẫn tải final và chọn ý tưởng khác được; cần bấm **Tạo lại tài nguyên** trước khi dựng/xuất CapCut tiếp.
+
+- Bổ sung Bridge **1.1.28**: nhập bằng Copy/Paste thật qua clipboard ở ChatGPT, Gemini, Flow và Google AI Studio. Kiểm tra đủ nội dung, giữ bản nháp của người dùng, thay đúng prompt scene trước và không gửi lặp. Nếu ChatGPT chuyển văn bản dán thành tệp, chờ xử lý xong và thêm câu lệnh ngắn trước khi gửi; tệp lỗi/bị gỡ hoặc clipboard thay đổi thì dừng để kiểm tra. Cần Reload Bridge để áp dụng quyền clipboard mới.
+- Đưa hook/câu hỏi/nghịch lý vào 0–10 giây và xung đột/hệ quả vào 10–30 giây, kịch tính hóa vừa phải bằng hành động và lựa chọn có cơ sở. Đặt cao trào chính và plot twist khoảng 45–55%; phần sau giải thích nguyên nhân, hệ quả và kết thúc, có thể kết mở hợp lý.
+- Đồng bộ hướng dẫn ở Ý tưởng, Hồ sơ, Dàn ý, mở đầu, Bản nháp và kiểm định giữ người xem. Kiểm định nhận đoạn giữa/cuối từ đúng bản nháp, dùng thời gian ước lượng từ số từ/WPM. Không tự viết lại truyện cũ hoặc bảo đảm hiệu quả giữ chân người xem.
+- Kế hoạch hình ảnh mới dành 2–3 video ở chế độ chuẩn, đặt các clip 10 giây liên tiếp ngay từ 0:00. Giữ chính xác số lượng tùy chỉnh; video bổ sung nằm phía sau. Ảnh phủ phần còn lại, gồm cao trào và kết thúc. Đồng bộ âm thanh thật giữ các clip mở đầu nối tiếp và xử lý ranh giới từ không trùng chính xác 10 giây.
+- Tạo một ảnh tham chiếu nhân vật chính trước các clip khi chưa có tham chiếu hợp lệ; dùng chung cho Gemini/Flow và giữ ngoài timeline. Tiếp tục dùng cùng chat/project và khuôn mặt, ngoại hình, trang phục chuẩn. Tham chiếu lỗi được báo ở Tài nguyên, không nhận nhầm file hay tự gửi lặp lại.
+- Giữ nguyên tài nguyên/timeline đã tạo, cài đặt render và các điểm xác nhận; dọn media chỉ thực hiện khi người dùng xác nhận thao tác mới.
+
 ## v3.1.26 — Nhập Hồ sơ truyện và ưu tiên Ý tưởng 1 (local)
 
 - Thêm “Đã có Hồ sơ truyện” khi tạo dự án. Khóa hai bước Định hướng/Ý tưởng, nhập JSON bằng nội dung dán hoặc file, kiểm tra và lưu hồ sơ rồi tiếp tục từ Dàn ý.

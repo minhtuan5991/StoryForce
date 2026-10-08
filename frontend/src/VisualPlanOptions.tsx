@@ -5,7 +5,7 @@ import {Button,Field,Modal} from './components';
 import {tr} from './i18n';
 
 export function VisualPlanOptions({project,active,act,run}:{project:Row,active:boolean,act:(fn:()=>Promise<any>,message?:string)=>Promise<any>,run:(payload?:Row)=>void}){
-  const budget=project.visual_budget||{mode:'standard',image_count:7,video_count:1,standard:{image_count:7,video_count:1},minimum:{image_count:4,video_count:1}};
+  const budget=project.visual_budget||{mode:'standard',image_count:6,video_count:2,standard:{image_count:6,video_count:2},minimum:{image_count:3,video_count:1}};
   const saved=JSON.stringify(project.settings?.visual_options||{});
   const [options,setOptions]=useState<Row>({mode:budget.mode,image_count:budget.image_count,video_count:budget.video_count}),[busy,setBusy]=useState(false);
   const [autoCreate,setAutoCreate]=useState(true),[confirm,setConfirm]=useState(false);
@@ -30,6 +30,7 @@ export function VisualPlanOptions({project,active,act,run}:{project:Row,active:b
       <Field label={tr('Video count')}><input aria-label={tr('Video count')} type="number" min={0} max={199} step={1} readOnly={options.mode!=='custom'} value={counts.video_count??''} onChange={e=>setOptions({...options,video_count:e.target.value===''?null:Number(e.target.value)})}/></Field>
     </div>
     <p className="muted">{tr('Minimum mode uses about half the standard images and videos, rounded up, and focuses on key story beats. Images hold longer; scene videos never loop.')}</p>
+    <p className="notice compact">{tr('New plans start at 0:00 with up to three consecutive 10-second videos. Standard mode uses 2–3; custom counts remain exact and additional videos appear later. Images cover the rest of the story.')}</p>
     {project.scenes.length>0&&<p className="muted">{tr('Creating a new plan replaces scene assignments. Uploaded resource files are kept.')}</p>}
     <label className="check-field"><input type="checkbox" checked={autoCreate} onChange={e=>setAutoCreate(e.target.checked)}/>{tr('Automatically create and download after this plan')}</label>
     {ttsBusy&&<p className="muted">{tr('Narration is running. This plan will wait until all audio items are completed or skipped.')}</p>}
@@ -38,6 +39,7 @@ export function VisualPlanOptions({project,active,act,run}:{project:Row,active:b
   </fieldset>{confirm&&<Modal title={tr('Confirm image and video counts')} onClose={()=>{if(!busy)setConfirm(false)}}>
     <p><strong>{counts.image_count} {tr('images')} · {counts.video_count} {tr('videos')} + 1 {tr('thumbnail')}</strong></p>
     <p>{tr('Thumbnail is created first. Images and videos start only after this count confirmation and after narration finishes.')}</p>
+    <p>{tr('If opening videos need a character reference, one main-cast reference image is created before the clips and shared by Gemini and Flow. It is saved separately and is not included in the timeline or scene counts.')}</p>
     <p>{tr('Video creation uses Flow credits at the rate shown on its page.')}</p>
     <div className="modal-actions"><Button disabled={busy} onClick={()=>setConfirm(false)}>{tr('Cancel')}</Button><Button primary disabled={busy} onClick={generate}>{tr('Confirm counts and create resources')}</Button></div>
   </Modal>}</>;

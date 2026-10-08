@@ -1,7 +1,8 @@
 # StoryForge US · Premise Mini Test
-Template version: 1.0
+Template version: 1.1
 
 Choose the top 3 qualified candidates. Write a genuine 300–500 word opening for each and a 30-second hook. Do not select on behalf of the user.
+Within that hook, introduce a concrete anomaly/contradiction and an apparent question in 0–10s, then conflict, stakes and a consequential choice in 10–30s. Dramatize moderately without changing story facts. The opening creates the question; it does not reveal the main midpoint twist. Avoid a background-heavy reset afterward.
 
 When workflow mode is auto, always include Idea 1 (premises[0]) and up to two strongest other qualified
 candidates. Automatic selection is performed by the app; preserve the exact premise IDs. For fewer than

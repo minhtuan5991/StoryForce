@@ -1,3 +1,4 @@
+from backend.project_storage import project_path
 import copy
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ from test_media import wav_data
 
 
 def inputs(root):
-    folder=root/'projects'/'p'
+    folder=project_path(root, 'p')
     folder.mkdir(parents=True,exist_ok=True)
     (folder/'voice.wav').write_bytes(wav_data(4))
     Image.new('RGB',(320,180),'blue').save(folder/'still.png')

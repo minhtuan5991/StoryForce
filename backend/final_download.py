@@ -6,6 +6,8 @@ from pathlib import Path
 from . import media_automation as download_paths
 from .media import project_folder, safe_path
 from .models import Project, uid
+from .project_storage import project_path
+from .resource_cleanup import archived
 from .workflow import latest
 
 
@@ -17,7 +19,8 @@ def save_final(workflow, project_id):
             project = db.get(Project, project_id)
             if not project:
                 raise ValueError('Project not found')
-            render_root = project_folder(workflow.root, project_id) / 'render'
+            storage_root = project_path(workflow.root, project_id)
+            render_root = storage_root / 'render'
             report = latest(db, project_id, 'render_report')
             if report and report.story_version != project.story_version:
                 raise ValueError('Render the current story before downloading its final video')
@@ -25,7 +28,8 @@ def save_final(workflow, project_id):
             if report and report.content.get('file'):
                 source = safe_path(workflow.root, report.content['file'])
             source = source.resolve()
-            if not source.is_relative_to(render_root.resolve()) or source.name != 'final_video.mp4' or not source.is_file():
+            allowed_root = storage_root.resolve() if archived(project) else render_root.resolve()
+            if not source.is_relative_to(allowed_root) or source.name != 'final_video.mp4' or not source.is_file():
                 raise ValueError('Final video not generated for this project yet')
             folder = download_paths.project_download_folder(db, project)
             download_root = download_paths.downloads_root().resolve()

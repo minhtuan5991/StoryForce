@@ -17,6 +17,7 @@ from .config import APP_ROOT, RESOURCE_ROOT, safe_path
 from .intelligence import sentence_units, words
 from .visual_planning import balance_scene_ranges, DEFAULT_VIDEO_SECONDS
 from .production_extras import thumbnail_prompt
+from .project_storage import project_path
 
 MEDIA_FOLDERS = {"audio": "audio", "image": "images", "video": "videos", "music": "music", "ambient": "ambient", "sfx": "sfx"}
 EXTENSIONS = {".wav": "audio", ".mp3": "audio", ".m4a": "audio", ".flac": "audio", ".ogg": "audio", ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".mp4": "video", ".mov": "video", ".webm": "video"}
@@ -88,7 +89,7 @@ def map_asset(name: str) -> tuple[str | None, int | None]:
 
 
 def project_folder(root: Path, project_id: str) -> Path:
-    folder = safe_path(root / "projects", project_id)
+    folder = project_path(root, project_id)
     for name in ("audio", "images", "videos", "music", "ambient", "sfx", "subtitles", "render"):
         (folder / name).mkdir(parents=True, exist_ok=True)
     return folder
@@ -154,7 +155,7 @@ def timeline_from_audio(chunks: list[dict], scenes: list[dict], assets: list[dic
         return offset
 
     ordered = sorted(scenes, key=lambda s: s["number"])
-    policy = all(s.get('continuity', {}).get('timing_policy', {}).get('version') == 1 for s in ordered) and bool(ordered)
+    policy = all(s.get('continuity', {}).get('timing_policy', {}).get('version') in (1, 2) for s in ordered) and bool(ordered)
     spans = None
     if policy:
         # Existing projects retain their fixed video anchors. New plans reserve
@@ -171,6 +172,8 @@ def timeline_from_audio(chunks: list[dict], scenes: list[dict], assets: list[dic
                             if asset and asset['kind'] == 'video'
                             else 0 if asset and asset['kind'] == 'image'
                             else DEFAULT_VIDEO_SECONDS if scene['visual_type'] == 'VIDEO' else 0)
+            if (scene.get('continuity') or {}).get('timing_policy', {}).get('version') == 2 and scene['visual_type'] == 'VIDEO':
+                minimums[-1] = max(DEFAULT_VIDEO_SECONDS, minimums[-1])
         fixed = any(asset_map.get(s.get('asset_id'), {}).get('kind') == 'video' and (s.get('duration') or 0) > 0 for s in ordered)
         if fixed:
             spans = [{'start_word': s['start_word'], 'end_word': s['end_word'],
@@ -201,6 +204,8 @@ def fit_visual_timeline(scenes, baseline, assets, total, ending_asset_id=None):
     """Video starts are anchors; only the images between anchors absorb time."""
     asset_map = {a['id']:a for a in assets}
     result, pending, cursor = [], [], 0.0
+    opening_policy = (scenes[0].get('continuity') or {}).get('timing_policy', {}) if scenes else {}
+    opening_count = opening_policy.get('opening_video_count', 0) if opening_policy.get('version') == 2 else 0
 
     def fill_images(end):
         nonlocal cursor, pending
@@ -218,7 +223,7 @@ def fit_visual_timeline(scenes, baseline, assets, total, ending_asset_id=None):
             cursor += duration
         pending = []
 
-    for scene, row in zip(scenes, baseline):
+    for i, (scene, row) in enumerate(zip(scenes, baseline)):
         asset = asset_map.get(scene.get('asset_id'))
         if not asset or asset['kind'] != 'video':
             pending.append(row)
@@ -226,6 +231,16 @@ def fit_visual_timeline(scenes, baseline, assets, total, ending_asset_id=None):
         # Preserve a previously synced start. Unsynced scenes use their original
         # narration range; resizing adjacent images never moves this anchor.
         start = scene.get('offset',0) if (scene.get('duration') or 0)>0 else row['offset']
+        if opening_policy.get('version') == 2 and not pending and (i == 0 or result and result[-1].get('media_kind') == 'video'):
+            # Word boundaries are discrete; native opening clips play back-to-back
+            # rather than leaving a fraction-of-a-word gap without an image.
+            start = cursor
+        elif (opening_policy.get('version') == 2 and i >= opening_count and pending and not (scene.get('duration') or 0) > 0
+              and all(asset_map.get(s.get('asset_id'), {}).get('kind') == 'video' for s in scenes[i:])):
+            # A custom plan may end with several videos. Anchor that final group
+            # against the narration end so rounding leaves no unfilled tail.
+            tail = [asset_map[s['asset_id']] for s in scenes[i:]]
+            start = total - sum(float(a.get('metadata_json', {}).get('video_duration') or a.get('duration') or 0) for a in tail)
         duration = float(asset.get('metadata_json',{}).get('video_duration') or asset.get('duration') or 0)
         if duration <= 0 or not math.isfinite(duration):
             raise ValueError(f"Scene {scene['number']} has no playable video duration")

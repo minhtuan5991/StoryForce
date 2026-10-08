@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import re
+from .opening_policy import retention_map
 
 
 def digest(value) -> str:
@@ -38,8 +39,7 @@ def duration_profile(minutes: float, wpm: int = 150) -> dict:
             "word_range": [round(target * .92), round(target * 1.08)],
             "characters": characters, "max_subplots": subplots, "scenes": scenes, "twists": twists,
             "tts_chunks": max(1, round(minutes / 3)),
-            "retention_map": [{"label": label, "seconds": round(minutes * 60 * fraction)}
-                for label, fraction in [("Hook", 0), ("Question", .05), ("Conflict", .2), ("Escalation", .4), ("Reveal", .65), ("Climax", .8), ("Payoff", .95)]]}
+            "retention_map": retention_map(minutes * 60)}
 
 
 def recommend_duration(premise: dict) -> dict:

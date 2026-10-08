@@ -179,7 +179,12 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
           return;
         }
         await stillEnabled();
-        const {baseline}=await message('auto-prepare');
+        const prepared=await message('auto-prepare');
+        if(prepared.ready===false){
+          if(state.message!==prepared.message)await status(prepared.message||'Đang chờ Paste prompt hoàn tất; chưa gửi.');
+          return;
+        }
+        const {baseline}=prepared;
         state=await write({...state,phase:'prepared',baseline});
         await status('Đã điền prompt. Đang gửi tự động…');
       }

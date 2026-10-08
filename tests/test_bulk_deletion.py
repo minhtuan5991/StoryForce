@@ -1,3 +1,4 @@
+from backend.project_storage import project_path
 import pytest
 
 from backend.models import Channel, Source, Project, Artifact, Job, Novelty, Premise, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, CalendarEntry
@@ -7,7 +8,7 @@ from test_deletion import add, preview, confirm
 def test_project_batch_cascades_only_owned_records_and_keeps_files(client, project):
     second = client.post('/api/projects', json={'channel_id': project['channel_id'], 'title': 'Second'}).json()
     untouched = client.post('/api/projects', json={'channel_id': project['channel_id'], 'title': 'Keep'}).json()
-    media = client.app.state.root / 'projects' / project['id'] / 'keep.wav'
+    media = project_path(client.app.state.root, project['id']) / 'keep.wav'
     media.parent.mkdir(parents=True, exist_ok=True)
     media.write_bytes(b'original media file')
     owned = [

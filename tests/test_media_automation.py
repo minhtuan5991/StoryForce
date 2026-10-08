@@ -143,7 +143,8 @@ def test_new_visual_direction_matches_copy_and_batch_preserves_existing_plan(cli
     assert reference['visual_focal_point'] == 'A numbered room on an architectural plan'
     image, video = detail['scenes']
     assert 'photorealistic' in image['generation_prompt'] and 'Ethan in a gray shirt' in image['generation_prompt']
-    assert video['generation_prompt'] == video['prompt'] + '\nAvoid: ' + video['negative_prompt']
+    assert video['prompt'] + '\nAvoid: ' + video['negative_prompt'] in video['generation_prompt']
+    assert '10 seconds' in video['generation_prompt'] and 'Do not morph the cast' in video['generation_prompt']
     preview = client.get(p['path'] + '/preview').json()
     start(client, p, 'visuals', **{k: preview[k] for k in ('confirmation', 'image_count', 'video_count')})
     detail = client.get('/api/projects/' + p['id']).json()

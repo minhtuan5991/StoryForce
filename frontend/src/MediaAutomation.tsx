@@ -48,6 +48,7 @@ export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'t
     {preview&&<Modal title={tr('Confirm image and video counts')} onClose={()=>{if(!busy)setPreview(null)}}>
       <p><strong>{preview.image_count} {tr('images')} · {preview.video_count} {tr('videos')} + 1 {tr('thumbnail')}</strong></p>
       <p>{tr('Thumbnail is created first. Scene resources follow the approved plan in order. Existing assigned files are kept unless you choose to generate them again.')}</p>
+      <p>{tr('If opening videos need a character reference, one main-cast reference image is created before the clips and shared by Gemini and Flow. It is saved separately and is not included in the timeline or scene counts.')}</p>
       <p>Flow: Video / {tr('Ingredients')} / 16:9 / Omni 1.1 Flash / 720p / 10 {tr('seconds')} / x1</p>
       <p className="muted">{tr('Video creation uses Flow credits at the rate shown on its page.')}</p>
       <p style={{overflowWrap:'anywhere'}}>{preview.download_path}</p>

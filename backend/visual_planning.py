@@ -47,10 +47,24 @@ def balance_scene_ranges(items, clock, minimums=None):
              and all(isinstance(s.get('start_word'), int) and isinstance(s.get('end_word'), int)
                      and s['start_word'] < s['end_word'] for s in items)
              and all(a['end_word'] == b['start_word'] for a, b in zip(items, items[1:])))
+    policy = (items[0].get('continuity') or {}).get('timing_policy', {})
+    opening = policy.get('opening_video_count', 0) if policy.get('version') == 2 else 0
     result, start = [], 0
     for i, item in enumerate(items):
         earliest = max(start + 1, bisect_left(clock, clock[start] + minimums[i] - 1e-7))
-        preferred = item['end_word'] if saved else round(total * (i + 1) / count)
+        if policy.get('version') == 2 and i == count - 1:
+            preferred = total
+        elif i < opening or policy.get('version') == 2 and item['visual_type'] == 'VIDEO':
+            # Ten-second opening clips must not inherit equal, minute-long spans.
+            preferred = earliest
+        elif policy.get('version') == 2:
+            images_left = sum(s['visual_type'] != 'VIDEO' for s in items[i:])
+            available = clock[-1] - clock[start] - sum(minimums[i+1:])
+            preferred = bisect_left(clock, clock[start] + available / max(1, images_left))
+        elif saved:
+            preferred = item['end_word']
+        else:
+            preferred = round(total * (i + 1) / count)
         end = max(earliest, min(preferred, latest[i + 1]))
         result.append({'start_word': start, 'end_word': end, 'narration_duration': clock[end] - clock[start]})
         start = end
@@ -59,7 +73,8 @@ def balance_scene_ranges(items, clock, minimums=None):
 
 def visual_budget(project, config, payload=None):
     total = min(200, max(2, round(sum(duration_profile(project['target_minutes'], project['wpm'])['scenes'])/2)))
-    videos = min(total-1, int(total*config['visual_video_ratio']))
+    ratio = config['visual_video_ratio']
+    videos = min(total-1, max(2, min(3, int(total*ratio)))) if ratio > 0 else 0
     standard = {'image_count':total-videos, 'video_count':videos}
     minimum = {'image_count':max(1, math.ceil(standard['image_count']/2)), 'video_count':math.ceil(videos/2)}
     options = {**((project.get('settings') or {}).get('visual_options') or {}), **(payload or {})}
@@ -78,7 +93,24 @@ def visual_budget(project, config, payload=None):
         chosen['image_count'] = count-chosen['video_count']
     else:
         chosen = minimum if mode == 'minimum' else standard
-    return {'mode':mode, **chosen, 'count':sum(chosen.values()), 'standard':standard, 'minimum':minimum}
+    return {'mode':mode, **chosen, 'count':sum(chosen.values()), 'standard':standard, 'minimum':minimum,
+            'opening_video_count': min(3, chosen['video_count'])}
+
+
+def opening_layout(budget, clock):
+    """Reserve the first clips at the opening, keeping exact user media counts."""
+    count, opening = budget['count'], budget['opening_video_count']
+    extras = budget['video_count'] - opening
+    remaining = count - opening
+    video_slots = set(range(opening))
+    video_slots.update(opening + (i + 1) * remaining // (extras + 1) for i in range(extras))
+    policy = {'version': 2, 'opening_video_count': opening}
+    items = [{'visual_type': 'VIDEO' if i in video_slots else 'IMAGE',
+              'continuity': {'timing_policy': policy}} for i in range(count)]
+    spans = balance_scene_ranges(items, clock)
+    return [{**span, 'scene_id': f'scene_{i+1:03}', 'visual_type': item['visual_type'],
+             'start_seconds': clock[span['start_word']], 'end_seconds': clock[span['end_word']]}
+            for i, (item, span) in enumerate(zip(items, spans))]
 
 
 def validate_visual_output(items, budget):

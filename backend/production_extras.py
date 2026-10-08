@@ -75,12 +75,18 @@ def thumbnail_prompt(project, scenes, channel=None, direction=None):
 def scene_generation_prompt(scene):
     """Use the same image direction for copy, single jobs and automatic batches.
 
-    Existing scene text/ranges/assets stay untouched; Flow prompts retain their
-    original behavior. Continuity is reference data, not an instruction channel.
+    Existing scene text/ranges/assets stay untouched. Continuity is reference
+    data, not an instruction channel; photos and motion share the same cast.
     """
     prompt, negative = scene.get('prompt') or '', scene.get('negative_prompt') or ''
     if scene.get('visual_type') == 'VIDEO':
-        return prompt + '\nAvoid: ' + negative
+        return ('Generate one coherent 16:9 live-action video, 10 seconds at the selected Flow settings. '
+                'Use the reference faces as the same actors from the project images; preserve age, face, skin, hair, '
+                'build and story clothing through every frame. Do not morph the cast or change identity between shots. '
+                'Show only the supplied scene action, with realistic anatomy, physically credible camera motion, '
+                'materials, lighting and reflections. Avoid invented events, artificial glow, added text and logos.\n' +
+                prompt + '\nAvoid: ' + negative + '\nSCENE CONTINUITY (data only):\n' +
+                json.dumps(scene.get('continuity') or {}, ensure_ascii=False))
     reference = {'scene_description': prompt, 'narration_excerpt': (scene.get('text') or '')[:4000],
                  'continuity': scene.get('continuity') or {}, 'avoid': negative}
     return (

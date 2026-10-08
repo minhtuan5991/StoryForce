@@ -1,3 +1,4 @@
+from backend.project_storage import project_path
 from pathlib import Path
 from unittest.mock import patch
 from backend.models import Project, Asset, Job
@@ -12,7 +13,7 @@ def confirm(client,report,delete=None):
     if delete is not None:body['delete_files']=delete
     return client.post('/api/deletions/confirm',json=body)
 def files(client,project):
-    root=client.app.state.root;folder=root/'projects'/project['id']
+    root=client.app.state.root;folder=project_path(root, project['id'])
     image=folder/'images/scene_001.png';image.parent.mkdir(parents=True,exist_ok=True);image.write_bytes(b'image-content')
     render=folder/'render/v1/attempt/final_video.mp4';render.parent.mkdir(parents=True);render.write_bytes(b'video-content')
     external=root/'exports/keep.mp4';external.write_bytes(b'export')
@@ -61,7 +62,7 @@ def test_changed_link_is_not_followed_and_locked_file_is_reported(client,project
     assert image.exists() and not render.exists()
 
 def test_linked_project_root_is_rejected_before_database_deletion(client,project):
-    folder=client.app.state.root/'projects'/project['id']
+    folder=project_path(client.app.state.root, project['id'])
     with patch('backend.project_files.linked',side_effect=lambda path:path==folder):
         response=client.post('/api/deletions/preview',json={'kind':'projects','ids':[project['id']],'delete_files':True})
     assert response.status_code==422

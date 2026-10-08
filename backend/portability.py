@@ -7,6 +7,7 @@ from pathlib import Path
 from .models import *
 from .config import safe_path
 from .youtube_metadata import upload_text, metadata_fingerprint
+from .project_storage import project_path
 
 
 def project_archive(db, root: Path, project, include_media=False):
@@ -37,7 +38,7 @@ def project_archive(db, root: Path, project, include_media=False):
             archive.writestr(f"story/tts_{chunk['number']:03}.txt",chunk["text"])
         for scene in related["visual_scenes"]:
             archive.writestr(f"story/scene_{scene['number']:03}_prompt.txt",scene["prompt"])
-        folder = root / "projects" / project.id
+        folder = project_path(root, project.id)
         for extension in ("srt","vtt"):
             path = folder/"subtitles"/f"captions.{extension}"
             if path.is_file():

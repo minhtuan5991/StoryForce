@@ -1,3 +1,13 @@
+## Nhịp truyện và video mở đầu v3.1.27
+
+Truyện mới mở bằng hook/câu hỏi/nghịch lý trong 0–10 giây, xung đột và lựa chọn có hệ quả trong 10–30 giây. Cao trào chính và plot twist ở khoảng 45–55% thời lượng; phần sau giải thích nguyên nhân, hệ quả và kết thúc. Kết mở chỉ dùng khi phù hợp, vẫn giải quyết tình huống/lựa chọn chính. Các mốc là định hướng theo số từ và WPM, không phải số liệu khán giả thực tế hoặc bảo đảm mọi bản AI sẽ đạt.
+
+Kế hoạch hình ảnh mới đặt các clip VIDEO 10 giây nối tiếp ngay từ 0:00: hai clip phủ 0–20 giây, ba clip phủ 0–30 giây. Chế độ chuẩn chọn 2–3 clip; chế độ tối thiểu hoặc tùy chỉnh vẫn giữ số lượng đã xác nhận. Nếu tùy chỉnh nhiều hơn ba video, ba clip đầu ở mở đầu, các clip còn lại theo kế hoạch phía sau. Không lặp hoặc cắt ngắn video; mỗi clip cần phần lời kể ít nhất bằng thời lượng gốc. Các scene ảnh phủ phần còn lại. Đồng bộ trong mỗi đoạn WAV vẫn là ước lượng theo trọng số từ, chưa phải căn chỉnh từng từ từ nhận dạng giọng nói.
+
+Khi dự án có video mở đầu nhưng chưa có ảnh tham chiếu hợp lệ, sau xác nhận số lượng tool tạo character_reference.png cho tối đa ba nhân vật chính theo thứ tự Hồ sơ, rồi gửi cùng tham chiếu cho Gemini và Flow. Đây là ảnh chuẩn nhân vật, không nằm trong timeline hay số lượng scene đã chốt. Có thể chọn tối đa ba ảnh tham chiếu riêng để thay thế ảnh tự động. Ngoại hình các nhân vật còn lại vẫn theo Hồ sơ. Tham chiếu giúp giảm thay đổi nhân vật nhưng cần kiểm tra ảnh/video thật do các dịch vụ AI sinh ra. Nếu tham chiếu lỗi, tool tiếp tục hàng đợi và báo thiếu ở Tài nguyên; chọn ảnh tham chiếu hợp lệ trước khi tạo lại các scene bị lệch.
+
+Truyện và kế hoạch đã tạo trước cập nhật được giữ nguyên. Muốn áp dụng bố cục mới cho truyện cũ, chủ động tạo lại Dàn ý/Bản nháp và kiểm định trước khi khóa; muốn thay kế hoạch hình ảnh, tạo kế hoạch mới và xác nhận lại số lượng. File tài nguyên cũ được giữ, nhưng việc thay kế hoạch sẽ thay các gán scene như hướng dẫn hiện có.
+
 ## Luồng mới v3.1.26
 
 **Dùng Hồ sơ truyện có sẵn:** Tạo dự án → Nguồn cảm hứng → Đã có Hồ sơ truyện → chọn thời lượng và tạo dự án. Ở Hồ sơ truyện bấm Nhập hồ sơ truyện, dán JSON hoặc chọn file .json. Có thể tải mẫu JSON và Kiểm tra JSON để xem trước. Hồ sơ cần summary, mảng characters có tên riêng và mảng world_rules; các trường khác được giữ nguyên. Bấm Lưu hồ sơ truyện, rồi Tiếp tục quy trình. Dàn ý và Bản nháp sử dụng đúng hồ sơ đã lưu; Định hướng và Ý tưởng truyện được bỏ qua. Muốn dùng hồ sơ khác sau khi đã tạo Dàn ý, hãy tạo dự án mới.
@@ -61,6 +71,10 @@ Sửa draft tạo version mới và mở khóa. Cần kiểm định lại; TTS/
 
 Nếu selector không còn đúng: dùng Copy prompt, mở provider, paste result JSON trong Activity & jobs. Các nút tạo/import tài nguyên thủ công vẫn dùng được. Từ bản 3.1.12, dùng Bridge 1.1.11 để tự tạo, tải và gán tài nguyên theo hướng dẫn bên dưới. Khi cập nhật Bridge, Reload tiện ích trong trang Extensions; chấp thuận quyền tải xuống nếu trình duyệt yêu cầu.
 
+Bridge **1.1.28** chuyển phần nhập ở ChatGPT, Gemini, Flow và Google AI Studio sang **Copy → Paste** qua clipboard, giữ xuống dòng và kiểm tra nội dung trước khi gửi. Bridge copy prompt vào clipboard của máy; không dùng sự kiện dán giả hoặc tự nhập lại từng ký tự. Sau cập nhật, **Reload** tiện ích để nạp quyền **clipboardRead / clipboardWrite**. Giữ tab AI mở trong lúc Bridge chuẩn bị yêu cầu.
+
+Nếu ChatGPT tự chuyển văn bản dán dài thành tệp, Bridge chờ tệp xử lý hoàn tất, thêm câu lệnh ngắn yêu cầu đọc tệp và trả về JSON rồi mới gửi. Không dán lại khi đang chờ tải tệp; tệp lỗi/bị gỡ, nội dung người dùng thay đổi hoặc clipboard không khớp sẽ dừng để kiểm tra. Việc tự chuyển sang tệp phụ thuộc trang AI, không phải tính năng chung của Gemini, Flow hay AI Studio. Paste không loại bỏ giới hạn dung lượng/ngữ cảnh của dịch vụ.
+
 Không bypass đăng nhập, CAPTCHA, quota hay paywall. Đóng popup trong lúc Wait có thể mất thông báo; job vẫn tồn tại và có thể Capture lại. Trang AI thực có thể yêu cầu bạn mở đúng chế độ sinh ảnh, speech hay video trước khi Fill.
 
 ## 6. TTS, hình ảnh và tài nguyên
@@ -120,6 +134,14 @@ Publish cung cấp project ZIP, ZIP gồm media và **Xuất project CapCut**. C
 
 Đổi data root: copy sang folder trống, giữ nguyên bản cũ, rồi restart ngay. Stop StoryForge dùng helper trong Start Menu. Logs có file riêng và xuất diagnostics ZIP.
 
+
+## Thư mục dự án và dọn tài nguyên — v3.1.27
+
+Thư mục trong **Projects** dùng tên truyện tiếng Anh. Dự án trùng tên có mã phân biệt; tên làm việc chưa có tiêu đề tiếng Anh dùng `Story Project` tạm thời. App tự chuyển thư mục mã cũ và cập nhật đường dẫn, giữ nguyên ID, media và liên kết. Đừng tự đổi tên hoặc xóa file `.storyforge-folders.json`; khi chuyển máy/data root cần sao chép toàn bộ thư mục Projects, gồm file này. Database backup chỉ chứa thông tin, không chứa media.
+
+Trong **Tổng quan**, bấm **Xóa dữ liệu Tài Nguyên** để xem trước số file và dung lượng rồi xác nhận. App giữ **video final hiện tại**, hồ sơ, bản nháp, lịch sử ý tưởng và thông tin xuất bản. Media, cache render, gói xuất và bản sao Downloads/CapCut được xác minh thuộc dự án sẽ bị xóa vĩnh viễn. Video final đã tải xuống, file dùng chung, liên kết ổ đĩa, cache trình duyệt và file cá nhân chưa được ghi nhận được giữ lại. Bản sao lưu database không phục hồi được media đã xóa.
+
+Phải hoàn tất/hủy tác vụ đang chạy và có video final hợp lệ trước khi dọn. File đang được app khác mở sẽ được báo để dọn lại sau. Sau khi dọn, vẫn tải final và dùng **Chọn ý tưởng khác** nếu video hiện hành đã được duyệt. Muốn dựng lại hoặc xuất CapCut, bấm **Tạo lại tài nguyên**, tạo/gán lại media còn thiếu rồi tiếp tục quy trình; app không tự tạo lại media ngay sau thao tác dọn.
 
 ## Metadata YouTube theo nội dung truyện — v3.1.25
 
