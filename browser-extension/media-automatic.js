@@ -115,6 +115,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         if(!tab){
           const saved=context.tabId;
           if(saved){try{tab=await chrome.tabs.get(saved)}catch{}}
+          if(tab&&!tab.active)tab=await chrome.tabs.update(tab.id,{active:true});
           if(tab&&state.provider==='flow'){
             const page=context.url;
             // Return from our own clip player to the same project for the next
@@ -127,7 +128,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
               throw new Error('Chưa có đường dẫn phiên đã gửi trước đó. Mở lại phiên cũ để giữ nhân vật; scene này cần xử lý thủ công.');
             // Only reopen a page we recorded for this project before Send.
             // A submitted job always stays on its original result-collection path.
-            const hosts={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],flow:['flow.google.com','labs.google']}[key];
+            const hosts={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],lyria:['gemini.google.com'],flow:['flow.google.com','labs.google']}[key];
             let url=job.url;
             try{if(savedPage&&hosts.includes(new URL(savedPage).hostname))url=savedPage}catch{}
             tab=await chrome.tabs.create({url,active:true});
@@ -137,7 +138,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
             sessions:{...state.sessions,[state.sessionKey]:{...context,tabId:tab.id}}});
         }
         const host=new URL(tab.url||job.url).hostname;
-        const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],flow:['flow.google.com','labs.google']}[state.provider];
+        const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],lyria:['gemini.google.com'],flow:['flow.google.com','labs.google']}[state.provider];
         if(!allowed.includes(host))throw new Error('Tab media đã chuyển sang trang khác. Mở lại dịch vụ để tiếp tục.');
         if(tab.status!=='complete'||tab.pendingUrl){await write({...state,pageReadyAt:0});return}
         const currentPage=providerPage(state.provider,tab.url);
@@ -222,7 +223,7 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       if(state.phase==='downloading'){
         if(state.downloadTicket&&readCapture){
           const url=await readCapture(state.tabId,state.downloadTicket);
-          if(!url&&state.provider==='flow')await call(state,'download-continue',{result:state.result});
+          if(!url&&['flow','lyria'].includes(state.provider))await call(state,'download-continue',{result:state.result});
           if(url&&url!==state.downloadUrl)state=await write({...state,downloadUrl:url});
           if(url&&!state.downloadId&&!state.downloadInitiated){
             state=await write({...state,downloadInitiated:true,downloadUrl:url});
@@ -258,7 +259,12 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       if(state.phase==='paused')return;
       const errors=(state.errors||0)+1;
       const transient=['TAB_READ_TIMEOUT','INPUT_NOT_READY'].includes(error.code)||/message.*closed|Receiving end does not exist|Could not establish connection|Failed to fetch/i.test(error.message||'');
-      if(transient&&errors<=8&&now()<state.deadline){
+      // A hydrated SPA may still need more than eight short polls to mount its
+      // settings/composer. Use the existing three-minute preparation deadline
+      // before Send; retain the failure limit while collecting sent media.
+      const waitingForInput=['opening','prepared'].includes(state.phase)&&!state.sentAt&&
+        ['INPUT_NOT_READY','TAB_READ_TIMEOUT'].includes(error.code)&&now()<state.preparationDeadline;
+      if(transient&&(errors<=8||waitingForInput)&&now()<state.deadline){
         await write({...state,errors,message:'Tab media đang tải hoặc mất kết nối. Đang chờ lại; không gửi trùng.'});
       }else{
         // Retry the existing full WAV download once, without another Run.

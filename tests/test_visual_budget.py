@@ -40,6 +40,28 @@ def test_saved_counts_reach_prompt_and_output_and_existing_scene_labels(client,p
     assert len(client.get(base).json()['scenes'])==5  # Selection does not silently regenerate or detach media.
 
 
+@pytest.mark.parametrize('mode, expected_videos', [('standard', 2), ('minimum', 1), ('efficient', 2)])
+def test_default_and_minimum_plans_keep_the_prompt_video_count(client, project, mode, expected_videos):
+    build_story(client, project)
+    base = '/api/projects/' + project['id']
+    selection = client.patch(base + '/visual-options', json={'mode': mode})
+    assert selection.status_code == 200, selection.text
+    result = job(client, project, 'visual_director')
+    assert sum(scene['visual_type'] == 'VIDEO' for scene in result['scenes']) == expected_videos
+    assert [scene['visual_type'] for scene in result['scenes'][:expected_videos]] == ['VIDEO'] * expected_videos
+    detail = client.get(base).json()
+    assert len(detail['scenes']) == len(result['scenes'])
+    assert detail['scenes'][0]['start_word'] == 0
+
+
+def test_efficient_preset_halves_images_but_preserves_opening_video_count():
+    p = {'target_minutes': 45, 'wpm': 150, 'settings': {}}
+    standard = visual_budget(p, DEFAULT_SETTINGS)
+    efficient = visual_budget(p, DEFAULT_SETTINGS, {'mode': 'efficient'})
+    assert efficient['image_count'] == math.ceil(standard['image_count'] / 2)
+    assert efficient['video_count'] == standard['video_count'] == 3
+
+
 def test_invalid_ai_count_keeps_existing_plan(client,project):
     build_story(client,project)
     job(client,project,'visual_director',{'count':2})

@@ -67,4 +67,5 @@ def video_encoding(encoder, intermediate=False):
     else:
         args+=['-preset','ultrafast' if intermediate else 'veryfast','-crf','18' if intermediate else '20']
         if not intermediate:args+=['-maxrate',maximum,'-bufsize',buffer]
+    if encoder == 'h264_nvenc' and intermediate:args+=['-forced-idr','1']
     return args+['-threads',str(cpu_threads())]

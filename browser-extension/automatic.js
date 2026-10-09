@@ -1,5 +1,5 @@
 // One persisted state machine, independent of the popup's lifetime.
-import {withTabReadDeadline} from './transport.js';
+import {withTabReadDeadline,isTabEditBusy} from './transport.js';
 export function parseResult(text) {
   const candidates = [text.trim(), ...Array.from(text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g), m=>m[1].trim())];
   const start=text.indexOf('{'),end=text.lastIndexOf('}');
@@ -43,11 +43,20 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
     try{await request('/jobs/'+state.jobId+'/status','POST',{step:message})}catch{}
     return true;
   }
+  async function waitForTabEdit(state){
+    if(now()>state.deadline)return false;
+    const tabEditChecks=(state.tabEditChecks||0)+1;
+    const delay=Math.min(8000,2000*2**Math.min(tabEditChecks-1,2));
+    const message='Trình duyệt đang tạm khóa thao tác tab. Tự chờ rồi mở lại tab AI; chưa gửi yêu cầu.';
+    await write({...state,tabEditChecks,tabEditRetryAt:now()+delay,message});
+    if(state.message!==message){try{await request('/jobs/'+state.jobId+'/status','POST',{step:message})}catch{}}
+    return true;
+  }
   const retryCode=state=>state.retryStopped?null:state.retryCode||(/chưa phải JSON hợp lệ/.test(state.message||'')?'INVALID_JSON':/Chưa có nút gửi khả dụng/.test(state.message||'')?'SEND_NOT_READY':null);
   const collectionExpired=state=>now()>(state.collectionDeadline||(state.deadline+collectionWindow(state)));
   const collectionTimeout=()=>new Error('Đã hết thời gian chờ tối đa để lấy kết quả. Kiểm tra tab AI rồi bấm Tiếp tục; không gửi lại prompt.');
   async function queueRetry(state,code){
-    const reason={INVALID_JSON:'câu trả lời không phải JSON.',SEND_NOT_READY:'chưa có nút gửi khả dụng.',RETENTION_EVIDENCE:'trích dẫn chưa khớp mốc thời gian; sẽ đánh giá lại từng khoảng.'};
+    const reason={INVALID_JSON:'câu trả lời không phải JSON.',SEND_NOT_READY:'chưa có nút gửi khả dụng.',RETENTION_EVIDENCE:'trích dẫn chưa khớp mốc thời gian; sẽ đánh giá lại từng khoảng.',THUMBNAIL_CONTRACT:'kế hoạch thumbnail chưa đúng cấu trúc hoặc trích dẫn; sẽ sửa theo hồ sơ truyện và danh sách câu trích dẫn gốc.'};
     const message='Tự động chờ 30 giây rồi thử lại bằng yêu cầu mới: '+reason[code];
     await write({...state,phase:'retry_wait',retryCode:code,retryAt:now()+30000,retryId:crypto.randomUUID(),message});
     try{await request('/jobs/'+state.jobId+'/status','POST',{step:message})}catch{}
@@ -63,7 +72,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
     // A prepared job has never authorized Send. Retry filling in a fresh tab,
     // preserving any draft in the previous tab (including one filled by 1.1.0).
     const reset=phase==='prepared'?{phase:'opening',tabId:undefined,baseline:undefined}:{phase};
-    return write({...state,...reset,enabled:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),collectionDeadline:phase==='submitted'?now()+collectionWindow(state):undefined,previous:'',stable:0,sendChecks:0,jsonChecks:0,jsonRetryAt:0,prepareChecks:0,prepareRetryAt:0,message:'Đang tiếp tục. Prompt đã gửi sẽ không được gửi lại.'},true);
+    return write({...state,...reset,enabled:true,deadline:now()+Math.max(30000,(state.timeout||180)*1000),collectionDeadline:phase==='submitted'?now()+collectionWindow(state):undefined,previous:'',stable:0,sendChecks:0,jsonChecks:0,jsonRetryAt:0,prepareChecks:0,prepareRetryAt:0,tabEditChecks:0,tabEditRetryAt:0,message:'Đang tiếp tục. Prompt đã gửi sẽ không được gửi lại.'},true);
   }
   async function tick(){
     if(busy)return;
@@ -72,10 +81,18 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
       state=await read();
       // A saved result is final even when closing its dedicated tab fails.
       if(state.phase==='closing'){
+        if(state.closeRetryAt&&now()<state.closeRetryAt)return;
         try{
           const tab=await chrome.tabs.get(state.tabId);
           if(state.ownedTab&&tab.url===state.resultUrl&&(!tab.pendingUrl||tab.pendingUrl===tab.url))await chrome.tabs.remove(state.tabId);
-        }catch{/* The tab may already be closed. Never resubmit an accepted result. */}
+        }catch(error){
+          if(isTabEditBusy(error)&&(state.closeEditChecks||0)<5){
+            await write({...state,closeEditChecks:(state.closeEditChecks||0)+1,closeRetryAt:now()+2000,
+              message:'Đã lưu kết quả. Trình duyệt tạm khóa tab; đang chờ đóng tab của tác vụ.'});
+            return;
+          }
+          // The tab may already be closed. Never resubmit an accepted result.
+        }
         await write({enabled:true,phase:'idle',message:'Đã nhận và lưu kết quả. Đang kiểm tra tác vụ tiếp theo…'});
         return;
       }
@@ -84,6 +101,32 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
       let job=items.find(j=>j.id===state.jobId&&j.attempt===state.attempt);
       if(state.jobId&&!job){state=await write({enabled:true,phase:'idle',message:'Tác vụ trước đã hoàn tất hoặc đã hủy.'})}
       if(state.phase==='paused'){
+        // Revalidate the existing metadata answer once after a schema fix. An
+        // already-sent claim can authorize collection only, never another Send.
+        if(!state.metadataRecovered&&job?.kind==='youtube_metadata'&&state.owner&&state.tabId&&state.baseline&&
+           state.resumePhase==='submitted'&&/validation errors? for YouTubeMetadata/.test(state.message||'')){
+          const {claim}=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
+          if(claim.phase==='sent'){
+            const message='Đang đọc lại thông tin YouTube đã tạo sau bản sửa lỗi; không gửi lại prompt.';
+            await write({...state,phase:'submitted',metadataRecovered:true,previous:'',stable:0,jsonChecks:0,jsonRetryAt:0,
+              pollRetryAt:0,deadline:now()+Math.max(30000,(state.timeout||180)*1000),collectionDeadline:now()+collectionWindow(state),message});
+            try{await request('/jobs/'+job.id+'/status','POST',{step:message})}catch{}
+          }
+          return;
+        }
+        // A legacy tab-strip rejection happened before Send. Recover the SAME
+        // attempt only after the backend confirms it has never authorized Send.
+        if(!state.tabEditRecovered&&job&&textJob(job)&&state.owner&&
+           ['opening','prepared'].includes(state.resumePhase)&&isTabEditBusy({message:state.message})){
+          const {claim}=await request('/jobs/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
+          if(claim.phase==='claimed'){
+            const message='Đang mở lại tab AI sau bản sửa lỗi khóa tab; chưa gửi yêu cầu.';
+            await write({...state,phase:'opening',tabEditRecovered:true,tabEditChecks:0,tabEditRetryAt:0,
+              prepareChecks:0,prepareRetryAt:0,deadline:now()+Math.max(30000,(state.timeout||180)*1000),message});
+            try{await request('/jobs/'+job.id+'/status','POST',{step:message})}catch{}
+          }
+          return;
+        }
         // Read the already-sent answer once after upgrading a legacy retention
         // pause. The app will accept valid evidence or authorize a bounded retry.
         if(!state.retentionRecovered&&job?.kind==='retention_audit'&&state.owner&&state.tabId&&state.baseline&&
@@ -149,13 +192,14 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
         return {...result,tabUrl:tab.url};
       };
       await stillEnabled();
+      if(['opening','prepared'].includes(state.phase)&&state.tabEditRetryAt&&now()<state.tabEditRetryAt)return;
       if(state.phase==='opening'){
         if(now()>state.deadline)throw new Error('Trang AI chưa tải ổn định trong thời gian chờ. Kiểm tra tab rồi bấm Tiếp tục; chưa gửi yêu cầu.');
         if(state.prepareRetryAt&&now()<state.prepareRetryAt)return;
         if(!state.tabId){
           // Dedicated job tabs never overwrite an existing user draft/conversation.
           const tab=await chrome.tabs.create({url:job.url,active:true});
-          state=await write({...state,tabId:tab.id,ownedTab:true,pageCompleteAt:undefined,pageCompleteUrl:undefined});
+          state=await write({...state,tabId:tab.id,ownedTab:true,tabEditChecks:0,tabEditRetryAt:0,pageCompleteAt:undefined,pageCompleteUrl:undefined});
           await chrome.storage.local.set({['tab_'+job.id]:tab.id});
         }
         const tab=await chrome.tabs.get(state.tabId);
@@ -259,6 +303,13 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
       }
     }catch(error){
       const current=await read();
+      if(['opening','prepared'].includes(current.phase)&&isTabEditBusy(error)){
+        if(await waitForTabEdit(current))return;
+        const message='Trình duyệt vẫn khóa thao tác tab sau thời gian chờ. Thả thao tác kéo tab, kiểm tra trình duyệt rồi bấm Tiếp tục; chưa gửi yêu cầu.';
+        await write({...current,phase:'paused',tabEditRecovered:true,resumePhase:current.phase,message});
+        if(current.jobId){try{await request('/jobs/'+current.jobId+'/status','POST',{step:'Tự động tạm dừng: '+message})}catch{}}
+        return;
+      }
       // Reconnect reads in the SAME tab/attempt. A closed message channel after
       // Send is not a reason to require a popup click or issue another prompt.
       if(current.phase==='submitted'&&!collectionExpired(current)&&
@@ -277,7 +328,7 @@ export function createAutomaticBridge({chrome,request,ensureContent,captureRaw,n
         if(current.jobId){try{await request('/jobs/'+current.jobId+'/status','POST',{step:'Tự động tạm dừng: Chưa kết nối được ô nhập AI sau các lần chờ. Tải lại tab rồi tiếp tục.'})}catch{}}
         return;
       }
-      if(['INVALID_JSON','SEND_NOT_READY','RETENTION_EVIDENCE'].includes(error.code)){
+      if(['INVALID_JSON','SEND_NOT_READY','RETENTION_EVIDENCE','THUMBNAIL_CONTRACT'].includes(error.code)){
         await queueRetry(current,error.code);return;
       }
       // Missing/local app connection is recoverable without re-sending anything.

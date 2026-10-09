@@ -51,5 +51,19 @@ test('real extension downloads generated page blobs without a file picker',async
     const picture=await worker.evaluate(async id=>(await (globalThis as any).chrome.downloads.search({id}))[0],fullId);
     expect(picture.filename.replaceAll('\\','/')).toContain('StoryForge QA/scene_001.png');
     expect((await fs.readFile(picture.filename)).toString()).toBe('owned full-size image');
+    await page.evaluate(()=>{document.getElementById('download')!.onclick=()=>{
+      const a=document.createElement('a');a.download='Lyria_track.mp3';a.href=URL.createObjectURL(new Blob(['ID3 owned synthetic music'],{type:'audio/mpeg'}));a.click();URL.revokeObjectURL(a.href);
+    }});
+    await page.evaluate(armDownloadCapture,'lyria');
+    await page.locator('#download').click();
+    const music=await page.evaluate(readDownloadCapture,'lyria');
+    const musicId=await worker.evaluate(async url=>{
+      await (globalThis as any).chrome.storage.local.set({mediaBridge:{phase:'downloading',downloadUrl:url,downloadAt:Date.now(),media:{folder:'StoryForge Background Music',filename:'bgm_mystery.mp3'}}});
+      return (globalThis as any).chrome.downloads.download({url,filename:'StoryForge Background Music/bgm_mystery.mp3',saveAs:false,conflictAction:'uniquify'});
+    },music);
+    await expect.poll(async()=>worker.evaluate(async id=>(await (globalThis as any).chrome.downloads.search({id}))[0]?.state,musicId)).toBe('complete');
+    const downloadedMusic=await worker.evaluate(async id=>(await (globalThis as any).chrome.downloads.search({id}))[0],musicId);
+    expect(downloadedMusic.filename.replaceAll('\\','/')).toContain('StoryForge Background Music/bgm_mystery.mp3');
+    expect((await fs.readFile(downloadedMusic.filename)).toString()).toBe('ID3 owned synthetic music');
   }finally{await context.close()}
 });

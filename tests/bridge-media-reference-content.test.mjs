@@ -41,6 +41,83 @@ test('references upload once and Send waits for completed previews; a removed re
   assert.equal((await f.execute('ready')).ready,false);
 });
 
+test('Gemini opens the localized uploads and tools menu before attaching a reference',async()=>{
+  const f=fixture();f.input.remove();let menus=0,pickers=0;
+  const form=f.d.querySelector('form'),add=f.d.createElement('button');
+  add.type='button';add.setAttribute('aria-label','Nội dung tải lên và công cụ');form.append(add);
+  add.onclick=()=>{
+    menus++;const menu=f.d.createElement('div');menu.setAttribute('role','menu');
+    const upload=f.d.createElement('button');upload.type='button';upload.textContent='Tải tệp lên';
+    upload.onclick=()=>{pickers++;form.append(f.input);menu.remove()};menu.append(upload);f.d.body.append(menu);
+  };
+  assert.equal((await f.execute('prepare')).ready,false);assert.equal(menus,1);assert.equal(pickers,0);
+  assert.equal((await f.execute('prepare')).ready,false);assert.equal(menus,1);assert.equal(pickers,1);
+  assert.equal((await f.execute('prepare')).ready,false);assert.equal(f.counts().uploads,1);assert.equal(f.counts().sends,0);
+  f.complete();await f.execute('prepare');f.advance(2200);await f.execute('prepare');
+  assert.equal((await f.execute('ready')).ready,true);await f.execute('send');assert.equal(f.counts().sends,1);
+});
+
+test('Flow selects Upload media inside its ingredients dialog instead of toggling the composer add control',async()=>{
+  const f=fixture('flow');f.input.remove();let uploads=0,adds=0;
+  const form=f.d.querySelector('form'),add=f.d.createElement('button');
+  add.type='button';add.setAttribute('aria-label','Thêm thành phần vào ô nhập câu lệnh');add.onclick=()=>adds++;form.append(add);
+  const dialog=f.d.createElement('div');dialog.setAttribute('role','dialog');
+  const upload=f.d.createElement('button');upload.type='button';upload.setAttribute('aria-label','Tải nội dung nghe nhìn lên');
+  upload.onclick=()=>{uploads++;form.append(f.input);dialog.remove()};dialog.append(upload);f.d.body.append(dialog);
+  assert.equal((await f.execute('prepare')).ready,false);assert.equal(uploads,1);assert.equal(adds,0);
+  await f.execute('prepare');assert.equal(f.counts().uploads,1);assert.equal(f.counts().sends,0);
+  f.complete();await f.execute('prepare');f.advance(2200);await f.execute('prepare');
+  assert.equal((await f.execute('ready')).ready,true);await f.execute('send');assert.equal(f.counts().sends,1);
+});
+
+test('Flow selects only its uploaded reference from the ingredients library before inspecting the inert composer',async()=>{
+  const f=fixture('flow');let selections=0,unrelated=0;
+  f.input.onchange=()=>{
+    f.d.querySelector('form').setAttribute('inert','');
+    const picker=f.d.createElement('div');picker.setAttribute('role','dialog');picker.setAttribute('aria-labelledby','ingredients-title');
+    picker.innerHTML='<h2 id="ingredients-title">Thêm thành phần vào dự án</h2><div role="list"><button role="option">another-user-image.jpg Hình ảnh</button><button role="option">'+f.ref.name+' Hình ảnh</button></div>';
+    const options=picker.querySelectorAll('[role=option]');options[0].onclick=()=>unrelated++;
+    options[1].onclick=()=>{selections++;picker.remove();f.d.querySelector('form').removeAttribute('inert');f.complete()};f.d.body.append(picker);
+  };
+  await f.execute('prepare');assert.equal(f.counts().sends,0);
+  assert.equal((await f.execute('setup')).ready,false);assert.equal(selections,1);assert.equal(unrelated,0);
+  await f.execute('prepare');f.advance(2200);await f.execute('prepare');
+  assert.equal((await f.execute('ready')).ready,true);await f.execute('send');assert.equal(f.counts().sends,1);
+});
+
+test('Flow recognizes adjacent filename/type spans and excludes a pre-existing duplicate after its library rerenders',async()=>{
+  const f=fixture('flow');let oldSelections=0,newSelections=0;
+  const picker=f.d.createElement('div');picker.setAttribute('role','dialog');picker.setAttribute('aria-label','Thêm thành phần vào dự án');
+  const option=url=>{const e=f.d.createElement('button');e.setAttribute('role','option');e.innerHTML='<img src="'+url+'"><span>'+f.ref.name+'</span><span>Hình ảnh</span>';return e};
+  picker.append(option('https://images.test/old-reference.jpg'));f.d.body.append(picker);
+  f.input.onchange=()=>{
+    picker.replaceChildren();const old=option('https://images.test/old-reference.jpg'),fresh=option('https://images.test/new-reference.jpg');
+    old.onclick=()=>oldSelections++;fresh.onclick=()=>{newSelections++;picker.remove();f.complete()};picker.append(old,fresh);
+  };
+  await f.execute('prepare');assert.equal((await f.execute('setup')).ready,false);
+  assert.equal(oldSelections,0);assert.equal(newSelections,1);assert.equal(f.counts().sends,0);
+});
+
+test('Flow selects all three uploaded references across a picker that closes after each choice; Send waits for the full set',async()=>{
+  const f=fixture('flow'),refs=[f.ref,{...f.ref,name:'sf_ref_aaaaaaaaaaaaaaaa.jpg'},{...f.ref,name:'sf_ref_bbbbbbbbbbbbbbbb.jpg'}];
+  let selected=0;const form=f.d.querySelector('form');
+  const open=()=>{
+    const picker=f.d.createElement('div');picker.setAttribute('role','dialog');picker.setAttribute('aria-label','Thêm thành phần vào dự án');
+    for(const ref of refs){
+      const option=f.d.createElement('button');option.setAttribute('role','option');option.textContent=ref.name+' Hình ảnh';
+      option.onclick=()=>{selected++;const image=f.d.createElement('img');image.src='blob:'+ref.name;f.d.querySelector('#attachments').append(image);picker.remove()};picker.append(option);
+    }
+    f.d.body.append(picker);
+  };
+  const add=f.d.createElement('button');add.type='button';add.setAttribute('aria-label','Thêm thành phần vào ô nhập câu lệnh');add.onclick=open;form.append(add);
+  f.input.onchange=open;
+  await f.execute('prepare',{references:refs});
+  for(let i=0;i<5;i++){assert.equal((await f.execute('setup')).ready,false);assert.equal(f.counts().sends,0)}
+  assert.equal(selected,3);assert.equal((await f.execute('ready')).ready,false);
+  await f.execute('prepare',{references:refs});f.advance(2200);await f.execute('prepare',{references:refs});
+  assert.equal((await f.execute('ready',{references:refs})).ready,true);await f.execute('send',{references:refs});assert.equal(f.counts().sends,1);
+});
+
 test('single-file pickers attach three references sequentially and never send a partly attached set',async()=>{
   const f=fixture();f.input.multiple=false;
   const references=[f.ref,{...f.ref,name:'sf_ref_aaaaaaaaaaaaaaaa.jpg'},{...f.ref,name:'sf_ref_bbbbbbbbbbbbbbbb.jpg'}];

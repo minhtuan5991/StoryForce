@@ -1,3 +1,29 @@
+## Nhạc nền và tài nguyên từ v3.1.32
+
+Ở bước Định dạng khi tạo dự án, chọn nhạc nền Google Lyria nếu muốn và chốt số ảnh/video (tối thiểu 3 ảnh, 2 video 10 giây). Gợi ý thay đổi theo thời lượng; số lượng đã tự nhập được giữ cho đến khi bấm Dùng số lượng gợi ý. Thumbnail và ảnh tham chiếu nhân vật tính riêng. Chế độ tự động chạy TTS, lập kế hoạch và tạo tài nguyên theo số lượng đã chọn; không chờ xác nhận số lượng lần nữa. Vẫn duyệt Khóa truyện, dựng bản đầu tiên và video cuối.
+
+Reload **Browser Bridge 1.1.31**, giữ đăng nhập Gemini với công cụ **Tạo nhạc** và bật tự động tạo/tải tài nguyên ở Bridge. App ưu tiên dùng nhạc có sẵn trong `background_music` ở thư mục dữ liệu; chỉ gửi một lượt tạo khi thư viện trống. Nhạc nổi hơn trong 30 giây đầu, sau đó giảm và lặp dưới lời kể. Dịch vụ tạo nhạc lỗi không chặn video: xem Tài nguyên > Nhạc nền dùng chung để thử lại hoặc nhập WAV/MP3. Nút dọn dữ liệu dự án không xóa nhạc dùng chung. Bật/tắt khi tạo dự án không thay đổi nhạc của dự án cũ.
+
+## TTS và thumbnail từ v3.1.29
+
+Reload **StoryForge US Browser Bridge 1.1.30** trong Extensions sau cập nhật. Bridge vẫn dùng khóa ghép nối đã lưu; không cần ghép lại. AI Studio chọn Enzo/Friendly rồi xác minh Gemini 3.8 Flash TTS, kể cả khi bảng Run settings đang thu gọn. Tab/dialog của dự án tiếp tục được sử dụng cho các đoạn sau.
+
+Từ **3.1.31**, phản hồi thông tin đăng YouTube có nhiều chi tiết truyện/ghi chú tham khảo vẫn được giữ đầy đủ trong giới hạn mới; giới hạn dữ liệu đăng và trích dẫn đúng truyện không đổi. Sau khi Reload Bridge, tác vụ metadata đã gửi và bị giới hạn trường cũ từ chối được đọc lại một lần trên đúng tab, không gửi thêm prompt. Lỗi Comet tạm khóa thao tác tab được chờ và thử lại trong thời hạn; nếu vẫn không mở được, kiểm tra trình duyệt rồi bấm Tiếp tục ở Bridge.
+
+Tab AI Studio mới có thể hiện màn hình giới thiệu; Bridge xử lý nút Continue của thông báo này trước khi thiết lập. Flow được chờ tải ô nhập/cài đặt tối đa ba phút, nhận nút “Đã chỉnh sửa xong” để trở về danh sách và tải đúng video vừa tạo. Dịch vụ/tab vẫn lỗi sau giới hạn sẽ được báo ở Tài nguyên để xử lý riêng.
+
+Gemini/Flow tiếp tục dùng ảnh nhân vật tham chiếu trong cùng phiên của dự án. Bridge nhận diện các nút tải mới “Nội dung tải lên và công cụ” và “Tải nội dung nghe nhìn lên”, chọn đúng ảnh vừa tải từ thư viện thành phần Flow, chờ ảnh trong ô nhập sẵn sàng rồi mới gửi. Tab của phiên được đưa lên khi bắt đầu tác vụ tiếp theo. Ở danh sách Flow thu gọn, menu tải được mở trên đúng video vừa tạo.
+
+Kế hoạch thumbnail nhận schema và các câu trích dẫn gốc. Nếu AI trả về JSON sai cấu trúc hoặc đổi từ trong trích dẫn, Bridge tự yêu cầu sửa trong giới hạn thử lại. Phản hồi vẫn phải đúng với bản nháp hiện tại mới được lưu. Tác vụ cũ đang tạm dừng có thể bấm **Tiếp tục sau khi kiểm tra tab AI** để nhận lại câu trả lời đã gửi; tài nguyên TTS/ảnh/video đã bị bỏ qua được báo tại Tài nguyên và cần tạo lại riêng.
+
+## Phân công AI từ v3.1.28
+
+ChatGPT xử lý phân tích DNA nguồn, tác vụ đánh giá phù hợp kênh, khám phá chủ đề, kiểm định dàn ý, kiểm định giữ người xem và lập kế hoạch scene/prompt ảnh-video. Các tác vụ viết truyện và metadata đang dùng ChatGPT tiếp tục dùng như trước. Điểm **Channel fit** trong màn hình nguồn vẫn được tính bằng heuristic cục bộ từ DNA, lịch sử và lịch nội dung.
+
+Gemini tiếp tục kiểm định truyện, giải quyết bất đồng, xác minh cuối và tạo ảnh. TTS vẫn dùng Google AI Studio; video vẫn dùng Flow. Giữ nguyên cấu trúc dữ liệu, giới hạn chỉnh sửa, điều kiện bằng chứng/thời gian và các điểm xác nhận.
+
+Tác vụ đã gửi sang Gemini trước khi cập nhật vẫn nhận kết quả từ Gemini. Lượt chạy mới hoặc chạy lại các tác vụ đã chuyển sẽ dùng ChatGPT. Không cần ghép Bridge lại hoặc tạo lại dữ liệu đã hoàn thành.
+
 ## Nhịp truyện và video mở đầu v3.1.27
 
 Truyện mới mở bằng hook/câu hỏi/nghịch lý trong 0–10 giây, xung đột và lựa chọn có hệ quả trong 10–30 giây. Cao trào chính và plot twist ở khoảng 45–55% thời lượng; phần sau giải thích nguyên nhân, hệ quả và kết thúc. Kết mở chỉ dùng khi phù hợp, vẫn giải quyết tình huống/lựa chọn chính. Các mốc là định hướng theo số từ và WPM, không phải số liệu khán giả thực tế hoặc bảo đảm mọi bản AI sẽ đạt.
@@ -111,6 +137,12 @@ sfx_001.wav
 Assets hỗ trợ drag/drop hoặc browse, bulk import, hash duplicate detection, preview và map thủ công. SFX có offset/volume. Tối đa hai background tracks music/ambient được mix trong bản này. Chọn filename rõ ràng để auto-map; nội dung giống hệt một asset cũ sẽ được nhận là duplicate, dùng Map để gán lại.
 
 ## 7. Timeline, render và QA
+
+Từ **3.1.30**, **Thiết lập → Sản xuất → Ghép timeline nhanh** bật mặc định. App chỉ render các khoảng fade ngắn, ghép phần còn lại của scene đã có chuyển động rồi xuất video với cấu hình chất lượng hiện có. Giữ pan/zoom, chuyển cảnh, waveform, logo, phụ đề và thời lượng. Nếu bộ mã hóa hoặc số khung hình của một đoạn không phù hợp, app tự chuyển về cách ghép cũ. CPU H.264 và NVIDIA dùng đường nhanh; Quick Sync giữ cách ghép tương thích. Có thể tắt tùy chọn để dùng cách cũ. Chỉ áp dụng cho lượt dựng mới, không làm mất hiệu lực video đã hoàn thành. Xem phép đo tại `docs/RENDER_WORKFLOW_3.1.30.md`.
+
+**Thiết lập → Chung → Rút gọn quy trình truyện** bật mặc định: dàn ý đã đạt được giữ lại, một hook được viết ngay trong bản nháp, kiểm định giữ người xem được gộp với đối chiếu ChatGPT. Hai kết quả vẫn được kiểm tra và lưu riêng. Nếu thiếu bằng chứng hoặc có sửa truyện sau đó, kiểm định giữ người xem chạy riêng. Giữ kiểm định truyện Gemini và xác minh cuối cả hai AI. Chế độ Tự động có kiểm duyệt vẫn chờ duyệt Khóa truyện, chốt tài nguyên và bắt đầu dựng. Tắt tùy chọn để quay lại các lượt AI đầy đủ; nút chỉnh sửa thủ công vẫn hoạt động.
+
+Để giảm thêm thời gian tạo tài nguyên, tại **Đạo diễn hình ảnh → Chế độ kế hoạch** chọn **Ít ảnh · giữ video mở đầu**: dùng khoảng một nửa ảnh, giữ số video mở đầu của chế độ chuẩn. Bạn cần xác nhận số lượng trước khi tạo. Ảnh được giữ lâu hơn với pan/zoom, vì vậy nên xem lại nhịp hình ở các đoạn cao trào. Có thể chọn 1 hoặc 3 ý tưởng khi chỉ cần một truyện; giữ nhóm lớn nếu muốn dùng tiếp cho nhiều dự án.
 
 **Timeline → Sync to real audio** dùng ffprobe đọc WAV thực. Phụ đề SRT/VTT được chia theo câu và phân bổ trong chunk theo số từ. Đây không phải forced alignment; kiểm tra lại phụ đề khi giọng đọc có nhiều khoảng nghỉ.
 

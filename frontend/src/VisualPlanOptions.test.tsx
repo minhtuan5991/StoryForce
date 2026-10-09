@@ -36,6 +36,20 @@ it('validates custom counts and does not generate when saving fails',async()=>{
   expect(run).not.toHaveBeenCalled();
 });
 
+it('keeps all opening videos in efficient mode and waits for count confirmation',async()=>{
+  vi.mocked(api).mockResolvedValue({mode:'efficient'});const run=vi.fn();
+  render(<VisualPlanOptions project={project} active={false} act={act} run={run}/>);
+  fireEvent.change(screen.getByRole('combobox',{name:'Visual plan mode'}),{target:{value:'efficient'}});
+  expect(screen.getByRole('spinbutton',{name:'Image count'})).toHaveValue(4);
+  expect(screen.getByRole('spinbutton',{name:'Video count'})).toHaveValue(3);
+  fireEvent.click(screen.getByRole('button',{name:'Create visual plan'}));
+  expect(run).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button',{name:'Confirm counts and create resources'}));
+  await waitFor(()=>expect(run).toHaveBeenCalledOnce());
+  expect(api).toHaveBeenCalledWith('/projects/p/visual-options','PATCH',expect.objectContaining({mode:'efficient'}));
+  expect(run).toHaveBeenCalledWith({automatic_resources:true,confirmed_image_count:4,confirmed_video_count:3});
+});
+
 it('allows reviewing new counts during automatic TTS and requires confirmation before queueing visuals',async()=>{
   vi.mocked(api).mockResolvedValue({mode:'custom'});const run=vi.fn();
   const running={...project,jobs:[{kind:'tts_context',status:'waiting_user',payload:{_media:{target_type:'chunk'}}}]};

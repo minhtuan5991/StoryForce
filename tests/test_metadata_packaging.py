@@ -61,6 +61,76 @@ def test_new_contract_roundtrip_preserves_legacy_fields_and_export(client, proje
     assert old['recommended_title'] == 'A warning' and 'VIDEO TITLE' in upload_text(old)
 
 
+def test_detailed_editorial_reply_preserves_anchors_genre_and_all_review_notes(client, project):
+    ready(client, project)
+    data = package()
+    anchors = [f'Story object {i}' for i in range(9)]
+    genre = 'Grounded maritime science-fiction mystery with atmospheric technological horror and survival suspense'
+    notes = [f'Review production detail {i} before uploading.' for i in range(16)]
+    data['story_packaging'].update(concrete_anchors=anchors, genre=genre)
+    data['review_notes'] = notes
+    result = validate_metadata(data, context(client, project), require_contract=True)
+    assert result['story_packaging']['concrete_anchors'] == anchors
+    assert result['story_packaging']['genre'] == genre and len(genre) == 101
+    assert result['review_notes'] == notes
+    assert all(note in upload_text(result, 'Detailed project', 1) for note in notes)
+    assert data['description'] != result['description']  # Fiction disclosure still applied.
+
+
+@pytest.mark.parametrize('field,value', [('concrete_anchors', ['anchor'] * 17), ('genre', 'g' * 301),
+                                       ('review_notes', [f'Note {i}' for i in range(33)])])
+def test_editorial_allowances_still_have_bounded_size(client, project, field, value):
+    ready(client, project)
+    data = package()
+    if field == 'review_notes':
+        data[field] = value
+    else:
+        data['story_packaging'][field] = value
+    with pytest.raises(ValueError):
+        validate_metadata(data, context(client, project), require_contract=True)
+
+
+def test_detailed_editorial_reply_does_not_weaken_upload_or_exact_evidence_validation(client, project):
+    ready(client, project)
+    data = package()
+    data['review_notes'] = [f'Review note {i}' for i in range(16)]
+    data['title_variants'][0]['evidence_quote'] = 'An invented event from a different project.'
+    with pytest.raises(ValueError, match='quote the current story'):
+        validate_metadata(data, context(client, project), require_contract=True)
+
+
+def test_bridge_accepts_detailed_metadata_and_exports_every_note_without_altering_the_story(client, project):
+    before = ready(client, project)
+    assert client.patch('/api/settings', json={'provider_mode': 'browser'}).status_code == 200
+    queued = client.post('/api/jobs', json={'kind': 'youtube_metadata', 'project_id': project['id'],
+                                         'payload': {'auto_continue': False}}).json()
+    with client.app.state.database.session() as db:
+        task = db.get(Job, queued['id'])
+        assert task.status == 'waiting_user' and task.provider == 'chatgpt'
+        assert 'hard limit 16' in task.prompt and 'hard limit 300' in task.prompt and 'hard limit 32' in task.prompt
+    token = client.post('/api/settings/pair-bridge').json()['token']
+    headers = {'X-Bridge-Token': token}
+    endpoint = '/api/bridge/jobs/' + queued['id']
+    claim = client.post(endpoint + '/claim', headers=headers,
+                        json={'owner': 'metadata-test', 'attempt': 1, 'authorize_send': True})
+    assert claim.status_code == 200 and claim.json()['send']
+    data = package()
+    data['story_packaging'].update(concrete_anchors=[f'Story anchor {i}' for i in range(9)],
+                                  genre='Grounded maritime science-fiction mystery with atmospheric technological horror and survival suspense')
+    data['review_notes'] = [f'Review detail {i}.' for i in range(16)]
+    response = client.post(endpoint + '/result', headers=headers, json={'result': data, 'attempt': 1})
+    assert response.status_code == 200 and response.json()['accepted']
+    after = client.get('/api/projects/' + project['id']).json()
+    assert after['draft'] == before['draft'] and after['publish'] == before['publish']
+    assert after['locked'] and after['story_version'] == before['story_version']
+    assert after['youtube_metadata_current']
+    content = after['artifacts']['youtube_metadata']['content']
+    assert content['review_notes'] == data['review_notes']
+    assert all(note in client.get('/api/projects/' + project['id'] + '/download/youtube_metadata.txt').text
+               for note in data['review_notes'])
+    assert client.post(endpoint + '/result', headers=headers, json={'result': data, 'attempt': 1}).status_code == 422
+
+
 @pytest.mark.parametrize('change', ['duplicate', 'wrong_strategy', 'bad_recommendation', 'missing_variant', 'unquoted', 'fake_quote', 'fake_variant_quote', 'too_many_tags'])
 def test_bad_new_packages_are_rejected(client, project, change):
     ready(client, project)

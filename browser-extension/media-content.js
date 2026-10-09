@@ -8,9 +8,9 @@
     return norm(clone.textContent)||norm(e.innerText||e.textContent);
   };
   const label=e=>norm(e.getAttribute('aria-label')||e.getAttribute('title')||e.getAttribute('data-tooltip'))||caption(e);
-  const controls=()=>[...document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],a,[role="tab"]')].filter(visible);
+  const controls=()=>[...document.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],a,[role="tab"]')].filter(visible);
   const enabled=e=>visible(e)&&!e.disabled&&e.getAttribute('aria-disabled')!=='true';
-  function find(pattern,root=document){return [...root.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],a,[role="tab"]')].filter(enabled).find(e=>pattern.test(label(e)))}
+  function find(pattern,root=document){return [...root.querySelectorAll('button,[role="button"],[role="option"],[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],a,[role="tab"]')].filter(enabled).find(e=>pattern.test(label(e)))}
   function exact(text,root=document){
     const texts=Array.isArray(text)?text:[text];
     const control=controls().find(e=>root.contains(e)&&(texts.includes(label(e))||texts.includes(caption(e))));
@@ -28,14 +28,15 @@
   }
   const text=e=>norm(e.value??e.innerText??e.textContent);
   function busy(provider){
-    const selectors=globalThis.STORYFORGE_ADAPTERS?.[provider]?.busy||[];
+    const selectors=globalThis.STORYFORGE_ADAPTERS?.[provider==='lyria'?'gemini':provider]?.busy||[];
     return selectors.some(selector=>[...document.querySelectorAll(selector)].some(visible))||
       controls().some(e=>/^(Stop|Dừng)( generating| generation| response| tạo| phản hồi)?$|Stop generating|Dừng tạo|Hủy tạo|Ngừng (?:tạo|phản hồi)/i.test(label(e)))||
       (provider==='flow'&&[...document.querySelectorAll('[role="progressbar"]')].some(visible));
   }
   function run(provider){
     const patterns={aistudio:/^Run(?:\s|$)|^Chạy(?:\s|$)/,gemini:/Send message|Send prompt|Gửi tin nhắn|^Send$|^Gửi$|^send$/,
-      flow:/^arrow_forward$|^send$|^Create$|^Generate$|^Tạo$|^Gửi$|^Bắt đầu tạo$|Send prompt|Generate video|Tạo video/};
+      flow:/^arrow_forward$|^send$|^Create$|^Generate$|^Tạo$|^Gửi$|^Bắt đầu tạo$|Send prompt|Generate video|Tạo video/,
+      lyria:/Send message|Send prompt|Gửi tin nhắn|^Send$|^Gửi$|^send$/};
     return find(patterns[provider]);
   }
   function checkpoint(){
@@ -46,17 +47,66 @@
   const owned=globalThis.storyForgeMediaOwned||={};
   let stableEditor,stableAt=0;
 
-  function setupStudio(message){
-    const model=message.media?.tts?.model;
-    if(model){
-      const settings=[...document.querySelectorAll('aside,ms-run-settings,h1,h2,h3,[data-model-id]')]
-        .filter(e=>visible(e)&&!e.closest('textarea,[contenteditable="true"],model-response,user-query'));
-      if(!settings.some(e=>norm(e.textContent).includes(model)||e.getAttribute('data-model-id')==='gemini-3.8-flash-tts')){
-        const option=find(new RegExp('^'+model.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$'));
-        const trigger=option||find(/Gemini.*(?:TTS|Speech)|^(?:Model|Mô hình)$/i);
-        if(trigger&&(owned.modelAttempts||0)<3){owned.modelAttempts=(owned.modelAttempts||0)+1;return clickOne(trigger,'Đang xác minh model '+model+'…')}
-        throw new Error('Chưa xác minh được model '+model+' trên AI Studio. Kiểm tra model rồi tạo lại đoạn còn thiếu.');
-      }
+  function setupLyria(){
+    if(!find(/^(?:Bỏ chọn Nhạc|Deselect Music|Remove Music|Unselect Music)$/i)){
+      const choice=find(/^(?:Tạo nhạc|Create music)$/i);
+      if(choice)return clickOne(choice,'Đang chọn Lyria tạo nhạc…');
+      const more=find(/^(?:Công cụ khác|Các công cụ khác|More tools|Other tools)$/i);
+      if(more)return clickOne(more,'Đang mở công cụ nhạc…');
+      const tools=find(/^(?:Nội dung tải lên và công cụ|Uploads and tools|Add files and tools|Tools|Công cụ)$/i);
+      if(tools)return clickOne(tools,'Đang mở menu tạo nhạc Gemini…');
+      throw Object.assign(new Error('Chưa thấy công cụ Tạo nhạc Lyria trong Gemini. Kiểm tra tài khoản; không gửi prompt ở chế độ ảnh hoặc chat.'),{code:'INPUT_NOT_READY'});
+    }
+    const duration=find(/^(?:Thời lượng|Duration)(?:,|:|\s)/i)||find(/^(?:Thời lượng|Duration)$/i);
+    if(!duration||!/(?:Ngắn|Short|30\s*(?:s|sec|giây))/i.test(label(duration)+caption(duration))){
+      const short=find(/^(?:Ngắn|Short|30 seconds|30 giây)$/i);
+      if(short)return clickOne(short,'Đang chọn đoạn nhạc ngắn…');
+      if(duration)return clickOne(duration,'Đang chọn thời lượng Lyria…');
+      throw Object.assign(new Error('Đang chờ lựa chọn thời lượng nhạc Lyria'),{code:'INPUT_NOT_READY'});
+    }
+    const vocals=find(/^(?:Có giọng hát|Vocals|Vocal)(?:,|:|\s)/i)||find(/^(?:Có giọng hát|Vocals|Vocal)$/i);
+    if(!vocals||!/(?:Không lời|Instrumental)/i.test(label(vocals)+caption(vocals))){
+      const instrumental=find(/^(?:Không lời|Instrumental)$/i);
+      if(instrumental)return clickOne(instrumental,'Đang chọn nhạc không lời…');
+      if(vocals)return clickOne(vocals,'Đang mở chế độ không lời…');
+      throw Object.assign(new Error('Đang chờ chế độ nhạc không lời Lyria'),{code:'INPUT_NOT_READY'});
+    }
+    return {ready:true};
+  }
+  const musicDownload=/^(?:Tải bản nhạc xuống|Download track|Download music)$/i;
+  function musicConfigured(){
+    return !!find(/^(?:Bỏ chọn Nhạc|Deselect Music|Remove Music|Unselect Music)$/i)&&
+      !!controls().find(e=>/^(?:Thời lượng|Duration)/i.test(label(e))&&/(?:Ngắn|Short|30\s*(?:s|sec|giây))/i.test(label(e)+caption(e)))&&
+      !!controls().find(e=>/^(?:Có giọng hát|Vocals|Vocal)/i.test(label(e))&&/(?:Không lời|Instrumental)/i.test(label(e)+caption(e)));
+  }
+  function musicKey(response){
+    const id=response.id||response.querySelector('[id^="model-response-message-content"]')?.id;
+    return id||'music-response-'+[...document.querySelectorAll('model-response')].indexOf(response);
+  }
+  function lyriaResponse(message){
+    if(message.result?.jobId&&message.result.jobId!==message.jobId)return;
+    const response=geminiResponse(message);if(!response)return;
+    const key=musicKey(response);
+    if((message.baseline||[]).includes(key)||message.result?.responseKey&&message.result.responseKey!==key)return;
+    return response;
+  }
+
+  async function searchStudioVoice(field){
+    if(!globalThis.storyForgePaste)throw new Error('Reload Browser Bridge để áp dụng cách nhập bằng Paste.');
+    await globalThis.storyForgePaste.into(field,'Enzo',{validate:()=>{
+      checkpoint();
+      if(!visible(field)||field.disabled||field.readOnly)throw Object.assign(new Error('Đang chờ ô tìm giọng đọc'),{code:'INPUT_NOT_READY'});
+    }});
+  }
+  async function setupStudio(message){
+    // A newly opened AI Studio tab can show its own welcome notice while the
+    // playground is inert. Its Continue button is named "Close dialog" in AX.
+    // Scope this action to that exact notice, never another provider dialog.
+    const welcome=document.getElementById('g1-welcome-dialog');
+    if(visible(welcome)&&/Welcome to AI Studio/.test(welcome.textContent||'')){
+      const proceed=find(/^(?:Continue|Tiếp tục|Close dialog)$/i,welcome);
+      if(proceed)return clickOne(proceed,'Đang tiếp tục qua màn hình giới thiệu AI Studio…');
+      throw Object.assign(new Error('Đang chờ nút tiếp tục của màn hình giới thiệu AI Studio'),{code:'INPUT_NOT_READY'});
     }
     const create=find(/^Create new dialog$|^Tạo hộp thoại mới$/);
     if(create)return clickOne(create,'Đang tạo hộp thoại AI Studio…');
@@ -77,8 +127,24 @@
       const option=card?.querySelector('button.voice-card-content')||find(/^Enzo$/,drawer);
       if(option)return clickOne(option,'Đã chọn Enzo, đang xác minh…');
       const search=[...drawer.querySelectorAll('input')].find(e=>visible(e)&&/search.*voices|tìm.*giọng/i.test(e.placeholder||''));
-      if(search&&search.value!=='Enzo'){setEditor(search,'Enzo');return {ready:false,message:'Đang tìm giọng Enzo…'}}
+      if(search&&search.value!=='Enzo'){await searchStudioVoice(search);return {ready:false,message:'Đang tìm giọng Enzo…'}}
       throw Object.assign(new Error('Đang chờ danh sách giọng Enzo'),{code:'INPUT_NOT_READY'});
+    }
+    // Voice selection makes the rest of AI Studio inert. Finish/close that
+    // picker before verifying the model; hidden background controls are not
+    // evidence that the selected TTS model disappeared.
+    const model=message.media?.tts?.model;
+    if(model){
+      const settings=[...document.querySelectorAll('aside,ms-run-settings,ms-run-settings-panel,h1,h2,h3,[data-model-id]'),
+        ...controls().filter(e=>e.matches('button')&&!e.closest('nav,[role="dialog"],[role="menu"],[role="listbox"],.cdk-overlay-pane')&&
+          (label(e).startsWith(model)||caption(e).startsWith(model)))]
+        .filter(e=>visible(e)&&!e.closest('textarea,[contenteditable="true"],model-response,user-query'));
+      if(!settings.some(e=>norm(e.textContent).includes(model)||e.getAttribute('data-model-id')==='gemini-3.8-flash-tts')){
+        const option=find(new RegExp('^'+model.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$'));
+        const trigger=option||find(/Gemini.*(?:TTS|Speech)|^(?:Model|Mô hình)$/i)||find(/^Toggle run settings panel$/i);
+        if(trigger&&(owned.modelAttempts||0)<3){owned.modelAttempts=(owned.modelAttempts||0)+1;return clickOne(trigger,'Đang xác minh model '+model+'…')}
+        throw new Error('Chưa xác minh được model '+model+' trên AI Studio. Kiểm tra model rồi tạo lại đoạn còn thiếu.');
+      }
     }
     const speaker=find(/^Speaker 1\s*[-–]\s*/);
     // Voice selection is not complete until the speech-block badge says Enzo.
@@ -86,7 +152,7 @@
       const enzo=exact('Enzo',settingsPanel());
       if(enzo){enzo.click();return {ready:false,message:'Đã chọn Enzo, đang xác minh…'}}
       const search=[...document.querySelectorAll('input')].find(e=>visible(e)&&/search.*voices|tìm.*giọng/i.test(e.placeholder||''));
-      if(search&&search.value!=='Enzo'){setEditor(search,'Enzo');return {ready:false,message:'Đang tìm giọng Enzo…'}}
+      if(search&&search.value!=='Enzo'){await searchStudioVoice(search);return {ready:false,message:'Đang tìm giọng Enzo…'}}
       if(speaker)return clickOne(speaker,'Đang mở lựa chọn giọng Enzo…');
       throw Object.assign(new Error('Đang chờ hộp thoại giọng đọc'),{code:'INPUT_NOT_READY'});
     }
@@ -174,7 +240,7 @@
   function mediaItems(provider){return [...document.querySelectorAll(mediaSelector[provider])].filter(e=>
     provider==='gemini'?visible(e)&&e.naturalWidth>=300:
       provider==='flow'&&e.tagName==='IMG'?visible(e)&&/Hình thu nhỏ của video đã tạo|generated video thumbnail/i.test(e.alt):!!(e.currentSrc||e.src||e.querySelector('source')?.src))}
-  const source=e=>e.currentSrc||e.src||e.querySelector('source')?.src||'';
+  const source=e=>e?.currentSrc||e?.src||e?.querySelector('source')?.src||'';
   function sourceKey(e){
     const url=source(e);
     if(!url.startsWith('data:'))return url;
@@ -187,7 +253,10 @@
     const key='data:storyforge:'+url.length+':'+(hash>>>0).toString(16);
     cache.set(e,{url,key});return key;
   }
-  function snapshot(provider){return mediaItems(provider).map(e=>provider==='aistudio'?sourceKey(e):source(e))}
+  function snapshot(provider){
+    if(provider==='lyria')return [...document.querySelectorAll('model-response')].map(musicKey);
+    return mediaItems(provider).map(e=>provider==='aistudio'?sourceKey(e):source(e));
+  }
   function geminiResponse(message){
     const turns=[...document.querySelectorAll('user-query,model-response,[data-test-id="user-query"]')];
     const queries=turns.filter(e=>e.matches('user-query,[data-test-id="user-query"]'));
@@ -211,14 +280,46 @@
   }
   const previews=root=>[...root.querySelectorAll('img')].filter(e=>visible(e)&&
     !e.closest('model-response,user-query,nav,aside')&&!/icon|logo|avatar|generated video thumbnail|Hình thu nhỏ của video đã tạo/i.test(e.alt||e.className||''));
+  function selectFlowReference(message){
+    const upload=owned.referenceUpload;
+    if(!upload||upload.verified||(upload.jobId!==message.jobId&&!message.recovery))return;
+    const names=upload.signature.split('|').slice(0,upload.loaded),selected=upload.flowSelections||=[];
+    const picker=[...document.querySelectorAll('[role="dialog"]')].find(e=>{
+      const title=e.getAttribute('aria-label')||e.getAttribute('aria-labelledby')?.split(/\s+/).map(id=>document.getElementById(id)?.textContent||'').join(' ')||e.querySelector('h1,h2,[role="heading"]')?.textContent||'';
+      return visible(e)&&/^(?:Thêm thành phần vào dự án|Add ingredients to (?:the )?project)$/i.test(norm(title));
+    });
+    if(!picker){
+      if(selected.length&&selected.length<names.length){
+        const add=find(/^Thêm thành phần vào ô nhập câu lệnh$|^Add ingredients to (?:the )?prompt$/i,composer());
+        if(add)return clickOne(add,'Đang chọn ảnh nhân vật tham chiếu tiếp theo trong Flow…');
+      }
+      return;
+    }
+    for(const name of names){
+      if(selected.includes(name))continue;
+      const labels=[name,name+' Hình ảnh',name+'Hình ảnh',name+' Image',name+'Image',name+' image',name+'image'];
+      const choices=[...picker.querySelectorAll('[role="option"]')].filter(enabled).filter(e=>
+        labels.includes(label(e))||labels.includes(caption(e))||labels.includes(norm(e.innerText)));
+      const fresh=choices.filter(e=>!upload.libraryBefore?.includes(e)&&
+        !(upload.libraryBeforeUrls||[]).includes(source(e.querySelector('img'))));
+      const candidates=upload.libraryBefore?fresh:choices;
+      if(candidates.length>1)throw new Error('Có nhiều ảnh tham chiếu trùng tên trong Flow. Kiểm tra ảnh trước khi tiếp tục.');
+      if(candidates.length===1){selected.push(name);return clickOne(candidates[0],'Đang chọn ảnh nhân vật vừa tải vào scene Flow…')}
+    }
+    if(names.every(name=>selected.includes(name))){
+      const close=find(/^(?:Đóng|Close)$/i,picker);
+      if(close)return clickOne(close,'Đang đóng thư viện ảnh tham chiếu Flow…');
+    }
+    return {ready:false,message:'Đang chờ ảnh nhân vật vừa tải xuất hiện trong thư viện Flow…'};
+  }
   function referenceInput(root){
     const inputs=[...document.querySelectorAll('input[type="file"]')].filter(e=>
       !e.disabled&&!e.closest('model-response,user-query,nav,aside')&&(!e.accept||/image|\.png|\.jpe?g/i.test(e.accept)));
     const local=inputs.filter(e=>root.contains(e)),choices=local.length?local:inputs;
     if(!choices.length){
       const dialog=[...document.querySelectorAll('[role="dialog"],[role="menu"]')].find(visible);
-      const uploadButton=dialog&&find(/Upload (?:files?|images?)|Tải (?:tệp|ảnh) lên|^Upload$|^Tải lên$/i,dialog);
-      const add=uploadButton||find(/^(?:add|plus|\+)$|Add (?:files|images|ingredients)|Thêm (?:tệp|ảnh|thành phần)|Upload files/i,root);
+      const uploadButton=dialog&&find(/Upload (?:files?|images?|media)|Tải (?:tệp|ảnh|nội dung nghe nhìn) lên|^Upload$|^Tải lên$/i,dialog);
+      const add=uploadButton||find(/^(?:add|plus|\+)$|Add (?:files|images|ingredients)|Thêm (?:tệp|ảnh|thành phần)|Upload files|Uploads (?:and|&) tools|Nội dung tải lên và công cụ/i,root);
       if(add)return clickOne(add,'Đang mở phần tải ảnh nhân vật tham chiếu…');
       throw new Error('Chưa thấy ô tải ảnh tham chiếu. Kiểm tra nút Thêm / Tải lên của dịch vụ.');
     }
@@ -280,7 +381,9 @@
     if(present.length)throw new Error('Ô nhập có ảnh bạn đã thêm. Bridge không thay ảnh đó.');
     const selected=referenceInput(root);if(!selected.input)return selected;
     const first=selected.input.multiple?files:files.slice(0,1);
-    owned.referenceUpload={jobId:message.jobId,signature,before:present,loaded:first.length,stableAt:Date.now()};
+    const libraryBefore=message.provider==='flow'?[...document.querySelectorAll('[role="dialog"] [role="option"]')]:undefined;
+    owned.referenceUpload={jobId:message.jobId,signature,before:present,loaded:first.length,stableAt:Date.now(),libraryBefore,
+      libraryBeforeUrls:libraryBefore?.map(e=>source(e.querySelector('img'))).filter(Boolean)};
     attachReferences(selected.input,first);
     return {ready:false,message:'Đang tải ảnh nhân vật tham chiếu vào '+(message.provider==='flow'?'Flow':'Gemini')+'…'};
   }
@@ -329,6 +432,7 @@
     }
   }
   const flowThumbnail=e=>e.tagName==='IMG'&&/Hình thu nhỏ của video đã tạo|generated video thumbnail/i.test(e.alt);
+  const flowDone=/^(?:Xong|Done|Đã chỉnh sửa xong|Done editing|Finished editing)$/i;
   const flowDownload=/Download|Tải.*(?:xuống|về)|^download$|^file_download$/i;
   const flowMenus=()=>[...document.querySelectorAll('[role="menu"],.cdk-overlay-pane')].filter(visible);
   function flowTileButton(node,pattern){
@@ -351,7 +455,7 @@
     if(!collection&&owned.setupJobId===message.jobId&&owned.openedThumbnail&&!(message.baseline||[]).includes(owned.openedThumbnail))
       collection={jobId:message.jobId,thumbnailUrl:owned.openedThumbnail,selectedAt:owned.flowThumbnailAt||Date.now()-4000,openedAt:Date.now(),projectUrl:location.href};
     if(!collection){
-      if(busy('flow')&&!find(/^(?:Xong|Done)$/i))return reply();
+      if(busy('flow')&&!find(flowDone))return reply();
       const items=mediaItems('flow').filter(e=>!(message.baseline||[]).includes(source(e))&&
         !(flowThumbnail(e)&&owned.baselineNodes?.includes(e)));
       const candidates=[...new Map(items.filter(flowThumbnail).map(e=>[source(e),e])).values()];
@@ -369,7 +473,20 @@
     }
     const page=new URL(collection.projectUrl).pathname.split('/edit/')[0].replace(/\/$/,'');
     if(location.pathname!==page&&!location.pathname.startsWith(page+'/'))throw new Error('Tab Flow đã chuyển sang dự án khác. Mở lại dự án của video đang chờ tải.');
-    const done=find(/^(?:Xong|Done)$/i);
+    // A previous adapter can have opened our download menu inside the editor.
+    // Dismiss only that owned menu so its inert background exposes Done again.
+    if(collection.openedAt&&collection.menuOpened&&location.pathname.startsWith(page+'/edit/')&&flowMenus().length){
+      if(!collection.menuDismissedAt){
+        collection.menuDismissedAt=Date.now();owned.flowCollection=collection;
+        const backdrop=[...document.querySelectorAll('.cdk-overlay-backdrop')].find(visible);
+        if(backdrop)backdrop.click();
+        else flowMenus()[0].dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}));
+        return reply({ready:false,message:'Đang đóng tùy chọn trong màn hình chỉnh sửa video Flow…'});
+      }
+      return reply({ready:false,message:'Đang chờ Flow đóng tùy chọn chỉnh sửa…'});
+    }
+    if(collection.menuDismissedAt){delete collection.menuDismissedAt;collection.menuOpened=false}
+    const done=find(flowDone);
     if(done){
       // Only leave the editor we opened for this exact job. Its canvas player
       // may not expose a VIDEO element, and its timeline may be a progressbar.
@@ -398,13 +515,22 @@
       collection.openedAt=Date.now();owned.flowCollection=collection;node.click();
       return reply({ready:false,message:'Đang mở video Flow vừa tạo…'});
     }
+    // Flow's compact grid exposes clip actions through a context menu rather
+    // than a visible More button. Open it once on this exact selected result.
+    if(flowThumbnail(node)&&collection.openedAt&&!menus.length&&!collection.contextMenuAt){
+      collection.contextMenuAt=Date.now();collection.menuOpened=true;owned.flowCollection=collection;
+      const rect=node.getBoundingClientRect();
+      node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,
+        clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2,button:2,buttons:2}));
+      return reply({ready:false,message:'Đang mở menu tải của đúng video Flow vừa tạo…'});
+    }
     return reply({ready:false,message:'Đang chờ nút tải của video Flow vừa tạo…'});
   }
   function flowResponse(result){const {button,node,...response}=result;return response}
   globalThis.storyForgeMediaExecute=async message=>{
     checkpoint();
     const {provider,action}=message;
-    const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],flow:['flow.google.com','labs.google']}[provider];
+    const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],lyria:['gemini.google.com'],flow:['flow.google.com','labs.google']}[provider];
     if(!allowed?.includes(location.hostname))throw new Error('Không đúng dịch vụ tạo media');
     if(document.readyState!=='complete')return {ready:false,message:'Đang chờ trang tải xong…'};
     if(action==='media-setup'){
@@ -419,8 +545,12 @@
         if(signature!==owned.recoverySignature){owned.recoverySignature=signature;owned.recoveryAt=Date.now();return {ready:false}}
         if(Date.now()-owned.recoveryAt<5000)return {ready:false,message:'Đang chờ kết quả cũ ổn định trước scene tiếp theo…'};
       }
-      if(provider==='aistudio'){const setup=setupStudio(message);if(!setup.ready)return setup}
-      if(provider==='flow'&&!owned.flowConfigured){const setup=flowSetup();if(!setup.ready)return setup}
+      if(provider==='aistudio'){const setup=await setupStudio(message);if(!setup.ready)return setup}
+      if(provider==='lyria'){const setup=setupLyria();if(!setup.ready)return setup}
+      if(provider==='flow'){
+        const reference=selectFlowReference(message);if(reference)return reference;
+        if(!owned.flowConfigured){const setup=flowSetup();if(!setup.ready)return setup}
+      }
       const field=editor();
       if(field!==stableEditor){stableEditor=field;stableAt=Date.now();return {ready:false}}
       return {ready:Date.now()-stableAt>=2000};
@@ -434,17 +564,19 @@
         const upload=referenceUploads(message,field);if(!upload.ready)return upload;
       }
       const baseline=snapshot(provider);
-      owned.baselineNodes=mediaItems(provider);
+      owned.baselineNodes=provider==='lyria'?[]:mediaItems(provider);
       await setEditor(field,message.prompt,provider);
       if(text(field)!==norm(message.prompt))throw Object.assign(new Error('Ô nhập chưa nhận đủ nội dung'),{code:'INPUT_NOT_READY'});
       owned.lastPrompt=norm(message.prompt);
       return {baseline};
     }
     if(action==='media-ready')return {ready:!busy(provider)&&text(editor())===norm(message.prompt)&&!!run(provider)&&
+      (provider!=='lyria'||musicConfigured())&&
       (!(provider==='gemini'||provider==='flow')||referencesIntact(message))};
     if(action==='media-send'){
       if(owned.sent?.includes(message.jobId))return {submitted:true};
       if(busy(provider)||text(editor())!==norm(message.prompt))throw new Error('Ô nhập đã thay đổi trước khi tạo media');
+      if(provider==='lyria'&&!musicConfigured())throw new Error('Chế độ Lyria, thời lượng ngắn hoặc nhạc không lời đã thay đổi trước khi gửi');
       if((provider==='gemini'||provider==='flow')&&!referencesIntact(message))throw new Error('Chưa xác minh đủ ảnh tham chiếu cho scene này');
       const button=run(provider);
       if(!button)throw new Error('Chưa có nút Run / Tạo khả dụng');
@@ -453,6 +585,13 @@
     if(action==='media-poll'){
       if(provider==='flow')return flowResponse(flowResult(message));
       if(busy(provider))return {ready:false};
+      if(provider==='lyria'){
+        const response=lyriaResponse(message),button=response&&find(musicDownload,response);
+        if(!button)return {ready:false,message:'Đang chờ bản nhạc Lyria và nút tải âm thanh…'};
+        const key=musicKey(response);
+        if(owned.resultSignature!==key){owned.resultSignature=key;owned.resultAt=Date.now();return {ready:false}}
+        return {ready:Date.now()-owned.resultAt>=4000,result:{jobId:message.jobId,responseKey:key}};
+      }
       const response=provider==='gemini'?geminiResponse(message):document;
       if(!response)return {ready:false,message:'Đang chờ câu trả lời thuộc đúng prompt scene này…'};
       const items=mediaItems(provider).filter(e=>response.contains(e)&&!(message.baseline||[]).includes(provider==='aistudio'?sourceKey(e):source(e))&&
@@ -470,6 +609,11 @@
       return {ready:Date.now()-owned.resultAt>=4000,result:{jobId:message.jobId,...(provider==='aistudio'?{}:{url}),...(expectedDuration>0?{expectedDuration}:{})}};
     }
     if(action==='media-download-info'){
+      if(provider==='lyria'){
+        const response=lyriaResponse(message);
+        if(!response||!find(musicDownload,response))throw new Error('Không thấy nút tải đúng bản nhạc Lyria đã tạo');
+        return {direct:false,referrer:location.href};
+      }
       const flow=provider==='flow'?flowResult(message):undefined;
       if(flow&&!flow.ready)return flowResponse(flow);
       const node=flow?.node||resultNode(message);
@@ -487,6 +631,12 @@
         ...(expectedDuration>0?{expectedDuration}:{}),...(flow?{collection:flow.collection}:{})};
     }
     if(action==='media-download-click'){
+      if(provider==='lyria'){
+        const response=lyriaResponse(message),button=response&&find(musicDownload,response);
+        if(!button)throw new Error('Bản nhạc Lyria đã thay đổi; không tải kết quả khác');
+        owned.musicDownload={jobId:message.jobId,responseKey:musicKey(response)};
+        button.click();return {clicked:true};
+      }
       const flow=provider==='flow'?flowResult(message):undefined;
       if(flow&&!flow.ready)return flowResponse(flow);
       const node=flow?.node||resultNode(message),button=flow?.button||(node&&downloadButton(node,provider));
@@ -494,6 +644,22 @@
       button.click();return {clicked:true};
     }
     if(action==='media-download-continue'){
+      if(provider==='lyria'){
+        // The same Download button offers a cover video and an MP3. Choose
+        // only its audio menu, never the cover image/video or another response.
+        if(!owned.musicDownload){
+          const response=lyriaResponse(message);
+          if(!response||musicKey(response)!==message.result?.responseKey)return {clicked:false};
+          owned.musicDownload={jobId:message.jobId,responseKey:musicKey(response)};
+        }
+        if(owned.musicDownload.jobId!==message.jobId||owned.musicDownload.responseKey!==message.result?.responseKey)return {clicked:false};
+        const menus=[...document.querySelectorAll('[role="menu"]')].filter(visible);
+        if(menus.length!==1)return {clicked:false};
+        const audio=find(/^(?:Chỉ riêng âm thanh|Audio only|Audio)(?:\s|$)/i,menus[0]);
+        if(!audio||!/MP3/i.test(label(audio)+caption(audio)))return {clicked:false};
+        if(owned.musicDownload.clicked)return {clicked:false};
+        owned.musicDownload.clicked=true;audio.click();return {clicked:true};
+      }
       if(provider!=='flow')return {clicked:false};
       // A provider menu can temporarily mark its grid inert. Match the exact
       // result without requiring its thumbnail to remain interactive.

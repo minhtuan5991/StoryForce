@@ -77,7 +77,9 @@ def test_dark_green_waveform_loops_under_logo_and_group_boundaries_keep_video_ti
     events=[]
     report=media.render_project(tmp_path,project,chunks,scenes,assets,config,lambda *args:events.append(args))
     assert all(report['checks'].values()),report
-    assert report['render_performance']['join_groups']==3
+    assert report['render_performance']['join_groups']==0
+    assert report['render_performance']['timeline_local_transitions']
+    assert report['render_performance']['transition_windows']==9
     assert report['render_performance']['wave_key_color']==detected
     assert not list((tmp_path/report['file']).parent.glob('join_*.mp4'))
     assert all(a[0]<=b[0] for a,b in zip(events,events[1:]))

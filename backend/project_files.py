@@ -5,6 +5,7 @@ from pathlib import Path
 from .models import Asset, Artifact, Chunk, Scene, Project
 from .config import safe_path
 from .project_storage import project_path
+from sqlalchemy import or_
 
 def linked(path):
     info=path.lstat()
@@ -34,7 +35,7 @@ def private_file_plan(db, root, ids):
         if not isinstance(value,str) or not value:return
         try:protected.add(safe_path(root,value).resolve())
         except (ValueError,OSError):pass
-    for asset in db.query(Asset).filter(~Asset.project_id.in_(ids)):
+    for asset in db.query(Asset).filter(or_(~Asset.project_id.in_(ids), Asset.project_id.is_(None))):
         protect(asset.path)
     # Preserve files also mapped by another project, even if their asset record
     # was originally imported by the project being removed.

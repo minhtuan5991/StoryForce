@@ -13,7 +13,8 @@ export function VisualPlanOptions({project,active,act,run}:{project:Row,active:b
   const ttsBusy=live.length>0&&live.every((j:Row)=>j.kind==='tts_context'&&j.payload?._media?.target_type==='chunk');
   const blocked=active&&!ttsBusy;
   useEffect(()=>{setOptions({mode:budget.mode,image_count:budget.image_count,video_count:budget.video_count})},[saved]);
-  const counts=options.mode==='custom'?options:budget[options.mode];
+  const presets={...budget,efficient:budget.efficient||{image_count:budget.minimum.image_count,video_count:budget.standard.video_count}};
+  const counts=options.mode==='custom'?options:presets[options.mode];
   const valid=Number.isInteger(counts.image_count)&&counts.image_count>=1&&Number.isInteger(counts.video_count)&&counts.video_count>=0&&counts.image_count+counts.video_count<=200;
   async function generate(){
     setBusy(true);
@@ -23,13 +24,14 @@ export function VisualPlanOptions({project,active,act,run}:{project:Row,active:b
   return <><fieldset className="render-options" disabled={blocked||busy}>
     <legend>{tr('Image and video count')}</legend>
     <Field label={tr('Visual plan mode')}><select aria-label={tr('Visual plan mode')} value={options.mode} onChange={e=>setOptions({...options,mode:e.target.value})}>
-      <option value="standard">{tr('Standard')}</option><option value="minimum">{tr('Minimum · about 50% fewer visuals')}</option><option value="custom">{tr('Custom counts')}</option>
+      <option value="standard">{tr('Standard')}</option><option value="efficient">{tr('Fewer images · keep opening videos')}</option><option value="minimum">{tr('Minimum · about 50% fewer visuals')}</option><option value="custom">{tr('Custom counts')}</option>
     </select></Field>
     <div className="form-grid">
       <Field label={tr('Image count')}><input aria-label={tr('Image count')} type="number" min={1} max={200} step={1} readOnly={options.mode!=='custom'} value={counts.image_count??''} onChange={e=>setOptions({...options,image_count:e.target.value===''?null:Number(e.target.value)})}/></Field>
       <Field label={tr('Video count')}><input aria-label={tr('Video count')} type="number" min={0} max={199} step={1} readOnly={options.mode!=='custom'} value={counts.video_count??''} onChange={e=>setOptions({...options,video_count:e.target.value===''?null:Number(e.target.value)})}/></Field>
     </div>
     <p className="muted">{tr('Minimum mode uses about half the standard images and videos, rounded up, and focuses on key story beats. Images hold longer; scene videos never loop.')}</p>
+    {options.mode==='efficient'&&<p className="notice compact">{tr('Fewer images mode halves the image count while keeping the standard opening video count. Each image covers a meaningful story beat with the same pan and zoom. Confirm the counts before creation.')}</p>}
     <p className="notice compact">{tr('New plans start at 0:00 with up to three consecutive 10-second videos. Standard mode uses 2–3; custom counts remain exact and additional videos appear later. Images cover the rest of the story.')}</p>
     {project.scenes.length>0&&<p className="muted">{tr('Creating a new plan replaces scene assignments. Uploaded resource files are kept.')}</p>}
     <label className="check-field"><input type="checkbox" checked={autoCreate} onChange={e=>setAutoCreate(e.target.checked)}/>{tr('Automatically create and download after this plan')}</label>

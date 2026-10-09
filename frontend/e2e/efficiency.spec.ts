@@ -1,0 +1,34 @@
+import {test,expect} from '@playwright/test';
+
+test('efficiency controls persist without changing delivery settings and fit the Vietnamese mobile layout',async({page,request})=>{
+  await page.addInitScript(()=>localStorage.setItem('storyforge-interface-language','en'));
+  const before=await (await request.get('/api/settings')).json();
+  await page.goto('/#/settings');
+  const workflow=page.getByRole('checkbox',{name:'Reduce duplicate AI calls',exact:true});
+  await expect(workflow).toBeChecked();
+  await workflow.uncheck();
+  await page.getByRole('button',{name:'Save settings',exact:true}).click();
+  await expect.poll(async()=> (await (await request.get('/api/settings')).json()).streamlined_workflow).toBe(false);
+  await page.reload();
+  await expect(workflow).not.toBeChecked();
+  await page.getByRole('button',{name:'Production',exact:true}).click();
+  const timeline=page.getByRole('checkbox',{name:'Render transition windows only',exact:true});
+  await expect(timeline).toBeChecked();
+  await timeline.uncheck();
+  await page.getByRole('button',{name:'Save settings',exact:true}).click();
+  await expect.poll(async()=> (await (await request.get('/api/settings')).json()).render_smart_join).toBe(false);
+  const after=await (await request.get('/api/settings')).json();
+  for(const key of ['render_width','render_height','render_fps','render_encoder','transition_seconds','narration_db','music_db','ambient_db'])expect(after[key]).toEqual(before[key]);
+  await timeline.check();
+  await page.getByRole('button',{name:'Save settings',exact:true}).click();
+  await page.getByLabel('Interface language',{exact:true}).last().selectOption('vi');
+  await expect(page.getByRole('checkbox',{name:'Chỉ dựng riêng các đoạn chuyển cảnh',exact:true})).toBeChecked();
+  await page.screenshot({path:'../.runtime/efficiency-ui/production-desktop.png',fullPage:true});
+  await page.getByRole('button',{name:'Chung',exact:true}).click();
+  await page.getByRole('checkbox',{name:'Giảm các lượt AI trùng nhau',exact:true}).check();
+  await page.getByRole('button',{name:'Lưu thiết lập',exact:true}).click();
+  await page.setViewportSize({width:390,height:844});
+  await expect(page.getByRole('checkbox',{name:'Giảm các lượt AI trùng nhau',exact:true})).toBeVisible();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:'../.runtime/efficiency-ui/general-mobile.png',fullPage:true});
+});

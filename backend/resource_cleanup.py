@@ -139,7 +139,7 @@ class ResourceCleanup:
                 kept.append({'path': str(path), 'reason': 'Unverified or linked file'})
 
         protected = set()
-        for other in db.query(Asset).filter(Asset.project_id != p.id):
+        for other in db.query(Asset).filter((Asset.project_id != p.id) | Asset.project_id.is_(None)):
             for value in (other.path, (other.metadata_json or {}).get('download_path')):
                 if isinstance(value, str) and value:
                     protected.add(str((self.root / value).absolute()).casefold())

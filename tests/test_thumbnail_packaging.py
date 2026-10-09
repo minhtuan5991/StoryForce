@@ -1,10 +1,11 @@
 import hashlib
+import json
 import io
 from pathlib import Path
 import pytest
 from PIL import Image
 from backend.models import Artifact, Asset, Channel, Job, Project, Scene
-from backend.thumbnail_packaging import thumbnail_context, validate_plan, plan_fingerprint, ThumbnailStyle
+from backend.thumbnail_packaging import thumbnail_context, validate_plan, plan_fingerprint, ThumbnailStyle, ThumbnailPlan, output_contract
 from backend.youtube_metadata import metadata_context, validate_metadata
 from test_metadata_packaging import package as metadata_package
 from conftest import job
@@ -42,6 +43,36 @@ def test_concepts_are_isolated_and_do_not_modify_story_or_publishing(client,proj
         assert 'thumbnail_plan' not in ctx['artifacts'] and 'thumbnail_style' not in ctx['channel']['settings']
         db.add(Artifact(project_id=p.id,kind='youtube_metadata',story_version=1,content={'title_variants':[{'title':'An editorial alternative'}]}));db.commit()
         assert output['content_fingerprint']==plan_fingerprint(db,p)  # No title/image regeneration loop.
+
+
+def test_thumbnail_prompt_always_includes_the_actual_output_schema_even_with_an_old_custom_template(client,project):
+    ready(client,project)
+    custom=client.app.state.workflow.root/'prompts'/'thumbnail_plan.md'
+    custom.write_text('Legacy customized thumbnail instructions',encoding='utf-8')
+    generated(client,project)
+    with client.app.state.database.session() as db:
+        record=db.query(Job).filter_by(project_id=project['id'],kind='thumbnail_plan').one()
+        context=thumbnail_context(db,db.get(Project,project['id']))
+        assert record.prompt.startswith(output_contract(context))
+        assert 'Legacy customized thumbnail instructions' in record.prompt
+        schema=ThumbnailPlan.model_json_schema()
+        assert schema['$defs']['VisualDNA']['properties']['threat_visibility']['maxItems']==3
+        assert all(value in record.prompt for value in schema['$defs']['VisualDNA']['properties']['threat_visibility']['items']['enum'])
+        assert all(name in record.prompt for name in schema['$defs']['ConceptScores']['required'])
+        assert '\"maxLength\":2000' in record.prompt
+    assert custom.read_text(encoding='utf-8')=='Legacy customized thumbnail instructions'
+
+
+def test_thumbnail_quote_bank_uses_literal_source_sentences_and_does_not_change_plan_fingerprints(client,project):
+    ready(client,project)
+    with client.app.state.database.session() as db:
+        p=db.get(Project,project['id']);context=thumbnail_context(db,p);before=plan_fingerprint(db,p)
+        contract=output_contract(context)
+        schema=json.loads(contract[contract.index('{'):])
+        quotes=schema['$defs']['ThumbnailVariant']['properties']['evidence_quotes']['items']['enum']
+        assert quotes and all(q in DRAFT for q in quotes)
+        assert quotes==schema['$defs']['VisualDNA']['properties']['evidence_quotes']['items']['enum']
+        assert plan_fingerprint(db,p)==before
 
 
 @pytest.mark.parametrize('change',['fake_quote','missing_variant','same_concept','bad_strategy','long_text','true_claim','unexplained_alternative'])
@@ -86,6 +117,49 @@ def complete_concepts(client, project, identifier):
         output=workflow.mock.generate('thumbnail_plan',context,record.prompt)
         attempt=record.attempts
     workflow.complete_ai(identifier,output,expected_attempt=attempt)
+
+
+@pytest.mark.parametrize('invalid',['quote','enum','count'])
+def test_thumbnail_contract_retry_corrects_the_sent_attempt_without_accepting_invalid_concepts(client,project,invalid):
+    base=ready(client,project);headers=bridge(client)
+    identifier=client.post('/api/jobs',json={'kind':'thumbnail_plan','project_id':project['id'],'payload':{'auto_continue':False}}).json()['id']
+    path='/api/bridge/jobs/'+identifier
+    client.post(path+'/claim',headers=headers,json={'owner':'one','attempt':1,'authorize_send':True}).raise_for_status()
+    with client.app.state.database.session() as db:
+        record=db.get(Job,identifier);context=client.app.state.workflow.context(db,record)
+        valid=client.app.state.workflow.mock.generate('thumbnail_plan',context,record.prompt)
+    bad=json.loads(json.dumps(valid))
+    if invalid=='quote':bad['thumbnail_variants'][0]['evidence_quotes']=['The hero opened a door in a different story.']
+    if invalid=='enum':bad['visual_dna']['threat_visibility']=['INSTRUMENT_ANOMALY']
+    if invalid=='count':bad['visual_dna']['threat_visibility']=['OBJECT_ANOMALY']*5
+    rejected=client.post(path+'/result',headers=headers,json={'attempt':1,'result':bad})
+    assert rejected.status_code==422 and rejected.json()['code']=='THUMBNAIL_CONTRACT'
+    assert not client.get(base+'/thumbnail-packaging').json()['current']
+    retry={'owner':'one','attempt':1,'retry_id':'repair-thumbnail','reason':'THUMBNAIL_CONTRACT'}
+    assert client.post(path+'/retry',headers=headers,json=retry).status_code==200
+    current=next(j for j in client.get('/api/bridge/jobs',headers=headers).json()['items'] if j['id']==identifier)
+    assert current['attempt']==2 and 'Previous response validation feedback' in current['prompt']
+    assert client.post(path+'/result',headers=headers,json={'attempt':1,'result':valid}).status_code==422
+    client.post(path+'/claim',headers=headers,json={'owner':'one','attempt':2,'authorize_send':True}).raise_for_status()
+    assert client.post(path+'/retry',headers=headers,json={**retry,'attempt':2,'retry_id':'unrejected-attempt'}).status_code==422
+    assert client.post(path+'/result',headers=headers,json={'attempt':2,'result':valid}).json()['accepted']
+    assert client.get(base+'/thumbnail-packaging').json()['current']
+    assert client.get(base).json()['draft']==DRAFT
+
+
+def test_thumbnail_retry_rejects_stale_story_context_and_unrecorded_rejections(client,project):
+    base=ready(client,project);headers=bridge(client)
+    identifier=client.post('/api/jobs',json={'kind':'thumbnail_plan','project_id':project['id']}).json()['id']
+    path='/api/bridge/jobs/'+identifier
+    client.post(path+'/claim',headers=headers,json={'owner':'one','attempt':1,'authorize_send':True})
+    retry={'owner':'one','attempt':1,'retry_id':'repair-thumbnail','reason':'THUMBNAIL_CONTRACT'}
+    assert client.post(path+'/retry',headers=headers,json=retry).status_code==422
+    assert client.post(path+'/result',headers=headers,json={'attempt':0,'result':{}}).status_code==422
+    with client.app.state.database.session() as db:assert '_thumbnail_feedback' not in db.get(Job,identifier).payload
+    assert client.post(path+'/result',headers=headers,json={'attempt':1,'result':{}}).status_code==422
+    with client.app.state.database.session() as db:
+        p=db.get(Project,project['id']);p.publish={**p.publish,'title':'A changed title'};db.commit()
+    assert client.post(path+'/retry',headers=headers,json=retry).status_code==422
 
 
 def test_approved_visual_queue_prepares_concepts_then_resumes_without_new_count_approval(client,project,monkeypatch,tmp_path):

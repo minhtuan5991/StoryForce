@@ -26,11 +26,13 @@ from .database import Database
 from .deletion import Deletions, DeletionRequest
 from .asset_management import delete_assets
 from .media_automation import MediaAutomation
+from .background_music import production_suggestion
 from .models import *
 from .schemas import ChannelCreate, SourceCreate, ProjectCreate, JobCreate, AnalyticsCreate, StoryDNA
 from .intelligence import duration_profile, channel_fit, novelty_check, words, digest, tokens, recommend_duration
 from .workflow import Workflow, settings_for, latest, set_draft, gate_lock, lock_story, active_issues
 from . import audience
+from .thumbnail_packaging import ThumbnailContractError, plan_fingerprint as thumbnail_fingerprint
 from .channel_learning import learning_data, normalize_snapshot, reminders
 from .production_extras import tts_scene_context, thumbnail_prompt, scene_generation_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
@@ -131,7 +133,7 @@ def create_app(data_root: str | Path | None = None):
     @app.exception_handler(ValueError)
     async def value_error(request,exc):
         payload = {"detail": str(exc)}
-        if isinstance(exc, audience.RetentionEvidenceError):
+        if isinstance(exc, (audience.RetentionEvidenceError, ThumbnailContractError)):
             payload['code'] = exc.code
         return JSONResponse(payload,status_code=422)
 
@@ -312,7 +314,8 @@ def create_app(data_root: str | Path | None = None):
         return deletions.confirm(body)
 
     @app.get("/api/duration")
-    def duration(minutes:float=10,wpm:int=150):return duration_profile(minutes,wpm)
+    def duration(minutes:float=10,wpm:int=150):
+        return {**duration_profile(minutes,wpm), 'production_suggestion': production_suggestion(minutes)}
 
     @app.get("/api/projects")
     def projects(channel_id:str|None=None,q:str="",offset:int=0,limit:int=Query(50,ge=1,le=100)):
@@ -329,11 +332,18 @@ def create_app(data_root: str | Path | None = None):
             if body.source_id:get(db,Source,body.source_id)
             data=body.model_dump()
             entry_mode=data.pop('entry_mode')
+            production=data.pop('production_options')
             if entry_mode=='existing_bible' and body.source_id:
                 raise ValueError('Choose an existing Bible or a source inspiration, not both')
             if body.duration_mode=="Auto":data["target_minutes"]=channel.default_duration
+            if production and production['video_count'] * 10 >= data['target_minutes'] * 60:
+                raise ValueError('Leave narration time for the still images after the opening videos')
+            options={'audience_policy': 1, 'entry_mode':entry_mode}
+            if production:
+                options.update(production_options={**production, 'preset_counts': True},
+                               visual_options={'mode':'custom', 'image_count':production['image_count'], 'video_count':production['video_count']})
             item=Project(**data, stage='BIBLE' if entry_mode=='existing_bible' else 'DIRECTION',
-                         settings={'audience_policy': 1, 'entry_mode':entry_mode});db.add(item);db.commit()
+                         settings=options);db.add(item);db.commit()
             migrate_project_folders(database, root, [item.id])
             project_folder(root,item.id)
             return serialize(item)
@@ -540,7 +550,7 @@ def create_app(data_root: str | Path | None = None):
                 lock_story(db,p);db.commit();next_action=workflow.next_step(db,p)
             auto_continue=config["pipeline_mode"]!="manual"
         if "kind" not in next_action:return next_action
-        return workflow.submit(next_action["kind"],project_id=id,payload={"auto_continue":auto_continue})
+        return workflow.submit(next_action["kind"],project_id=id,payload={**next_action.get('payload', {}), "auto_continue":auto_continue})
 
     @app.post("/api/issues/{id}/resolve")
     def human_resolve(id:str,body:dict=Body(...)):
@@ -646,6 +656,39 @@ def create_app(data_root: str | Path | None = None):
     @app.post("/api/projects/{id}/assets/delete")
     def remove_assets(id:str, body:dict=Body(...)):
         return delete_assets(database,workflow,id,body.get('ids'))
+
+    @app.get('/api/background-music')
+    def background_music_library():
+        with database.session() as db:
+            return media_automation.music.public(db)
+
+    @app.post('/api/projects/{id}/background-music')
+    def prepare_background_music(id:str, body:dict=Body(...)):
+        with workflow.deletion_lock, database.session() as db:
+            p=media_automation.project(db,id)
+            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish the active project job before changing its music')
+            p.settings={**p.settings, 'production_options':{**p.settings.get('production_options', {}), 'music_enabled':True}}
+            db.commit()
+        return media_automation.start(id, {'kind':'music', 'retry':body.get('retry') is True})
+
+    @app.post('/api/projects/{id}/background-music/import')
+    async def import_background_music(id:str, file:UploadFile=File(...)):
+        with workflow.deletion_lock, database.session() as db:
+            p=media_automation.project(db,id)
+            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish the active project job before changing its music')
+            source=media_automation.music.folder/('upload-'+uid()+'.'+(Path(file.filename or '').suffix.lstrip('.') or 'audio'))
+            try:
+                data=await file.read(50_000_001)
+                if not data or len(data)>50_000_000:raise ValueError('Music file must be at most 50 MB')
+                source.write_bytes(data)
+                p.settings={**p.settings,'production_options':{**p.settings.get('production_options',{}),'music_enabled':True}}
+                asset=media_automation.music.import_track(db,p,source,settings_for(db,db.get(Channel,p.channel_id)))
+                p.publish={**p.publish,'final_reviewed':False}
+                db.commit()
+                return serialize(asset)
+            finally:source.unlink(missing_ok=True)
 
     @app.post("/api/projects/{id}/assets")
     async def upload_assets(id:str,files:list[UploadFile]=File(...)):
@@ -1046,7 +1089,7 @@ def create_app(data_root: str | Path | None = None):
         if (destination/"storyforge.db").exists():raise ValueError("Destination already contains a database")
         with database.session() as db:
             if db.query(Job).filter(Job.status.in_(["running","queued"])).count():raise ValueError("Wait for running jobs before moving data")
-        for name in ("projects","prompts","logs"):
+        for name in ("projects","prompts","logs", "background_music"):
             shutil.copytree(root/name,destination/name,dirs_exist_ok=True)
         database.backup(destination/"storyforge.db")
         CONFIG_FILE.write_text(json.dumps({"data_root":str(destination)},indent=2),encoding="utf-8")
@@ -1159,7 +1202,7 @@ def create_app(data_root: str | Path | None = None):
         reason=body.get("reason")
         if not owner or len(owner)>128 or not retry_id or len(retry_id)>128:
             raise ValueError("Invalid automatic retry request")
-        if reason not in ("INVALID_JSON","SEND_NOT_READY","RETENTION_EVIDENCE"):
+        if reason not in ("INVALID_JSON","SEND_NOT_READY","RETENTION_EVIDENCE","THUMBNAIL_CONTRACT"):
             raise ValueError("This error requires manual review")
         with database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
@@ -1174,7 +1217,7 @@ def create_app(data_root: str | Path | None = None):
             claim=job.payload.get("_bridge_auto",{})
             if claim.get("owner")!=owner or claim.get("attempt")!=job.attempts:
                 raise HTTPException(409,"Another browser owns this attempt")
-            if reason in ("INVALID_JSON","RETENTION_EVIDENCE") and claim.get("phase")!="sent":
+            if reason in ("INVALID_JSON","RETENTION_EVIDENCE","THUMBNAIL_CONTRACT") and claim.get("phase")!="sent":
                 raise ValueError("Cannot retry a response before sending")
             if reason == 'RETENTION_EVIDENCE':
                 feedback = job.payload.get('_retention_feedback', {})
@@ -1182,6 +1225,12 @@ def create_app(data_root: str | Path | None = None):
                 if (job.kind != 'retention_audit' or not project or feedback.get('attempt') != job.attempts
                         or feedback.get('audience_hash') != audience.fingerprint(db, project)):
                     raise ValueError('Only a rejected current retention assessment can be retried')
+            if reason == 'THUMBNAIL_CONTRACT':
+                feedback = job.payload.get('_thumbnail_feedback', {})
+                project = db.get(Project, job.project_id) if job.project_id else None
+                if (job.kind != 'thumbnail_plan' or not project or feedback.get('attempt') != job.attempts
+                        or feedback.get('thumbnail_hash') != thumbnail_fingerprint(db, project)):
+                    raise ValueError('Only a rejected current thumbnail plan can be retried')
             if reason=="SEND_NOT_READY" and claim.get("phase")=="sent":
                 raise ValueError("The request was already sent; collect its response")
             count=retry.get("count",0)+1
@@ -1221,6 +1270,18 @@ def create_app(data_root: str | Path | None = None):
         if isinstance(result,str):result=parse_ai_result(result)
         try:
             workflow.complete_ai(id,result,expected_attempt=body.get("attempt"))
+        except ThumbnailContractError as exc:
+            with database.session() as db:
+                db.execute(sql_text("BEGIN IMMEDIATE"))
+                job = get(db, Job, id)
+                project = db.get(Project, job.project_id) if job.project_id else None
+                if (job.kind == 'thumbnail_plan' and project and body.get('attempt') == job.attempts
+                        and job.status == 'waiting_user' and job.payload.get('_bridge_auto', {}).get('phase') == 'sent'):
+                    job.payload = {**job.payload, '_thumbnail_feedback': {
+                        'attempt': job.attempts, 'message': str(exc)[:3000],
+                        'thumbnail_hash': thumbnail_fingerprint(db, project)}}
+                    db.commit()
+            raise
         except audience.RetentionEvidenceError as exc:
             # Persist only a rejection from the current sent attempt. The
             # retry endpoint verifies this marker, ownership and retry limit.

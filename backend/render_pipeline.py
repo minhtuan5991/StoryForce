@@ -107,7 +107,7 @@ def _wave_key_color(binary, path, modified, size, duration):
     return '0x'+''.join(f'{v:02X}' for v in rgb)
 
 
-def compose_clips(clips, plan, folder, base, encode, notify, group_size=6, *, cache=None, remux=None, stats=None):
+def compose_clips(clips, plan, folder, base, encode, notify, group_size=6, *, cache=None, remux=None, stats=None, smart_join=False, inspect=None):
     """Keep at most six decoders/transition inputs active, including long stories.
 
     Every intermediate carries its outgoing transition. All durations/offsets
@@ -117,14 +117,20 @@ def compose_clips(clips, plan, folder, base, encode, notify, group_size=6, *, ca
     cached = None
     if cache and len(clips) > 1:
         from .render_cache import file_signature
-        cached = cache.path('timeline', {'renderer':3, 'clips':[file_signature(p) for p in clips],
+        cached = cache.path('timeline', {'renderer':4, 'smart_join':smart_join, 'clips':[file_signature(p) for p in clips],
             'frames':[s['clip_frames'] for s in plan['scenes']],
             'transitions':[s['transition_after'] for s in plan['scenes']],
             'fps':fps, 'width':plan['width'], 'height':plan['height'],
             'encoder':plan['video_codec']}, '.mp4')
         if cache.valid(cached, duration=round(plan['duration']*fps)/fps,
                        width=plan['width'], height=plan['height'], fps=fps):
-            if stats is not None: stats['timeline_cached'] = True
+            if cache.metadata(cached).get('timeline_local_transitions'):
+                from .render_smart_join import retain_transitions
+                retain_transitions(clips, plan, cache)
+            if stats is not None:
+                stats['timeline_cached'] = True
+                stats.update({key:value for key,value in cache.metadata(cached).items() if key in
+                              ('timeline_local_transitions', 'transition_windows', 'transition_frames', 'copied_body_frames')})
             notify(85, 'Reusing composed timeline')
             return cached, 0, set()
     if stats is not None: stats['timeline_cached'] = False
@@ -152,6 +158,21 @@ def compose_clips(clips, plan, folder, base, encode, notify, group_size=6, *, ca
             return output, 0, set() if cached else {output}
         except ValueError:
             output.unlink(missing_ok=True)
+    if smart_join and plan.get('smart_join_ready') and remux and inspect and any(s['transition_after'] for s in plan['scenes']):
+        from .render_smart_join import compose_local_transitions
+        try:
+            output, groups, created = compose_local_transitions(clips, plan, folder, base, encode, remux, inspect, notify, cache=cache, stats=stats)
+            if cached:
+                extra = {key:value for key,value in (stats or {}).items() if key in
+                         ('timeline_local_transitions', 'transition_windows', 'transition_frames', 'copied_body_frames')}
+                cache.publish(output, cached, **extra)
+                created.discard(output)
+                output = cached
+            return output, groups, created
+        except (ValueError, OSError) as exc:
+            if stats is not None:
+                stats.update(timeline_local_transitions=False, smart_join_fallback=str(exc)[:300])
+            notify(78, 'Using compatible timeline composition with the same fades')
     nodes = [{'path': p, 'frames': s['clip_frames'],
               'transition': round(s['transition_after']*fps)} for p,s in zip(clips,plan['scenes'])]
     total, count = 0, len(nodes)

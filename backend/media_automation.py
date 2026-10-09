@@ -25,9 +25,10 @@ from .thumbnail_packaging import current_plan, variant_prompt, selection, image_
 from .providers import PROVIDER_URLS
 from .media_sessions import provider_page, TTS_OPTIONS, visual_identity, character_reference_prompt, reference_characters
 from .resource_cleanup import archived
+from .background_music import BackgroundMusic, MUSIC_PROMPT, PROFILE, choices
 
 
-MEDIA_KINDS = {"tts_context": "audio", "image_generation": "image", "video_generation": "video"}
+MEDIA_KINDS = {"tts_context": "audio", "image_generation": "image", "video_generation": "video", "music_generation": "music"}
 FLOW_OPTIONS = {"mode": "Video", "input_mode": "Ingredients", "aspect": "16:9",
                 "model": "Omni 1.1 Flash", "resolution": "720p", "seconds": 10, "outputs": 1}
 
@@ -87,6 +88,7 @@ class MediaAutomation:
     def __init__(self, workflow):
         self.workflow = workflow
         self.database, self.root = workflow.database, workflow.root
+        self.music = BackgroundMusic(self.root)
         self.started_at = datetime.now(timezone.utc)
 
     def project(self, db, id):
@@ -156,7 +158,7 @@ class MediaAutomation:
             if settings_for(db, db.get(Channel, p.channel_id))["provider_mode"] != "browser":
                 raise ValueError("Choose Browser Bridge mode before generating media")
             kind = body.get("kind")
-            if kind not in ("tts", "visuals", "thumbnails"):
+            if kind not in ("tts", "visuals", "thumbnails", "music"):
                 raise ValueError("Choose narration or visuals")
             active = db.query(Job).filter(Job.project_id == id, Job.status.in_(["queued", "running", "waiting_user"])).all()
             if active:
@@ -175,7 +177,17 @@ class MediaAutomation:
                 raise ValueError("Finish or cancel the active project job first")
             regenerate = body.get("regenerate") is True
             items, skipped = [], 0
-            if kind == "tts":
+            if kind == 'music':
+                status = self.music.prepare(db, p, retry=body.get('retry') is True)
+                if status != 'generate':
+                    db.commit()
+                    if status != 'waiting_library':
+                        self.workflow.drain_production_queue(p.id)
+                    return {'kind':'music', 'status':status, **p.settings.get('background_music', {})}
+                items.append({'kind':'music_generation', 'provider':'lyria', 'target_type':'background_music',
+                              'target_id':PROFILE, 'source_hash':digest(MUSIC_PROMPT), 'filename':'bgm_mystery.mp3',
+                              'prompt':MUSIC_PROMPT})
+            elif kind == "tts":
                 targets = db.query(Chunk).filter_by(project_id=id).order_by(Chunk.number).all()
                 if not targets:
                     raise ValueError("Split narration into audio segments first")
@@ -247,8 +259,9 @@ class MediaAutomation:
                                   "filename": f"scene_{scene.number:03}.{'mp4' if media_kind == 'video' else 'png'}",
                                   "prompt": scene_generation_prompt(serialize(scene)) + identity,
                                   **({"flow": FLOW_OPTIONS} if media_kind == "video" else {})})
-            folder = project_download_folder(db, p)
-            p.settings = {**p.settings, 'media_download_folder': folder}
+            folder = 'StoryForge Background Music' if kind == 'music' else project_download_folder(db, p)
+            if kind != 'music':
+                p.settings = {**p.settings, 'media_download_folder': folder}
             state = {"id": uid(), "kind": kind, "phase": "running" if items else "completed", "story_version": p.story_version,
                      "draft_hash": digest(p.draft), "folder": folder, "download_path": str(downloads_root() / folder),
                      "total": len(items), "completed": 0, "failed": 0, "skipped": skipped, "pending": items, "current_job_id": None,
@@ -256,7 +269,12 @@ class MediaAutomation:
                      "created_at": now()}
             (downloads_root() / folder).mkdir(parents=True, exist_ok=True)
             self.advance(db, p, state)
+            if kind == 'music' and state.get('current_job_id'):
+                self.music.lease(db, db.get(Job, state['current_job_id']))
+                p.settings = {**p.settings, 'background_music':{'status':'generating', 'job_id':state['current_job_id']}}
             db.commit()
+            if not state.get('current_job_id'):
+                self.workflow.drain_production_queue(p.id)
             return self.public(state)
 
     @staticmethod
@@ -301,6 +319,8 @@ class MediaAutomation:
                 plan = current_plan(db, p)
                 if not plan or media['plan_hash'] != plan_identifier(plan):
                     current_hash = None
+        elif media['target_type'] == 'background_music':
+            current_hash = digest(MUSIC_PROMPT) if choices(p).get('music_enabled') and media['target_id'] == PROFILE else None
         elif media['target_type'] == 'character_reference':
             bible = db.query(Artifact).filter_by(project_id=p.id, kind='story_bible').order_by(Artifact.created_at.desc()).first()
             current_hash = digest(character_reference_prompt(bible.content if bible else {})) if media['target_id'] == p.id else None
@@ -466,6 +486,11 @@ class MediaAutomation:
                 count += 1
             except ValueError:
                 pass
+        with self.database.session() as db:
+            waiting = [p.id for p in db.query(Project) if p.settings.get('background_music', {}).get('status') == 'waiting_library']
+        for project_id in waiting:
+            try:self.start(project_id, {'kind':'music'})
+            except ValueError:pass
         return count
 
     def complete(self, id, body):
@@ -501,6 +526,17 @@ class MediaAutomation:
                 raise ValueError("Media file is empty or exceeds 2 GB")
             kind = MEDIA_KINDS[job.kind]
             config = settings_for(db, db.get(Channel, p.channel_id))
+            if kind == 'music':
+                asset = self.music.import_track(db, p, source, config, body['download_id'])
+                p.publish = {**(p.publish or {}), 'final_reviewed':False}
+                job.result = {'asset_id':asset.id, 'download_id':body['download_id'], 'filename':media['filename'], 'duration':asset.duration}
+                job.status, job.progress, job.step = 'completed', 100, 'Đã lưu nhạc Lyria vào thư viện dùng chung'
+                self.advance(db, p, {**state, 'completed':state['completed']+1})
+                resolved=self.music.resolve_waiters(db)
+                db.commit()
+                self.workflow.drain_production_queue(p.id)
+                for project_id in resolved:self.workflow.drain_production_queue(project_id)
+                return {'accepted':True, **job.result}
             folder = project_folder(self.root, p.id) / {"image": "images", "video": "videos", "audio": "audio"}[kind]
             temporary = folder / ("download-" + uid() + Path(media["filename"]).suffix)
             try:
@@ -612,17 +648,27 @@ class MediaAutomation:
                 return (item.get('target_type'), item.get('target_id'), item.get('variant_id'), item.get('plan_hash'))
             previous = [f for f in p.settings.get('resource_failures', []) if failure_key(f) != failure_key(failure)]
             p.settings = {**p.settings, 'resource_failures': [*previous, failure][-250:]}
+            if media['target_type'] == 'background_music':
+                p.settings = {**p.settings, 'background_music':{'status':'missing', 'reason':reason}}
             job.status, job.step, job.error = 'failed', 'Đã bỏ qua tài nguyên lỗi; xem Tài nguyên để tạo thủ công', reason
             job.result = {'skipped': True, 'missing': failure}
             self.advance(db, p, {**state, 'failed': state.get('failed', 0) + 1})
+            resolved=self.music.resolve_waiters(db) if media['target_type']=='background_music' else []
             db.commit()
         self.workflow.drain_production_queue(p.id)
+        for project_id in resolved:self.workflow.drain_production_queue(project_id)
         return {'accepted': True, **job.result}
 
     def missing(self, db, p):
         current_failures = [f for f in p.settings.get('resource_failures', []) if f.get('story_version') == p.story_version]
         failures = {f['target_id']: f for f in current_failures if f.get('target_type') != 'thumbnail'}
         result = []
+        music_state = p.settings.get('background_music', {})
+        if choices(p).get('music_enabled') and not any(a.metadata_json.get('shared_library_id') and self.available(db,a.id,'music',p.story_version)
+                for a in db.query(Asset).filter_by(project_id=p.id,kind='music')):
+            result.append({'target_id':PROFILE,'target_type':'background_music','filename':'bgm_mystery.wav',
+                           'reason':music_state.get('reason','Nhạc nền chưa sẵn sàng'), 'automatic_failure':music_state.get('status')=='missing',
+                           'optional':True})
         for model, kind, prefix, ext in ((Chunk, 'audio', 'tts', 'wav'), (Scene, ('image', 'video'), 'scene', 'mp4')):
             for target in db.query(model).filter_by(project_id=p.id).order_by(model.number):
                 if target.story_version != p.story_version:
@@ -670,6 +716,8 @@ class MediaAutomation:
             if job and job.status in ("queued", "running", "waiting_user"):
                 job.status, job.step = "cancelled", "Đã dừng tự động tạo tài nguyên"
             state.update(phase="cancelled", pending=[], current_job_id=None)
-            p.settings = {**(p.settings or {}), "media_automation": state, 'production_queue': []}
+            p.settings = {**(p.settings or {}), "media_automation": state, 'production_queue': [],
+                          'auto_production':{**p.settings.get('auto_production', {}), 'cancelled':True,
+                                             'signature':digest([p.story_version,p.draft,choices(p)])}}
             db.commit()
             return self.public(state)

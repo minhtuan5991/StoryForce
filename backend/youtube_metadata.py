@@ -121,10 +121,12 @@ class StoryPackaging(BaseModel):
     protagonist: str = Field(default='', max_length=300)
     occupation: str = Field(default='', max_length=300)
     primary_location: str = Field(default='', max_length=300)
-    concrete_anchors: list[str] = Field(min_length=1, max_length=8)
+    # Editorial context is not a YouTube upload field. Keep a bounded allowance
+    # for detailed replies instead of discarding an otherwise valid package.
+    concrete_anchors: list[str] = Field(min_length=1, max_length=16)
     central_anomaly: str = Field(min_length=1, max_length=1000)
     escalation: str = Field(default='', max_length=1000)
-    genre: str = Field(min_length=1, max_length=100)
+    genre: str = Field(min_length=1, max_length=300)
     audience_intent: str = Field(default='', max_length=500)
     evidence_quotes: list[str] = Field(min_length=1, max_length=4)
 
@@ -151,7 +153,7 @@ class YouTubeMetadata(BaseModel):
     thumbnail_title_overlap_risk: int | None = Field(default=None, ge=0, le=100)
     metadata_notes: MetadataNotes | None = None
     seo_notes: str = Field(default='', max_length=3000)
-    review_notes: list[str] = Field(default_factory=list, max_length=12)
+    review_notes: list[str] = Field(default_factory=list, max_length=32)
 
     @model_validator(mode='before')
     @classmethod

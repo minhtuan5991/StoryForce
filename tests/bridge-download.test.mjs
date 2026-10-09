@@ -115,3 +115,18 @@ test('AI Studio accepts its observed untyped complete WAV Blob and preserves the
   const g=fixture('aistudio');g.send({...g.message,values:[new g.window.Blob([payload]),'unrelated-file.wav']});
   assert.equal(g.captured(),null);
 });
+
+test('Lyria captures MP3 only, preserves bytes and rejects cover videos in its download menu',()=>{
+  const f=fixture('lyria'),bytes=Buffer.from('ID3 owned synthetic MP3 fixture');
+  f.send({...f.message,values:[new f.window.Blob(['cover movie'],{type:'video/mp4'}),'cover.mp4']});
+  assert.equal(f.captured(),null);
+  f.send({...f.message,values:[new f.window.Blob([bytes],{type:'audio/mpeg'}),'Before_the_Thaw.mp3']});
+  assert.equal(f.captured(),'blob:https://gemini.google.com/full-1');
+  assert.equal(f.posts[1].data.code,'void 0;');
+  const implementation=f.blobs[0][Object.getOwnPropertySymbols(f.blobs[0])[0]];
+  assert.deepEqual(implementation._buffer,bytes);
+  const g=fixture('lyria'),a=g.window.document.createElement('a');
+  a.download='bgm.mp3';a.href='data:audio/mpeg;base64,'+bytes.toString('base64');a.click();
+  assert.equal(g.captured(),'blob:https://gemini.google.com/full-1');
+  assert.equal(g.blobs[0].size,bytes.length);
+});

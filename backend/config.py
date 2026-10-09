@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-VERSION = "3.1.27"
+VERSION = "3.1.32"
 APP_ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", APP_ROOT))
 CONFIG_FILE = APP_ROOT / "storyforge.config.json"
@@ -26,11 +26,11 @@ DEFAULT_SETTINGS = {
     "default_premise_count": 10, "visual_video_ratio": 0.15,
     "ffmpeg_path": "", "ffprobe_path": "", "browser": "edge",
     "render_width": 1920, "render_height": 1080, "render_fps": 30,
-    "render_encoder": "auto",
+    "render_encoder": "auto", "render_smart_join": True,
     "music_db": -28, "ambient_db": -32, "narration_db": 0,
     "max_audit_cycles": 3, "browser_timeout": 180, "silence_threshold": 3,
     "auto_select_premise": False, "auto_lock": False,
-    "pipeline_mode": "assisted", "voice_name": "Kore", "transition_seconds": 0.4,
+    "pipeline_mode": "assisted", "streamlined_workflow": True, "voice_name": "Kore", "transition_seconds": 0.4,
     "allow_visual_fallback": False,
 }
 
@@ -43,5 +43,5 @@ def safe_path(root: Path, relative: str) -> Path:
 
 
 def initialize_folders(root: Path) -> None:
-    for folder in ("logs", "projects", "exports", "backups", "prompts"):
+    for folder in ("logs", "projects", "exports", "backups", "prompts", "background_music"):
         (root / folder).mkdir(parents=True, exist_ok=True)

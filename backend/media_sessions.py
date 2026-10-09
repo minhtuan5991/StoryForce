@@ -5,6 +5,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 PROVIDER_HOSTS = {
     'gemini': ('gemini.google.com',),
+    'lyria': ('gemini.google.com',),
     'aistudio': ('aistudio.google.com',),
     'flow': ('flow.google.com', 'labs.google'),
 }
@@ -23,7 +24,7 @@ def provider_page(provider, value):
             if not match:
                 return None
             path = path[:match.end()]
-        elif provider == 'gemini' and not re.search(r'/app/[\w-]+$', path):
+        elif provider in ('gemini', 'lyria') and not re.search(r'/app/[\w-]+$', path):
             return None
         elif provider == 'aistudio' and path in ('/', '/app'):
             return None

@@ -1,3 +1,43 @@
+## v3.1.32 — Nhạc nền Lyria dùng chung và tài nguyên chọn sẵn
+
+- Khi tạo dự án, chọn bật/tắt nhạc nền không lời và số ảnh/video. Gợi ý theo thời lượng, tối thiểu 3 ảnh và 2 video 10 giây; thumbnail và ảnh tham chiếu tính riêng. Chế độ tự động dùng các lựa chọn này để lập kế hoạch và tạo tài nguyên sau TTS, không yêu cầu xác nhận số lượng lần thứ hai. Giữ điểm duyệt Khóa truyện và dựng bản đầu tiên. Dự án cũ giữ luồng hiện có.
+- Bridge 1.1.31 dùng công cụ Tạo nhạc Lyria trong Gemini, chọn Ngắn/Không lời, gửi một lần và chỉ tải MP3 của đúng kết quả. Phiên nhạc riêng không thay thế chat ảnh của dự án; không yêu cầu API key AI Studio. Lyria có thể trả đoạn dài hơn yêu cầu, app lấy tối đa 30 giây để làm vòng lặp.
+- Lưu một thư viện ở `background_music` trong thư mục dữ liệu. Dự án mới ưu tiên dùng lại file; các dự án đang chờ dùng chung một lượt tạo. Thất bại không kích hoạt tạo nhạc liên tục cho từng dự án, vẫn tiếp tục sản xuất và báo nhạc thiếu tại Tài nguyên; có nút thử lại/nhập file.
+- Ghép nối mềm vòng nhạc, tăng hiện diện ở 30 giây đầu rồi giảm 8 dB trong 5 giây và tiếp tục lặp; tự giảm nhạc theo lời kể. Cache audio ghi nhận cấu hình này. Dọn dữ liệu dự án giữ thư viện chung, chuyển thư mục dữ liệu mang theo thư viện. Cần Reload Bridge 1.1.31 sau cập nhật.
+
+## v3.1.31 — Sửa tác vụ thông tin đăng YouTube (local)
+
+- Nhận đầy đủ các trường tham khảo trong phản hồi metadata: tối đa 16 chi tiết truyện, 300 ký tự thể loại và 32 ghi chú kiểm tra. Không cắt bỏ dữ liệu; vẫn giữ giới hạn tiêu đề, mô tả, tags, hashtags và kiểm tra câu trích dẫn đúng bản nháp hiện tại.
+- Bổ sung giới hạn rõ ràng vào prompt metadata mới, kể cả khi dùng mẫu tùy chỉnh cũ. Phản hồi đang chờ từ phiên bản trước vẫn được nhận theo đúng nội dung truyện và lượt tác vụ.
+- Bridge 1.1.30 tự đọc lại một lần phản hồi metadata đã gửi nhưng bị giới hạn trường cũ từ chối, trên đúng tab và lượt đã ghi nhận. Không gửi lại prompt hoặc tạo cuộc trò chuyện khác.
+- Khi Comet tạm khóa chỉnh sửa tab, Bridge chờ và thử lại trong thời hạn chuẩn bị. Nếu đã nhận kết quả, chỉ thử đóng tab trong giới hạn rồi tiếp tục hàng đợi. Giữ quyền hiện có, khóa ghép nối, các phiên media và cơ chế chống gửi trùng. Cần Reload Bridge để áp dụng. Chưa đẩy GitHub.
+
+## v3.1.30 — Ghép timeline nhanh và rút gọn lượt AI (local)
+
+- Render riêng các cửa sổ fade rồi ghép trực tiếp phần thân scene đã có pan/zoom; giữ kích thước, FPS, thời lượng, nhạc, waveform, logo và cấu hình xuất. Kiểm tra số khung hình, độ dài và bộ mã hóa từng đoạn; tự dùng renderer cũ nếu không tương thích. Áp dụng với CPU H.264 và NVIDIA; Quick Sync giữ cách ghép đã kiểm chứng.
+- Lưu cache cửa sổ chuyển cảnh, chỉ render lại phần giáp scene đã thay đổi. Phần thân scene không bị mã hóa lại khi ghép; lần xuất cuối vẫn dùng chất lượng/bitrate hiện có. Video hoàn thành trước khi cập nhật không bị yêu cầu dựng lại chỉ vì đổi phiên bản.
+- Quy trình rút gọn dùng lại dàn ý đã được kiểm định đạt trên đúng nội dung hiện tại, tạo một hook trực tiếp trong bản nháp và gộp kiểm định giữ người xem vào phản hồi đối chiếu ChatGPT. Giữ bằng chứng, điểm kiểm định và artifact riêng; phản hồi thiếu/sai bằng chứng sẽ cần kiểm định riêng. Sửa bản nháp/dàn ý làm kết quả cũ hết hiệu lực như trước.
+- Giữ kiểm định truyện Gemini, xử lý lỗi/bất đồng khi cần và xác minh cuối bằng cả hai AI. Chế độ tự động vẫn chờ duyệt Khóa truyện, số lượng ảnh/video, dựng bản đầu tiên và xem video cuối.
+- Thêm tùy chọn bật/tắt rút gọn ở Thiết lập > Chung và ghép nhanh ở Thiết lập > Sản xuất. Có thể chọn 1 hoặc 3 ý tưởng; số lượng mặc định hiện có vẫn giữ nguyên. Thêm kế hoạch “Ít ảnh · giữ video mở đầu”, giảm khoảng một nửa ảnh và giữ đủ 2–3 clip video mở đầu ở chế độ chuẩn; chỉ áp dụng khi người dùng chọn và xác nhận.
+- Giữ Bridge 1.1.29, phiên chat theo dự án, tham chiếu nhân vật và quy trình tải TTS/ảnh/video. Không cần reload Bridge cho các thay đổi của 3.1.30. Xem phép đo cùng mẫu và giới hạn tại `docs/RENDER_WORKFLOW_3.1.30.md`. Chưa đẩy GitHub.
+
+## v3.1.29 — Sửa thiết lập TTS và phản hồi thumbnail (local)
+
+- Sửa Bridge xác minh nhầm model AI Studio khi bảng chọn giọng làm phần cài đặt phía sau tạm thời không khả dụng. Hoàn tất chọn giọng trước, mở Run settings nếu bị thu gọn, nhận diện đúng thẻ model hiện tại và chờ tìm Enzo bằng Paste. Vẫn yêu cầu đúng model, Enzo và Friendly trước khi gửi.
+- Xử lý đúng màn hình giới thiệu AI Studio ở tab mới trước khi đọc model; chờ ô nhập/cài đặt Flow tải trong giới hạn chuẩn bị ba phút thay vì bỏ qua sau tám lần kiểm tra ngắn. Nhận diện nút Flow “Đã chỉnh sửa xong”, đóng menu do Bridge đã mở trong editor rồi trở về đúng video để tải; giữ giới hạn lỗi và không gửi lại media đã tạo.
+- Nhận diện nút tải ảnh tham chiếu mới của Gemini/Flow; chọn nút tải trong menu/dialog trước khi quay lại ô nhập. Flow chọn đúng ảnh Bridge vừa tải từ thư viện thành phần vào scene, chờ xác minh trước khi gửi. Với danh sách Flow thu gọn, mở menu chuột phải trên đúng clip vừa tạo để tìm nút tải. Tab của phiên được đưa lên khi bắt đầu tác vụ tiếp theo để hạn chế trang nền bị chậm tải.
+- Gửi cấu trúc JSON thumbnail đầy đủ từ schema của app, kể cả khi dùng prompt tùy chỉnh cũ: enum, số lượng, giới hạn trường và điểm số. Bổ sung danh sách câu trích dẫn nguyên văn từ bản nháp hiện tại để tránh AI tự thay từ trong bằng chứng.
+- Phản hồi thumbnail sai cấu trúc hoặc bằng chứng được yêu cầu sửa trong giới hạn thử lại hiện có. Chỉ sửa khi app đã ghi nhận lỗi của đúng lượt, đúng phiên Bridge và đúng nội dung truyện; thay truyện/kế hoạch làm kết quả cũ hết hiệu lực. Không tự gửi lại yêu cầu tạo media đã gửi.
+- Cập nhật Bridge 1.1.29; giữ phân công AI v3.1.28, các điểm xác nhận, phiên chat/project, kiểm tra WAV đầy đủ và tải file theo dự án. Cần Reload extension để áp dụng. Chưa đẩy GitHub.
+
+## v3.1.28 — Chuyển phân tích và lập kế hoạch sang ChatGPT (local)
+
+- Chuyển sáu loại tác vụ văn bản sang ChatGPT: `story_dna`, `channel_fit`, `discovery`, `outline_audit`, `retention_audit` và `visual_director`. Giữ nguyên cấu trúc JSON, các bước tiếp theo và điều kiện kiểm tra bằng chứng/thời gian.
+- Giữ kiểm định truyện, giải quyết bất đồng và xác minh cuối Gemini để tiếp tục đối chiếu với ChatGPT. Ảnh vẫn tạo bằng Gemini, video bằng Flow và giọng đọc bằng Google AI Studio; Bridge giữ phiên bản 1.1.28.
+- Giữ nhà cung cấp đã ghi nhận cho tác vụ đang chờ kết quả và lịch sử đã hoàn thành. Lượt chuẩn bị/chạy lại tác vụ áp dụng phân công mới; không tạo lại truyện, tài nguyên hoặc thay đổi cài đặt dự án. Điểm Channel fit đang hiển thị vẫn là phép so sánh heuristic cục bộ.
+- Sửa kiểm tra kế hoạch hình ảnh: dùng đúng ngân sách scene đã tính cho prompt, tránh tính lại số video theo API tổng scene cũ rồi từ chối kế hoạch chuẩn/tối thiểu đúng. Giữ kiểm tra số lượng, thứ tự clip mở đầu và thời lượng như trước.
+- Cập nhật nhãn hướng dẫn nhà cung cấp và kiểm thử Bridge gửi/nhận sáu tác vụ, gồm kết quả Gemini còn chờ từ bản cũ. Chưa đẩy lên GitHub.
+
 ## v3.1.27 — Thư mục theo tên truyện, dọn tài nguyên và nhịp mở đầu
 
 - Đặt tên thư mục Projects theo tên truyện tiếng Anh, giữ ID và liên kết dự án. Tự chuyển thư mục cũ cùng đường dẫn media/báo cáo; khôi phục tên thư mục dự án đã xóa từ bản sao lưu khi có. Không sao chép hoặc mã hóa lại video. Tên trùng được thêm mã phân biệt; tên làm việc chưa có tiêu đề tiếng Anh dùng `Story Project` tạm thời.

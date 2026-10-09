@@ -68,6 +68,30 @@ test('a submitted generation timeout reports the missing item instead of reautho
   assert.equal(failed,1);assert.equal(f.counts().runs,1);assert.equal((await worker.read()).phase,'idle');
 });
 
+test('slow Flow controls can mount after more than eight readiness errors and still send only once',async()=>{
+  const f=fixture('flow'),send=f.chrome.tabs.sendMessage;let attempts=0,failed=0;
+  f.chrome.tabs.sendMessage=async(id,message)=>message.action==='media-setup'&&attempts++<12?
+    {ok:false,code:'INPUT_NOT_READY',error:'Chưa thấy cài đặt tạo video Flow'}:send(id,message);
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,...rest)=>{
+    if(path.endsWith('/failure')){failed++;return {accepted:true}}
+    return f.request(path,...rest);
+  },ensureContent:async()=>{},now:()=>100000,pageSettleMs:0});
+  for(let i=0;i<18;i++)await engine.tick();
+  assert.equal(failed,0);assert.equal(f.counts().runs,1);assert.ok(attempts>8);
+});
+
+test('unavailable Flow controls stop at the preparation deadline without sending',async()=>{
+  const f=fixture('flow');let clock=1000,failed=0;
+  f.chrome.tabs.sendMessage=async()=>({ok:false,code:'INPUT_NOT_READY',error:'Chưa thấy cài đặt tạo video Flow'});
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,...rest)=>{
+    if(path.endsWith('/failure')){failed++;f.state.jobs=[];return {accepted:true}}
+    return f.request(path,...rest);
+  },ensureContent:async()=>{},now:()=>clock,pageSettleMs:0});
+  for(let i=0;i<15;i++){clock+=2000;await engine.tick()}
+  assert.equal(failed,0);assert.equal(f.counts().runs,0);
+  clock+=180001;await engine.tick();assert.equal(failed,1);assert.equal(f.counts().runs,0);
+});
+
 test('media waits for complete page and stable controls; reuses one tab for all audio segments',async()=>{
   const f=fixture();let engine=f.create();f.state.tabStatus='loading';
   await f.tick(engine);assert.deepEqual(f.messages,[]);
@@ -79,6 +103,14 @@ test('media waits for complete page and stable controls; reuses one tab for all 
   assert.equal(f.counts().runs,2);assert.equal(f.counts().tabCount,1);assert.equal(f.downloads.length,2);
   f.downloads[1].state='complete';await f.tick(engine);
   assert.equal(f.counts().imports,2);
+});
+
+test('a reused provider tab is activated once when the next media job starts',async()=>{
+  const f=fixture();let activated=0;const update=f.chrome.tabs.update;
+  f.chrome.tabs.update=async(id,options)=>{if(options.active===true)activated++;return update(id,options)};
+  f.storage.mediaBridge={phase:'idle',tabs:{},sessions:{'legacy:Project:aistudio':{tabId:42,url:'https://aistudio.google.com/generate-speech'}}};
+  const engine=f.create();for(let i=0;i<5;i++)await f.tick(engine);
+  assert.equal(activated,1);assert.equal(f.counts().tabCount,0);assert.equal(f.counts().runs,1);
 });
 
 test('AI Studio saves only the captured full WAV and sends its player duration for validation',async()=>{

@@ -1,5 +1,5 @@
 # StoryForge US · YouTube Story Packaging
-Template version: 2.0
+Template version: 2.1
 
 When thumbnail.reviewed_visual is present, evaluate the complete title/image relationship from the creator-confirmed concept and actual text, not just shared words. Each title variant should include thumbnail_complement_reason; thumbnail_complement and thumbnail_title_overlap_risk are editorial judgments, not OCR/image inspection or observed performance. Repeated object words can aid clarity; do not automatically penalize them. When no confirmed visual is supplied, do not pretend to have seen or evaluated the image; distinguish known text from unknown text.
 
@@ -23,6 +23,7 @@ Work from the current draft, story_evidence.bible/outline, selected_premise and 
 9. Label inferred keywords story_semantic or editorial_inference. youtube_analytics, trend_research and observed_niche_phrase are allowed ONLY for a matching phrase and evidence type actually supplied in metadata_preferences.keyword_evidence. Supplied creator references are not independent verification by you. Never equate observed competitor wording with verified search demand.
 10. Scores are editorial AI rubric estimates 0–100, NOT predicted CTR, retention, views, popularity or search volume. Penalize genericness and keyword stuffing. Benefit scores: higher is better. Risk scores: lower is better. Do not manufacture a measured performance total. Scores need not justify a longer or less accurate title.
 11. Preserve review_notes for the final video/thumbnail, media rights, audience setting and altered/synthetic content disclosure when realistic AI media could be mistaken for real people/places/events. AI assistance with text alone does not establish disclosure requirements. Do not decide these settings or certify policy/copyright compliance.
+12. Keep supplementary editorial fields concise: aim for 1–8 concrete_anchors (hard limit 16), a genre label of at most 100 characters (hard limit 300), and 6–12 review_notes (hard limit 32). Each review note is at most 1000 characters. These editorial allowances do not change the upload-field limits, exact quote requirements, or three title strategies.
 
 Return ONLY this JSON object (no code fences). Use null for unknown thumbnail metrics, real evidence quotes, and all three score objects. The sample placeholders/numbers are a shape, not facts:
 {

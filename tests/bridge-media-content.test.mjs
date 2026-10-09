@@ -75,6 +75,29 @@ function studio(){
   return {window,card,option,run:()=>window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'tts-one'}),counts:()=>({picks,closed})};
 }
 
+test('AI Studio closes only its identified welcome notice before inspecting the inert model and creating a dialog',async()=>{
+  const {window}=new JSDOM('<main inert><button id="create">Create new dialog</button></main><div id="g1-welcome-dialog"><h2>Welcome to AI Studio</h2><button aria-label="Close dialog" id="continue">Continue</button></div>',{url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  const d=window.document;window.HTMLElement.prototype.getClientRects=()=>[{}];
+  Object.defineProperty(d,'readyState',{value:'complete'});
+  let continued=0,created=0;
+  d.querySelector('#continue').onclick=()=>{continued++;d.querySelector('main').removeAttribute('inert');d.querySelector('#g1-welcome-dialog').remove()};
+  d.querySelector('#create').onclick=()=>created++;
+  window.eval(adapter);
+  const setup=()=>window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'tts-one',media:{tts:{model:'Gemini 3.8 Flash TTS'}}});
+  assert.equal((await setup()).ready,false);assert.equal(continued,1);assert.equal(created,0);
+  assert.equal((await setup()).ready,false);assert.equal(created,1);
+});
+
+test('AI Studio waits for its welcome control instead of declaring a missing TTS model or clicking an unrelated Continue',async()=>{
+  const {window}=new JSDOM('<div id="g1-welcome-dialog"><h2>Welcome to AI Studio</h2></div><button id="other">Continue</button>',{url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  window.HTMLElement.prototype.getClientRects=()=>[{}];let clicked=0;
+  Object.defineProperty(window.document,'readyState',{value:'complete'});
+  window.document.querySelector('#other').onclick=()=>clicked++;
+  window.eval(adapter);
+  await assert.rejects(window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'tts-one',media:{tts:{model:'Gemini 3.8 Flash TTS'}}}),e=>e.code==='INPUT_NOT_READY'&&/giới thiệu/.test(e.message));
+  assert.equal(clicked,0);
+});
+
 test('AI Studio chooses the voice card, closes its still-open picker, then verifies the speech badge',async()=>{
   const f=studio();
   assert.equal((await f.run()).ready,false);
@@ -89,6 +112,62 @@ test('AI Studio already-selected Enzo is closed once instead of selecting it for
   const f=studio();f.option.click();
   await f.run();await f.run();
   assert.deepEqual(f.counts(),{picks:1,closed:1});
+});
+
+test('AI Studio finishes its inert voice picker before verifying the unchanged TTS model',async()=>{
+  const f=studio(),d=f.window.document;
+  const settings=d.createElement('ms-run-settings');settings.textContent='Gemini 3.8 Flash TTS';
+  d.querySelector('#speech').append(settings);
+  const setup=()=>f.window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'tts-one',media:{tts:{model:'Gemini 3.8 Flash TTS'}}});
+  assert.equal((await setup()).ready,false);
+  assert.deepEqual(f.counts(),{picks:1,closed:0});
+  assert.equal((await setup()).ready,false);
+  assert.deepEqual(f.counts(),{picks:1,closed:1});
+  assert.equal((await setup()).ready,false);
+  assert.equal(d.querySelector('#speaker').textContent,'Speaker 1 - Enzo');
+});
+
+test('AI Studio opens collapsed run settings to verify the model instead of skipping the scene',async()=>{
+  const {window}=new JSDOM('<button id="toggle" aria-label="Toggle run settings panel"></button><button>Speaker 1 - Enzo</button><button aria-label="Style">Friendly</button><textarea></textarea><button>Run</button>',{url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  const d=window.document;window.HTMLElement.prototype.getClientRects=()=>[{}];Object.defineProperty(d,'readyState',{value:'complete'});
+  let opened=0,now=1000;window.Date.now=()=>now;
+  d.querySelector('#toggle').onclick=()=>{opened++;const settings=d.createElement('ms-run-settings');settings.textContent='Gemini 3.8 Flash TTS';d.body.append(settings)};
+  window.eval(adapter);
+  const setup=()=>window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'tts-one',media:{tts:{model:'Gemini 3.8 Flash TTS'}}});
+  assert.equal((await setup()).ready,false);assert.equal(opened,1);
+  assert.equal((await setup()).ready,false);now+=2500;
+  assert.equal((await setup()).ready,true);assert.equal(opened,1);
+});
+
+test('AI Studio still refuses to send when the required model is unavailable',async()=>{
+  const {window}=new JSDOM('<ms-run-settings><h2>A different TTS model</h2></ms-run-settings><button>Speaker 1 - Enzo</button><button aria-label="Style">Friendly</button><textarea></textarea><button>Run</button>',{url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  window.HTMLElement.prototype.getClientRects=()=>[{}];Object.defineProperty(window.document,'readyState',{value:'complete'});
+  window.eval(adapter);
+  await assert.rejects(window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'tts-one',media:{tts:{model:'Gemini 3.8 Flash TTS'}}}),/Chưa xác minh được model/);
+});
+
+test('AI Studio verifies the selected model card using its actual visible button caption',async()=>{
+  const {window}=new JSDOM('<button aria-label="Gemini 3.8 Flash TTS gemini-3.8-flash-tts Flagship TTS model">Gemini 3.8 Flash TTS</button><button>Speaker 1 - Enzo</button><button aria-label="Style">Friendly</button><textarea></textarea><button>Run</button>',{url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  window.HTMLElement.prototype.getClientRects=()=>[{}];Object.defineProperty(window.document,'readyState',{value:'complete'});
+  let now=1000,modelClicks=0;window.Date.now=()=>now;window.document.querySelector('button').onclick=()=>modelClicks++;
+  window.eval(adapter);
+  const setup=()=>window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'tts-one',media:{tts:{model:'Gemini 3.8 Flash TTS'}}});
+  assert.equal((await setup()).ready,false);now+=2500;
+  assert.equal((await setup()).ready,true);assert.equal(modelClicks,0);
+});
+
+test('AI Studio pastes and awaits voice search without confusing it with the narration editor',async()=>{
+  const f=studio(),d=f.window.document;
+  d.querySelector('[data-voice-name="Enzo"]').remove();
+  const search=d.querySelector('input');
+  search.addEventListener('input',()=>{if(search.value==='Enzo'&&!d.querySelector('[data-voice-name="Enzo"]')){
+    const card=d.createElement('div');card.setAttribute('data-voice-name','Enzo');card.innerHTML='<button class="voice-card-content">Enzo</button>';
+    card.querySelector('button').onclick=()=>{card.classList.add('selected');d.querySelector('#speaker').textContent='Speaker 1 - Enzo'};
+    d.querySelector('#mat-mdc-dialog-0').append(card);
+  }});
+  assert.equal((await f.run()).ready,false);assert.equal(search.value,'Enzo');
+  assert.equal((await f.run()).ready,false);assert.equal(d.querySelector('#speaker').textContent,'Speaker 1 - Enzo');
+  assert.equal((await f.run()).ready,false);assert.equal(d.querySelector('#mat-mdc-dialog-0'),null);
 });
 
 test('AI Studio reads Friendly from the visible style caption and closes its auxiliary editor before preparing speech',async()=>{
@@ -211,6 +290,45 @@ test('Flow remembers the selected thumbnail across adapter reloads, even if its 
   let output;for(let i=0;i<4;i++){f.advance(4500);output=await f.run();if(output.ready)break}
   assert.equal(output.ready,true);assert.equal(output.result.url,f.thumbnail);
   assert.equal(f.counts().opened,1);assert.equal(f.counts().wrong,0);
+});
+
+test('Flow recognizes the current icon-only Done control named Đã chỉnh sửa xong and downloads its tile',async()=>{
+  const f=flowResult();await f.run();f.advance(4500);await f.run();
+  f.d.querySelector('#done').setAttribute('aria-label','Đã chỉnh sửa xong');
+  f.d.querySelector('#done').innerHTML='<svg></svg>';
+  await f.run();assert.equal(f.counts().done,1);
+  let result;for(let i=0;i<4;i++){f.advance(4500);result=await f.run();if(result.ready)break}
+  assert.equal(result.ready,true);
+  f.d.querySelector('#download').textContent='Tải nội dung nghe nhìn xuống';
+  await f.run('media-download-click',{result:result.result});
+  assert.equal(f.counts().downloaded,1);assert.equal(f.counts().wrong,0);
+});
+
+test('Flow dismisses a download menu opened by the old adapter in its own editor before clicking Done',async()=>{
+  const f=flowResult();await f.run();f.advance(4500);await f.run();
+  f.window.history.replaceState({},'', '/project/test/edit/new-clip');
+  f.collection().menuOpened=true;
+  f.d.querySelector('#done').setAttribute('inert','');
+  const menu=f.d.createElement('div');menu.setAttribute('role','menu');f.d.body.append(menu);
+  const backdrop=f.d.createElement('div');backdrop.className='cdk-overlay-backdrop';f.d.body.append(backdrop);
+  let closed=0;backdrop.onclick=()=>{closed++;menu.remove();backdrop.remove();f.d.querySelector('#done').removeAttribute('inert')};
+  assert.equal((await f.run()).ready,false);assert.equal(closed,1);assert.equal(f.counts().done,0);
+  assert.equal((await f.run()).ready,false);assert.equal(f.counts().done,1);
+});
+
+test('Flow opens the compact grid context menu once on its selected result and downloads it without a More button',async()=>{
+  const f=flowResult();await f.run();f.advance(4500);await f.run();await f.run();
+  f.d.querySelector('#more').remove();let opened=0,downloaded=0;
+  f.d.querySelector('#new-card').addEventListener('contextmenu',event=>{
+    assert.equal(event.target,f.d.querySelector('#new'));event.preventDefault();opened++;
+    const menu=f.d.createElement('div');menu.className='cdk-overlay-pane';menu.setAttribute('role','menu');
+    menu.innerHTML='<button role="menuitem">Tải xuống</button>';menu.querySelector('button').onclick=()=>downloaded++;
+    f.d.body.append(menu);
+  });
+  assert.equal((await f.run()).ready,false);assert.equal(opened,1);
+  const result=await f.run();assert.equal(result.ready,true);assert.equal(opened,1);
+  await f.run('media-download-click',{result:result.result});
+  assert.equal(downloaded,1);assert.equal(f.counts().wrong,0);assert.equal(opened,1);
 });
 
 test('Flow clicks Done once and waits for the editor to actually close before downloading',async()=>{

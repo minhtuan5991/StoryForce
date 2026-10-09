@@ -1,13 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createAutomaticBridge,parseResult,parseBridgeResult} from '../browser-extension/automatic.js';
-import {withTabReadDeadline} from '../browser-extension/transport.js';
+import {withTabReadDeadline,isTabEditBusy} from '../browser-extension/transport.js';
 
 function fixture(options={pageSettleMs:0}){
   const db={};const calls=[];const closed=[];let time=1000;let sent=0;let saved=0;let claim;let created=0;
   const job={id:'job1',attempt:1,kind:'premise_mini_test',provider:'chatgpt',url:'https://chatgpt.com/',prompt:'Test prompt',timeout:30};
   const state={jobs:[job],poll:{text:'{"answer":"new response"}',busy:false},lostSend:false,rejectResult:false,retries:0};
-  const chrome={storage:{local:{get:async key=>structuredClone({[key]:db[key]}),set:async values=>Object.assign(db,structuredClone(values))}},tabs:{remove:async id=>{assert.ok(saved>0);if(state.closeError)throw Error('Cannot close');closed.push(id)},create:async()=>({id:9+created++}),get:async()=>({id:9,url:state.tabUrl||job.url,status:state.tabStatus||'complete'}),sendMessage:async(id,message)=>{
+  const chrome={storage:{local:{get:async key=>structuredClone({[key]:db[key]}),set:async values=>Object.assign(db,structuredClone(values))}},tabs:{remove:async id=>{assert.ok(saved>0);if(state.closeError)throw Error(state.closeError===true?'Cannot close':state.closeError);closed.push(id)},create:async()=>{state.createCalls=(state.createCalls||0)+1;if(state.createError)throw Error(state.createError);return {id:9+created++}},get:async()=>({id:9,url:state.tabUrl||job.url,status:state.tabStatus||'complete'}),sendMessage:async(id,message)=>{
     calls.push(message.action);
     if(message.action==='auto-ready'){if(state.hungReady)return new Promise(()=>{});return {ok:true,ready:state.editorReady!==false}}
     if(message.action==='auto-prepare'){
@@ -53,6 +53,104 @@ function fixture(options={pageSettleMs:0}){
   const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},now:()=>time,readTimeoutMs:20,...options});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
   return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:(ms=31000)=>{time+=ms}};
 }
+
+const tabEditError='Tabs cannot be edited right now (user may be dragging a tab).';
+
+test('only explicit tab-strip busy rejections are classified as safe retries',()=>{
+  assert.equal(isTabEditBusy(Error(tabEditError)),true);
+  assert.equal(isTabEditBusy(Error('Tabs cannot be edited right now.')),true);
+  for(const message of ['No tab with id: 9.','Response port closed','Permission denied','Cannot close']){
+    assert.equal(isTabEditBusy(Error(message)),false);
+  }
+});
+
+test('YouTube metadata waits for a busy tab strip and resumes the same unsent attempt across restarts',async()=>{
+  const f=fixture();let a=f.create();f.state.jobs[0].kind='youtube_metadata';f.state.createError=tabEditError;
+  await a.setEnabled(true);await a.tick();
+  const first=await a.read();assert.equal(first.phase,'opening');assert.equal(first.attempt,1);
+  assert.equal(first.tabId,undefined);assert.equal(f.state.createCalls,1);
+  assert.deepEqual(f.counts(),{sent:0,saved:0});assert.equal(f.created(),0);
+  a=f.create();await a.tick();const second=await a.read();assert.equal(second.tabEditChecks,2);
+  const deadline=second.deadline;
+  a=f.create();await a.tick();assert.equal(f.state.createCalls,2);
+  assert.equal((await a.read()).deadline,deadline);
+  f.state.createError=null;for(let i=0;i<8;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);
+  assert.equal(f.state.retries,0);assert.deepEqual(f.closed,[9]);
+});
+
+test('a tab-strip wait expires once and user Resume can recover without a new AI attempt',async()=>{
+  const f=fixture(),a=f.create();f.state.jobs[0].kind='youtube_metadata';f.state.createError=tabEditError;
+  await a.setEnabled(true);for(let i=0;i<24;i++)await a.tick();
+  assert.equal((await a.read()).phase,'paused');const calls=f.state.createCalls;
+  for(let i=0;i<10;i++)await a.tick();assert.equal(f.state.createCalls,calls);
+  assert.equal(f.state.retries,0);assert.equal(f.counts().sent,0);
+  f.state.createError=null;await a.resume();for(let i=0;i<7;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);assert.equal(f.state.retries,0);
+});
+
+test('upgrade recovers a legacy YouTube metadata tab lock only with an unsent backend claim',async()=>{
+  for(const alreadySent of [false,true]){
+    const f=fixture();let a=f.create();f.state.jobs[0].kind='youtube_metadata';
+    if(!alreadySent)f.state.createError=tabEditError;
+    await a.setEnabled(true);await a.tick();
+    f.db.autoBridge={...f.db.autoBridge,phase:'paused',resumePhase:'opening',message:tabEditError};
+    f.state.createError=null;a=f.create();await a.tick();
+    assert.equal((await a.read()).phase,alreadySent?'paused':'opening');
+    for(let i=0;i<7;i++)await a.tick();
+    assert.equal(f.counts().sent,1);assert.equal(f.created(),1);
+    assert.equal(f.counts().saved,alreadySent?0:1);assert.equal(f.state.retries,0);
+  }
+});
+
+test('cancel or disable while the tab strip is locked never creates or sends another tab',async()=>{
+  for(const cancel of [true,false]){
+    const f=fixture(),a=f.create();f.state.createError=tabEditError;
+    await a.setEnabled(true);await a.tick();
+    if(cancel)f.state.jobs=[];else await a.setEnabled(false);
+    f.state.createError=null;f.advance();for(let i=0;i<4;i++)await a.tick();
+    assert.equal(f.state.createCalls,1);assert.equal(f.created(),0);assert.equal(f.counts().sent,0);
+  }
+});
+
+test('busy tab cleanup retries only Close after saving, including a worker restart',async()=>{
+  const f=fixture();let a=f.create();await a.setEnabled(true);for(let i=0;i<5;i++)await a.tick();
+  f.state.closeError=tabEditError;await a.tick();assert.equal((await a.read()).phase,'closing');
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.deepEqual(f.closed,[]);
+  a=f.create();f.state.closeError=null;await a.tick();await a.tick();
+  assert.equal((await a.read()).phase,'idle');assert.deepEqual(f.closed,[9]);
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.state.retries,0);
+});
+
+test('persistent tab-strip lock after saving stops cleanup without blocking the next job',async()=>{
+  const f=fixture(),a=f.create();await a.setEnabled(true);for(let i=0;i<5;i++)await a.tick();
+  f.state.closeError=tabEditError;for(let i=0;i<9;i++)await a.tick();
+  assert.equal((await a.read()).phase,'idle');assert.deepEqual(f.closed,[]);
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);
+});
+
+test('YouTube metadata schema upgrade collects the existing sent answer once without creating a tab or sending again',async()=>{
+  const f=fixture();let a=f.create();f.state.jobs[0].kind='youtube_metadata';
+  await a.setEnabled(true);await a.tick();
+  f.db.autoBridge={...f.db.autoBridge,phase:'paused',resumePhase:'submitted',message:'3 validation errors for YouTubeMetadata\nstory_packaging.concrete_anchors\nList should have at most 8 items'};
+  a=f.create();await a.tick();assert.equal((await a.read()).phase,'submitted');assert.equal((await a.read()).metadataRecovered,true);
+  for(let i=0;i<7;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.created(),1);assert.equal(f.state.retries,0);
+});
+
+test('metadata revalidation is bounded and cannot recover an unsent or disabled attempt',async()=>{
+  for(const mode of ['rejected','unsent','disabled']){
+    const f=fixture(),a=f.create();f.state.jobs[0].kind='youtube_metadata';
+    if(mode==='unsent')f.state.createError=tabEditError;
+    await a.setEnabled(true);await a.tick();
+    f.db.autoBridge={...f.db.autoBridge,phase:'paused',resumePhase:'submitted',message:'3 validation errors for YouTubeMetadata'};
+    if(mode==='disabled')await a.setEnabled(false);
+    if(mode==='rejected')f.state.rejectResult=true;
+    for(let i=0;i<14;i++)await a.tick();
+    assert.equal((await a.read()).phase,'paused');assert.equal(f.counts().sent,mode==='unsent'?0:1);
+    assert.equal(f.counts().saved,0);assert.equal(f.state.retries,0);assert.equal(f.created(),mode==='unsent'?0:1);
+  }
+});
 
 test('pasted text file preparation stays in the same tab and never authorizes Send before upload completes',async()=>{
   const f=fixture(),a=f.create();f.state.preparingFile=true;
@@ -271,6 +369,17 @@ test('cancel and disable during retry wait do not send a new request',async()=>{
     if(cancel)f.state.jobs=[];else await a.setEnabled(false);
     f.advance();await a.tick();assert.equal(f.state.retries,0);assert.equal(f.counts().sent,1);
   }
+});
+
+test('thumbnail contract correction waits before a new attempt and uses the same bounded retry budget',async()=>{
+  const f=fixture(),a=f.create();f.state.jobs[0].kind='thumbnail_plan';
+  f.state.rejectResult=true;f.state.resultCode='THUMBNAIL_CONTRACT';await a.setEnabled(true);
+  for(let i=0;i<8;i++)await a.tick();
+  assert.equal((await a.read()).phase,'retry_wait');assert.equal(f.state.retries,0);
+  assert.match((await a.read()).message,/kế hoạch thumbnail/);
+  f.advance();await a.tick();assert.deepEqual(f.state.retryReasons,['THUMBNAIL_CONTRACT']);
+  f.state.rejectResult=false;for(let i=0;i<8;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});
 });
 
 test('legacy paused JSON error automatically schedules the authorized new retry',async()=>{

@@ -1,0 +1,31 @@
+import {test,expect} from '@playwright/test';
+
+test('new project saves optional music and resource counts, validates minimums and fits mobile',async({page,request})=>{
+  await page.addInitScript(()=>localStorage.setItem('storyforge-interface-language','en'));
+  const token=(await (await request.get('/api/session')).json()).token;
+  const headers={'X-StoryForge-Token':token};
+  const channel=await (await request.post('/api/channels',{headers,data:{name:'Music QA',status:'ESTABLISHED',niche:'Mystery'}})).json();
+  await page.goto('/#/channels/'+channel.id);
+  await page.getByRole('button',{name:'New project',exact:true}).first().click();
+  await page.getByLabel('Project title').fill('The Background Music Test');
+  await page.getByRole('button',{name:'Continue',exact:true}).click();
+  await page.getByRole('button',{name:'5 min',exact:true}).click();
+  const images=page.getByRole('spinbutton',{name:'Scene images',exact:true});
+  const videos=page.getByRole('spinbutton',{name:'Scene videos · 10 seconds each',exact:true});
+  await expect(images).toHaveValue('5');await expect(videos).toHaveValue('2');
+  await images.fill('2');await page.getByRole('button',{name:'Continue',exact:true}).click();
+  await expect(images).toBeVisible();
+  await images.fill('3');
+  await page.getByRole('checkbox',{name:'Add instrumental background music with Google Lyria',exact:true}).check();
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:'../.runtime/music-wizard-mobile.png',fullPage:true});
+  await page.getByRole('button',{name:'Continue',exact:true}).click();
+  await page.getByRole('button',{name:'Create project',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'The Background Music Test',level:1})).toBeVisible();
+  const id=page.url().match(/projects\/([^/]+)/)![1];
+  const project=await (await request.get('/api/projects/'+id)).json();
+  expect(project.settings.production_options).toEqual({music_enabled:true,image_count:3,video_count:2,preset_counts:true});
+  await page.locator('.studio-nav').getByRole('link',{name:'Assets',exact:true}).click();
+  await expect(page.getByRole('heading',{name:'Shared background music',exact:true})).toBeVisible();
+});

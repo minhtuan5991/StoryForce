@@ -77,10 +77,11 @@ def visual_budget(project, config, payload=None):
     videos = min(total-1, max(2, min(3, int(total*ratio)))) if ratio > 0 else 0
     standard = {'image_count':total-videos, 'video_count':videos}
     minimum = {'image_count':max(1, math.ceil(standard['image_count']/2)), 'video_count':math.ceil(videos/2)}
+    efficient = {'image_count':minimum['image_count'], 'video_count':videos}
     options = {**((project.get('settings') or {}).get('visual_options') or {}), **(payload or {})}
     mode = options.get('mode','standard')
-    if mode not in ('standard','minimum','custom'):
-        raise ValueError('Choose standard, minimum or custom visual count')
+    if mode not in ('standard','minimum','efficient','custom'):
+        raise ValueError('Choose standard, fewer images, minimum or custom visual count')
     if mode == 'custom':
         chosen = {key:options.get(key) for key in ('image_count','video_count')}
         if any(isinstance(v,bool) or not isinstance(v,int) for v in chosen.values()) or not 1 <= chosen['image_count'] <= 200 or not 0 <= chosen['video_count'] <= 199 or sum(chosen.values()) > 200:
@@ -92,8 +93,8 @@ def visual_budget(project, config, payload=None):
         chosen = {'video_count':min(count-1,int(count*config['visual_video_ratio']))}
         chosen['image_count'] = count-chosen['video_count']
     else:
-        chosen = minimum if mode == 'minimum' else standard
-    return {'mode':mode, **chosen, 'count':sum(chosen.values()), 'standard':standard, 'minimum':minimum,
+        chosen = minimum if mode == 'minimum' else efficient if mode == 'efficient' else standard
+    return {'mode':mode, **chosen, 'count':sum(chosen.values()), 'standard':standard, 'minimum':minimum,'efficient':efficient,
             'opening_video_count': min(3, chosen['video_count'])}
 
 

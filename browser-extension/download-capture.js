@@ -19,7 +19,7 @@ export function armDownloadCapture(ticket,provider){
     const comma=href.indexOf(','),header=href.slice(5,comma);
     if(comma<0||!header.endsWith(';base64'))return href;
     const type=header.slice(0,-7);
-    if(!/^(?:audio\/(?:wav|x-wav|wave)|image\/(?:png|jpeg|webp)|video\/mp4)$/i.test(type))return href;
+    if(!/^(?:audio\/(?:wav|x-wav|wave|mpeg|mp3)|image\/(?:png|jpeg|webp)|video\/mp4)$/i.test(type))return href;
     const binary=atob(href.slice(comma+1)),bytes=new Uint8Array(binary.length);
     for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
     const url=URL.createObjectURL(new Blob([bytes],{type}));created.add(url);
@@ -27,6 +27,7 @@ export function armDownloadCapture(ticket,provider){
   }
   function record(anchor){
     if(Date.now()>until||!anchor?.href||!anchor.hasAttribute('download'))return false;
+    if(provider==='lyria'&&!/\.mp3$/i.test(anchor.getAttribute('download')||''))return false;
     const protocol=new URL(anchor.href,location.href).protocol;
     if(!['blob:','https:','data:'].includes(protocol))return false;
     const url=downloadableUrl(anchor.href);
@@ -46,6 +47,7 @@ export function armDownloadCapture(ticket,provider){
   function post(data,...rest){
     const output=data?.values?.[0],filename=data?.values?.[1];
     const expected=provider==='gemini'?output?.type==='image/png'&&/^Gemini_Generated_Image_[a-z0-9_]+(?:\.png)?$/i.test(filename):
+      provider==='lyria'?['audio/mpeg','audio/mp3'].includes(output?.type)&&/\.mp3$/i.test(filename):
       provider==='aistudio'&&['','audio/wav','audio/x-wav','audio/wave'].includes(output?.type)&&/^Generated Audio [\w ,:()-]+(?:\.wav)?$/i.test(filename);
     if(expected&&Date.now()<=until&&typeof data?.code==='string'&&data.code.replace(/\s+/g,'')===sandboxDownload.replace(/\s+/g,'')&&
       Array.isArray(data.paramNames)&&data.paramNames.join(',')==='blob,filename'&&data.values?.length===2&&
@@ -78,7 +80,7 @@ export function armDownloadCapture(ticket,provider){
     if(globalThis[slot]===cleanup)delete globalThis[slot];
   }
   prototype.click=wrapped;
-  if(['gemini','aistudio'].includes(provider))MessagePort.prototype.postMessage=post;
+  if(['gemini','aistudio','lyria'].includes(provider))MessagePort.prototype.postMessage=post;
   URL.revokeObjectURL=revoke;
   globalThis[slot]=cleanup;
   document.addEventListener('click',listener,true);

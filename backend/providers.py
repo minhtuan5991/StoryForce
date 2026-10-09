@@ -8,17 +8,18 @@ from .intelligence import duration_profile, words
 from .premise_policy import mock_batch
 
 PROVIDERS = {
-    "story_dna": "gemini", "channel_fit": "gemini", "content_direction": "chatgpt",
-    "discovery": "gemini", "premise_generation": "chatgpt", "premise_mini_test": "chatgpt",
-    "story_bible": "chatgpt", "outline": "chatgpt", "outline_audit": "gemini",
+    "story_dna": "chatgpt", "channel_fit": "chatgpt", "content_direction": "chatgpt",
+    "discovery": "chatgpt", "premise_generation": "chatgpt", "premise_mini_test": "chatgpt",
+    "story_bible": "chatgpt", "outline": "chatgpt", "outline_audit": "chatgpt",
     "outline_rewrite": "chatgpt", "full_draft": "chatgpt", "gemini_story_audit": "gemini",
     "chatgpt_cross_review": "chatgpt", "disagreement_resolver": "gemini", "targeted_rewrite": "chatgpt",
-    "final_verify_gemini": "gemini", "final_verify_chatgpt": "chatgpt", "visual_director": "gemini",
+    "final_verify_gemini": "gemini", "final_verify_chatgpt": "chatgpt", "visual_director": "chatgpt",
     "tts_context": "aistudio", "image_generation": "gemini", "video_generation": "flow", "youtube_metadata": "chatgpt", "thumbnail_plan": "chatgpt",
-    "opening_variants": "chatgpt", "retention_audit": "gemini", "retention_rewrite": "chatgpt",
+    "opening_variants": "chatgpt", "retention_audit": "chatgpt", "retention_rewrite": "chatgpt",
 }
 PROVIDER_URLS = {"chatgpt": "https://chatgpt.com/", "gemini": "https://gemini.google.com/app",
-                 "aistudio": "https://aistudio.google.com/generate-speech", "flow": "https://flow.google.com/"}
+                 "aistudio": "https://aistudio.google.com/generate-speech", "flow": "https://flow.google.com/",
+                 "lyria": "https://gemini.google.com/app"}
 
 
 class LLMProvider(ABC):
@@ -130,7 +131,10 @@ class MockProvider(LLMProvider):
                 issues = [self.fixture["audit_issue"]]
             return {"issues": issues, "summary": "Mock evidence-based inventory check"}
         if kind == "chatgpt_cross_review":
-            return {"reviews": [{"issue_id": issue["issue_key"], "verdict": "CONFIRMED", "reason": "The quoted sentence conflicts with the later transmission and Bible inventory."} for issue in context.get("issues", []) if issue["scope"] == "story"], "new_issues": [], "independent_audit_summary": "Mock independent sweep completed."}
+            result = {"reviews": [{"issue_id": issue["issue_key"], "verdict": "CONFIRMED", "reason": "The quoted sentence conflicts with the later transmission and Bible inventory."} for issue in context.get("issues", []) if issue["scope"] == "story"], "new_issues": [], "independent_audit_summary": "Mock independent sweep completed."}
+            if context.get('audience_timing'):
+                result['retention'] = self.generate('retention_audit', context, prompt)
+            return result
         if kind == "disagreement_resolver":
             return {"resolutions": [{"issue_id": issue["issue_key"], "verdict": "CONFIRMED", "reason": "The quoted evidence supports the issue."} for issue in context.get("issues", []) if issue["final_status"] in ("RECHECK", "UNCERTAIN")]}
         if kind == "targeted_rewrite":

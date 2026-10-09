@@ -1,5 +1,5 @@
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 class ChannelCreate(BaseModel):
@@ -25,6 +25,18 @@ class SourceCreate(BaseModel):
     channel_id: str | None = None
 
 
+class ProductionOptions(BaseModel):
+    music_enabled: bool = False
+    image_count: int = Field(3, ge=3, le=198)
+    video_count: int = Field(2, ge=2, le=197)
+
+    @model_validator(mode='after')
+    def total_budget(self):
+        if self.image_count + self.video_count > 200:
+            raise ValueError('At most 200 images and videos combined')
+        return self
+
+
 class ProjectCreate(BaseModel):
     channel_id: str
     source_id: str | None = None
@@ -33,6 +45,13 @@ class ProjectCreate(BaseModel):
     duration_mode: str = "10"
     target_minutes: float = Field(10, ge=1, le=240)
     wpm: int = Field(150, ge=80, le=240)
+    production_options: ProductionOptions | None = None
+
+    @model_validator(mode='after')
+    def opening_budget(self):
+        if self.production_options and self.production_options.video_count * 10 >= self.target_minutes * 60:
+            raise ValueError('Leave narration time for the still images after the opening videos')
+        return self
 
 
 class JobCreate(BaseModel):

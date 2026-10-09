@@ -59,9 +59,15 @@ def parse_probe(info: dict) -> dict:
     numerator, _, denominator = video.get("avg_frame_rate", "0/1").partition("/")
     fps = float(numerator or 0) / max(1, float(denominator or 1))
     duration = float(fmt.get("duration") or video.get("duration") or audio.get("duration") or 0)
+    def count(value):
+        # WebM/MOV streams may report N/A instead of a container frame count.
+        try:return int(value or 0)
+        except (ValueError, TypeError):return 0
     return {"duration": duration, "video_duration": float(video.get("duration") or 0), "audio_duration": float(audio.get("duration") or 0), "width": video.get("width"), "height": video.get("height"), "fps": fps,
             "has_audio": bool(audio), "has_video": bool(video), "audio_codec": audio.get("codec_name"),
-            "video_codec": video.get("codec_name"), "sample_rate": audio.get("sample_rate"), "channels": audio.get("channels"), "size": int(fmt.get("size") or 0)}
+            "video_codec": video.get("codec_name"), "video_frames": count(video.get("nb_frames")),
+            "has_b_frames": count(video.get("has_b_frames")),
+            "sample_rate": audio.get("sample_rate"), "channels": audio.get("channels"), "size": int(fmt.get("size") or 0)}
 
 
 def probe(path: Path, settings: dict) -> dict:
@@ -361,6 +367,9 @@ def render_inputs_hash(project, chunks, scenes, assets, settings):
         "assets": fields(selected_assets, ("id", "sha256", "path", "duration", "metadata_json")),
         "settings": {k:settings.get(k) for k in ("render_width", "render_height", "render_fps", "render_encoder", "transition_seconds", "music_db", "ambient_db", "narration_db", "allow_visual_fallback", "silence_threshold")},
     }
+    selected_music = project.get('settings', {}).get('background_music', {}).get('asset_id')
+    if selected_music:
+        value['background_music_asset_id'] = selected_music
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -369,6 +378,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     from .render_cache import RenderCache, file_signature, reuse_file
     from .render_composite import delivery_graph
     from .render_pipeline import compose_clips, wave_key_color
+    from .render_smart_join import scene_parts, keyframe_args
     started = time.monotonic()
     binary = find_binary("ffmpeg", settings)
     if not binary:
@@ -421,6 +431,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     fps, width, height = plan["fps"], plan["width"], plan["height"]
     encoder = choose_encoder(binary,settings)
     plan['video_codec'] = encoder
+    smart_parts = scene_parts(plan) if settings.get('render_smart_join', True) and encoder in ('libx264', 'h264_nvenc') else []
     workers = 2 if (os.cpu_count() or 1) >= 6 else 1
     base = [binary, "-hide_banner", "-y", "-nostdin", "-threads", "1"]
     source_base = [original_binary, *base[1:]]
@@ -468,10 +479,10 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     write_subtitles(chunks, folder)
     stage_done('narration')
 
-    def still(image_path: Path, duration: float, output: Path, number: int, frames: int):
+    def still(image_path: Path, duration: float, output: Path, number: int, frames: int, boundary_args):
         x = "iw/2-(iw/zoom/2)" if number % 2 else "(iw-iw/zoom)*on/" + str(frames)
         vf = f"scale={width*2}:{height*2}:force_original_aspect_ratio=increase:out_range=tv:out_color_matrix=bt709,crop={width*2}:{height*2},zoompan=z='min(1.0+on*0.00015,1.08)':x='{x}':y='ih/2-(ih/zoom/2)':d={frames}:s={width}x{height}:fps={fps},setsar=1,{color_filter}"
-        return encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(image_path), "-vf", vf, "-frames:v", str(frames), "-an"],output)
+        return encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(image_path), "-vf", vf, "-frames:v", str(frames), "-an", *boundary_args],output)
 
     placeholder = folder / "missing_visual.png"
     def placeholder_path():
@@ -493,9 +504,10 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
             asset = fallback
         source = safe_path(root,asset['path']) if asset else placeholder_path()
         info=source.stat()
-        key = {'renderer':3,'path':str(source),'sha256':asset.get('sha256') if asset else None,'size':info.st_size,'mtime':info.st_mtime_ns,
+        boundary_args = keyframe_args(*smart_parts[i], fps) if smart_parts else []
+        key = {'renderer':4,'path':str(source),'sha256':asset.get('sha256') if asset else None,'size':info.st_size,'mtime':info.st_mtime_ns,
                'width':width,'height':height,'fps':fps,'frames':scene['clip_frames'],'ending':bool(scene.get('ending_thumbnail')),
-               'kind':asset['kind'] if asset else 'image','motion':i,'encoder':encoder}
+               'kind':asset['kind'] if asset else 'image','motion':i,'encoder':encoder,'boundaries':boundary_args}
         name=hashlib.sha256(json.dumps(key,sort_keys=True).encode()).hexdigest()
         output=cache/(name+'.mp4')
         if scene_cache.valid(output, duration=scene['clip_duration'], width=width, height=height, fps=fps):
@@ -506,9 +518,9 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
             path = safe_path(root, asset["path"]) if asset else placeholder_path()
             if scene.get('ending_thumbnail'):
                 vf=f"scale={width}:{height}:force_original_aspect_ratio=decrease:out_range=tv:out_color_matrix=bt709,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,{color_filter}"
-                used_encoder = encode_scene(base+["-loop","1","-i",str(path),"-vf",vf,"-r",str(fps),"-frames:v",str(scene['clip_frames']),"-an"],pending)
+                used_encoder = encode_scene(base+["-loop","1","-i",str(path),"-vf",vf,"-r",str(fps),"-frames:v",str(scene['clip_frames']),"-an",*boundary_args],pending)
             else:
-                used_encoder = still(path, duration, pending, i, scene['clip_frames'])
+                used_encoder = still(path, duration, pending, i, scene['clip_frames'], boundary_args)
         else:
             path = safe_path(root, asset["path"])
             # Decode the entire video once at normal speed. No looping,
@@ -516,7 +528,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
             # Snap endpoints to the output frame grid, never accumulating one
             # rounding error per scene. At most one frame is held at the end.
             vf = f"setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=increase:out_range=tv:out_color_matrix=bt709,crop={width}:{height},fps={fps},tpad=stop_mode=clone:stop_duration={1/fps},trim=end_frame={scene['clip_frames']},setsar=1,{color_filter}"
-            used_encoder = encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(path), "-vf", vf, "-an"],pending)
+            used_encoder = encode_scene(base + ["-protocol_whitelist", "file,pipe", "-i", str(path), "-vf", vf, "-an", *boundary_args],pending)
         scene_cache.publish(pending, output, render_encoder=used_encoder)
         return i,output,False,used_encoder
     clips = [None]*len(scenes)
@@ -529,9 +541,14 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
             i,output,cached,used_encoder=future.result();clips[i]=output;reused+=int(cached);scene_encoders.add(used_encoder)
             progress(10+int(60*done/len(scenes)),f"Preparing scenes {done}/{len(scenes)} ({reused} reused)")
     plan['stream_copy_compatible'] = len(scene_encoders) == 1 and 'unknown' not in scene_encoders
+    plan['smart_join_ready'] = bool(smart_parts) and scene_encoders == {encoder}
     stage_done('scenes')
     progress(76, "Mixing audio with narration ducking")
-    beds = [a for a in assets if a["kind"] in ("music", "ambient")][:2]
+    from .background_music import music_volume_filter
+    selected_music = project.get('settings', {}).get('background_music', {}).get('asset_id')
+    shared = next((a for a in assets if a['kind'] == 'music' and a['id'] == selected_music), None)
+    beds = ([shared] + [a for a in assets if a['kind'] == 'ambient'])[:2] if shared else [
+        a for a in assets if a['kind'] in ('music', 'ambient') and not a.get('metadata_json', {}).get('shared_library_id')][:2]
     effects = [a for a in assets if a["kind"] == "sfx"][:30]
     audio_args = source_base + ["-i", str(master)]
     filters = [f"[0:a]volume={float(settings.get('narration_db',0))}dB[n]"]
@@ -543,7 +560,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     for i, bed in enumerate(beds):
         audio_args += ["-stream_loop", "-1", "-protocol_whitelist", "file,pipe", "-i", str(safe_path(root, bed["path"]))]
         db = float(settings.get(f"{bed['kind']}_db", -28))
-        filters.append(f"[{i+1}:a]volume={db}dB[b{i}];[b{i}][sc{i}]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[d{i}]")
+        filters.append(f"[{i+1}:a]{music_volume_filter(bed, db)}[b{i}];[b{i}][sc{i}]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[d{i}]")
         labels.append(f"[d{i}]")
     for i, effect in enumerate(effects):
         audio_args += ["-protocol_whitelist", "file,pipe", "-i", str(safe_path(root, effect["path"]))]
@@ -553,7 +570,7 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
         labels.append(f"[e{i}]")
     filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0,alimiter=limit=0.95[out]")
     audio_key = {'renderer':1, 'master':file_signature(cached_master), 'duration':total,
-                 'beds':[[file_signature(safe_path(root,a['path'])), a['kind'], settings.get(f"{a['kind']}_db", -28)] for a in beds],
+                 'beds':[[file_signature(safe_path(root,a['path'])), a['kind'], music_volume_filter(a,settings.get(f"{a['kind']}_db", -28))] for a in beds],
                  'effects':[[file_signature(safe_path(root,a['path'])), a.get('metadata_json',{}).get('offset',0), a.get('metadata_json',{}).get('volume_db',-18)] for a in effects],
                  'narration_db':settings.get('narration_db',0)}
     cached_audio = processing_cache.path('mixed-audio', audio_key, '.wav')
@@ -570,7 +587,8 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     # proven CPU join workaround and bound all transition graphs to six inputs.
     joined, join_groups, join_files = compose_clips(clips,plan,folder,base,
         lambda inputs,output:encode_scene(inputs,output,force_cpu=encoder!='h264_nvenc'),progress,
-        cache=processing_cache, remux=lambda args:run_process(args,log,idle_timeout=900), stats=performance)
+        cache=processing_cache, remux=lambda args:run_process(args,log,idle_timeout=900), stats=performance,
+        smart_join=settings.get('render_smart_join', True), inspect=lambda path:probe(path, settings))
     stage_done('timeline')
     progress(86, "Compositing waveform, logo and captions")
     keyed_wave = None

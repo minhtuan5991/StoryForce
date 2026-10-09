@@ -103,7 +103,7 @@ def test_pipeline_stops_at_human_checkpoints(client,project):
     assert detail['draft'] and not detail['locked'] and not detail['chunks']
     assert detail['next']['checkpoint']=='Review and approve Story Lock.'
     assert detail['lock_gate']['can_lock']
-    assert sum(bool(pr['mini_test']) for pr in detail['premises'])==3
+    assert sum(bool(pr['mini_test']) for pr in detail['premises'])==1
 
 
 def test_manual_mode_and_default_premise_count(client,project):
