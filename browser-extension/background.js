@@ -1,10 +1,12 @@
 import {createAutomaticBridge,parseBridgeResult} from './automatic.js';
 import {withTabReadDeadline} from './transport.js';
+import {createContentConnection} from './content-connection.js';
 import {copyResponseSource} from './raw-response.js';
 import {createMediaBridge} from './media-automatic.js';
 import {armDownloadCapture,readDownloadCapture} from './download-capture.js';
 const BASE = 'http://127.0.0.1:8787';
 const ALLOWED = ['chatgpt.com','gemini.google.com','aistudio.google.com','labs.google','flow.google.com'];
+const ensureContent=createContentConnection({chrome,allowedHosts:ALLOWED});
 async function request(path, method='GET', body) {
   const {token} = await chrome.storage.local.get('token');
   if (!token) throw new Error('Pair the extension first. Generate a key in StoryForge Settings.');
@@ -58,19 +60,6 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   return true;
 });
 
-async function ensureContent(tabId){
-  try{
-    const response=await withTabReadDeadline(()=>chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'}));
-    if(response?.version===chrome.runtime.getManifest().version)return;
-  }catch(error){
-    // Do not pile up injections in a hung renderer. A disconnected listener
-    // can be reinstalled, but a timed-out read waits for the next collection tick.
-    if(error.code==='TAB_READ_TIMEOUT')throw error;
-  }
-  const tab=await chrome.tabs.get(tabId);
-  if(!ALLOWED.includes(new URL(tab.url).hostname))throw new Error('Unsupported provider tab');
-  await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},files:['adapters.js','paste.js','media-content.js','content.js']}));
-}
 async function captureRaw(tabId,target){
   const tab=await chrome.tabs.get(tabId);
   if(new URL(tab.url).hostname!=='chatgpt.com')throw new Error('Unsupported raw response tab');

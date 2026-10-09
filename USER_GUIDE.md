@@ -1,3 +1,7 @@
+## Sửa Bridge báo chờ ô nhập dù tab đã ổn định
+
+Từ **v3.1.33**, **Browser Bridge 1.1.32** sửa bộ đếm ổn định bị đặt lại ở mỗi lần kết nối. Reload extension trong Extensions để áp dụng, giữ khóa ghép nối hiện có. Nếu tác vụ đã tạm dừng trước khi cập nhật, bấm **Tiếp tục sau khi kiểm tra tab AI** ở Bridge; giữ đúng tab và lượt tác vụ, không cần bấm Thử lại trong app. Tác vụ đã gửi chỉ tiếp tục lấy kết quả.
+
 ## Nhạc nền và tài nguyên từ v3.1.32
 
 Ở bước Định dạng khi tạo dự án, chọn nhạc nền Google Lyria nếu muốn và chốt số ảnh/video (tối thiểu 3 ảnh, 2 video 10 giây). Gợi ý thay đổi theo thời lượng; số lượng đã tự nhập được giữ cho đến khi bấm Dùng số lượng gợi ý. Thumbnail và ảnh tham chiếu nhân vật tính riêng. Chế độ tự động chạy TTS, lập kế hoạch và tạo tài nguyên theo số lượng đã chọn; không chờ xác nhận số lượng lần nữa. Vẫn duyệt Khóa truyện, dựng bản đầu tiên và video cuối.

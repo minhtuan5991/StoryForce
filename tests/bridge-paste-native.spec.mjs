@@ -11,7 +11,8 @@ before(async()=>{
   context=await chromium.launchPersistentContext('',{channel:process.env.STORYFORGE_TEST_BROWSER?undefined:'chromium',
     executablePath:process.env.STORYFORGE_TEST_BROWSER,headless:true,ignoreDefaultArgs:['--disable-extensions'],
     args:['--disable-extensions-except='+extension,'--load-extension='+extension]});
-  await context.route('**/*',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Blocked test request</title>'}));
+  await context.route('**/*',route=>route.request().url().startsWith('chrome-extension://')?route.continue():
+    route.fulfill({contentType:'text/html',body:'<!doctype html><title>Blocked test request</title>'}));
   worker=context.serviceWorkers()[0]||await context.waitForEvent('serviceworker');
 });
 after(async()=>{await context?.close()});
@@ -34,6 +35,26 @@ async function fixture(host,body){
   return {page,url,tabId,invoke,close:()=>page.close()};
 }
 const prompt='Scene 001: Tiếng Việt and “quoted dialogue”.\n\n{"line":"A\\\"B","duration":10}\nThe final line.';
+test('real extension connection retains the readiness timer instead of reinjecting every tick',async()=>{
+  const f=await fixture('chatgpt.com','<main><form><div contenteditable="true" role="textbox" id="prompt-textarea"></div><button type="button" id="send" data-testid="composer-send-button">Send</button></form></main>');
+  const connectionPage=await context.newPage();
+  try {
+    await connectionPage.goto(worker.url().replace(/background\.js$/,'popup.html'));
+    const observe=()=>connectionPage.evaluate(async tabId=>{
+      const {createContentConnection}=await import(chrome.runtime.getURL('content-connection.js'));
+      await createContentConnection({chrome,allowedHosts:['chatgpt.com']})(tabId);
+      const ping=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'ping'});
+      const readiness=await chrome.tabs.sendMessage(tabId,{type:'storyforge',action:'auto-ready'});
+      return {ping,readiness,version:chrome.runtime.getManifest().version};
+    },f.tabId);
+    const first=await observe();assert.equal(first.ping.version,first.version);assert.equal(first.readiness.ready,false);
+    await f.page.waitForTimeout(2100);
+    assert.equal((await observe()).readiness.ready,true);
+    const prepared=await f.invoke({action:'auto-prepare',jobKey:'stable:1',prompt});assert.equal(prepared.ok,true,prepared.error);
+    assert.equal(await f.page.evaluate(()=>window.pastes.length),1);
+    assert.equal(await f.page.evaluate(()=>window.sends),0);
+  } finally {await connectionPage.close();await f.close()}
+});
 for(const [provider,host,field,button] of [
   ['gemini','gemini.google.com','<rich-textarea><div contenteditable="true" role="textbox" class="ql-editor"></div></rich-textarea>','Send message'],
   ['flow','flow.google.com','<div contenteditable="true" role="textbox"></div>','Generate'],

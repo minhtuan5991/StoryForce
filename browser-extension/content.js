@@ -4,7 +4,10 @@
   if (globalThis.storyForgeListener) {
     try { chrome.runtime.onMessage.removeListener(globalThis.storyForgeListener); } catch {}
   }
-  globalThis.storyForgeVersion = STORYFORGE_ADAPTERS.version;
+  // Selector-map revisions are independent of the installed extension version.
+  // Reporting the map revision here makes the worker reinject on every tick,
+  // resetting the two-second editor stability window indefinitely.
+  globalThis.storyForgeVersion = chrome.runtime.getManifest().version;
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
     (el.checkVisibility ? el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) : getComputedStyle(el).visibility!=='hidden');

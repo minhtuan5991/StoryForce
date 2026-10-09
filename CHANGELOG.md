@@ -1,3 +1,9 @@
+## v3.1.33 — Sửa Bridge chờ ô nhập vô hạn
+
+- Dùng phiên bản extension thực tế để xác minh kết nối, độc lập với phiên bản bộ selector. Sửa việc nạp lại content script mỗi lần kiểm tra và làm mất bộ đếm ổn định 2 giây trên ChatGPT/Gemini và các tab media.
+- Giữ listener đang hoạt động; chỉ nạp lại khi mất kết nối hoặc nâng cấp extension. Tab bị treo vẫn có giới hạn thời gian chờ; giữ kiểm tra bản nháp và chống gửi trùng.
+- Kiểm thử hồi quy với các lần kiểm tra liên tiếp, nâng cấp, mất listener, tab treo và Paste thật trong extension. Kèm Bridge 1.1.32; Reload Bridge để áp dụng, không cần thay khóa ghép nối.
+
 ## v3.1.32 — Nhạc nền Lyria dùng chung và tài nguyên chọn sẵn
 
 - Khi tạo dự án, chọn bật/tắt nhạc nền không lời và số ảnh/video. Gợi ý theo thời lượng, tối thiểu 3 ảnh và 2 video 10 giây; thumbnail và ảnh tham chiếu tính riêng. Chế độ tự động dùng các lựa chọn này để lập kế hoạch và tạo tài nguyên sau TTS, không yêu cầu xác nhận số lượng lần thứ hai. Giữ điểm duyệt Khóa truyện và dựng bản đầu tiên. Dự án cũ giữ luồng hiện có.
