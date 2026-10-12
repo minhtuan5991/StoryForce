@@ -1,5 +1,115 @@
+## v3.1.46 — Giọng đọc theo kênh và xác nhận dự án Extend/Customize
+
+- Bỏ ô Tên giọng kể trong Thiết lập > Sản xuất. Tổng quan kênh có Speaker/Style mặc định; dự án mới có lựa chọn dùng mặc định hoặc nhập giọng riêng.
+- Chốt giọng theo dự án; nâng cấp giữ Enzo/Friendly vốn được Bridge sử dụng. Có thể sửa giọng trước khi tạo được TTS; ngăn đổi giọng khi đã có lời kể để tránh trộn giọng. Chunk/outro và Browser Bridge cùng dùng hồ sơ giọng này.
+- Extend/Customize mới chờ xác nhận thời lượng, số ảnh/video và giọng đọc ở Tổng quan trước khi chạy. Server, hàng đợi và API tác vụ đều kiểm tra điểm dừng này. Các dự án cũ chưa bắt đầu dàn ý và không có tác vụ hoạt động cũng được đưa về điểm xác nhận.
+- Browser Bridge 1.1.42 tìm đúng Speaker, Paste Style vào ô Describe the voice style và mở lại để xác minh đã lưu. Giọng thiếu hoặc Style không được lưu sẽ dừng cả lượt TTS để người dùng sửa, không chạy lỗi qua từng đoạn và không tự thay giọng. Kiểm tra lại trước khi gửi lời kể.
+- Xóa Extend trước khi dựng video thành công sẽ trả lại ý tưởng; ý tưởng đã có video dựng thành công vẫn được giữ là đã dùng sau khi xóa hoặc dọn tài nguyên. Sao lưu trước migration 7.
+- Các clip Flow tiếp tục do người dùng tạo thủ công. Không thay đổi cài đặt dựng, nhạc nền, prompt sáng tác hay các điểm kiểm duyệt khác.
+
+## v3.1.45 — Bản sắc sáng tác và nghiên cứu DNA riêng cho từng kênh
+
+- The Midnight Log giữ nguyên DNA, prompt, thông số và luồng tác vụ hiện có. Chỉ hai kênh Heart & Hurdles và The Veiled Signal nhận bộ chỉ dẫn khởi đầu đã được duyệt; không đổi nội dung hoặc cài đặt của các dự án cũ.
+- Heart & Hurdles tạo drama gia đình với động cơ con người hợp lý, tình huống tưởng phi lý có lời giải bất ngờ được gieo trước và hậu quả cảm xúc rõ ràng. The Veiled Signal tạo bí ẩn khoa học viễn tưởng: khoa học thật làm nền, phân biệt quan sát/giả thuyết/hư cấu, tổ chức che giấu và âm mưu đều hư cấu.
+- Mục DNA kênh có tiêu chí sáng tác JSON và nút Nghiên cứu DNA kênh. ChatGPT biên soạn ba phần có giới hạn độ dài: bản sắc/hook, cách viết, kiểm định/hình ảnh/đóng gói. Lưu từng phần, tiếp tục phần còn thiếu, chặn kết quả từ DNA đã thay đổi và tránh gửi trùng.
+- Kết quả nghiên cứu được xem trước, so sánh với bản đang dùng và chỉ áp dụng sau khi người dùng bấm Áp dụng. Lưu lịch sử; có thể khôi phục chỉ dẫn cũ khi DNA tương ứng khớp. Không khẳng định đã tra cứu web nếu chỉ biên soạn từ DNA.
+- Dự án mới lưu phiên bản DNA và bộ chỉ dẫn riêng. Ý tưởng, Hồ sơ truyện, dàn ý, bản nháp, kiểm định, hình ảnh, thumbnail và thông tin YouTube cùng dùng bản sắc đã lưu; chỉ gửi phần chỉ dẫn cần cho từng tác vụ. Giữ nguyên hợp đồng JSON, nguồn AI, ngân sách thời lượng, hook đầu video, cao trào/twist giữa video và luồng sản xuất.
+- Sao lưu SQLite trước migration 6. Xuất kênh kèm lịch sử chỉ dẫn; dữ liệu dự án giữ bản đã lưu độc lập với các lần nghiên cứu mới. Browser Bridge giữ bản 1.1.41; không cần đổi cơ chế tạo tài nguyên.
+
+## v3.1.44 — Video Flow thủ công, Lyria trong AI Studio và phục hồi câu trả lời
+
+- Video Flow chuyển sang tạo thủ công trong mọi chế độ. Hàng đợi chỉ tự tạo thumbnail, ảnh scene/nhân vật và âm thanh; các scene VIDEO, số lượng và prompt vẫn giữ nguyên. Đạo diễn hình ảnh có phần tải ảnh tham chiếu, sao chép prompt và nhập clip `scene_NNN.mp4` qua Tài nguyên. Tác vụ Flow còn chờ từ bản cũ được chuyển sang thủ công, giữ lại prompt, phiên Flow và tài nguyên; không chặn việc tạo ảnh tiếp theo.
+- Chuyển tác vụ nhạc từ Gemini sang `https://aistudio.google.com/new_music?model=lyria-3-pro-preview`. Browser Bridge 1.1.41 mở vùng Describe the music, chọn ô nhập Text, xác minh Lyria 3 Pro Preview, Paste prompt rồi Generate một lần. Prompt dùng mốc thời gian cho bản nhạc không lời khoảng 150 giây, phong cách huyền bí, đầu/cuối tương thích để lặp.
+- Nhận đúng Music player vừa tạo; bỏ qua nhạc mẫu, player của lượt trước và gói phát âm thanh. Tải file MP3/WAV hoàn chỉnh, đối chiếu thời lượng hiển thị, giữ nguyên cơ chế xác minh file và tránh gửi trùng.
+- Tách phiên nhạc khỏi phiên TTS trong AI Studio. Chỉ chuyển tác vụ Gemini chưa gửi sang trang mới; không mở lại bước tạo cho yêu cầu đã gửi. Giữ bản nhạc đang dùng khi lượt mới lỗi, thư viện chung, gain 0 dB và các cài đặt sản xuất hiện có.
+- Gia hạn heartbeat vẫn được nhận diện khi Windows trả cùng một mốc đồng hồ liên tiếp; tránh bỏ nhầm tác vụ media vừa kết nối lại.
+- ChatGPT/Gemini kiểm tra trang tải xong ít nhất 1 giây và ô nhập không đổi ít nhất 0,5 giây, đồng thời thay vì cộng dồn 5 + 2 giây. Kiểm tra mỗi 0,5 giây khi chuẩn bị prompt; Gemini tạo ảnh cũng dùng mốc mới. Trang đang tải/chuyển hướng, ô nhập bị thay hoặc khóa, AI đang trả lời vẫn chờ; Paste đầy đủ, bản nháp người dùng, tệp đính kèm, phiên dự án và chống gửi trùng giữ nguyên. Nhịp thu kết quả, chờ tải ảnh tham chiếu, phục hồi scene lỗi và thời gian ổn định Flow/TTS/Lyria không đổi.
+- Khi câu trả lời văn bản ChatGPT/Gemini đã hoàn tất nhưng JSON hoặc cấu trúc/độ dài/trích dẫn bị từ chối, Bridge yêu cầu sửa một lần trong đúng chat cũ. Dùng “Hãy viết lại câu trả lời chuẩn Json” hoặc “Viết lại câu trả lời theo đúng yêu cầu”, kèm lỗi cụ thể và hợp đồng đầu ra. Tệp JSON/TXT đọc được vẫn được kiểm tra trước; lỗi tải tệp/kết nối/đăng nhập/quota không kích hoạt yêu cầu viết lại.
+- Nếu câu trả lời sau khi sửa vẫn lỗi, lưu chẩn đoán, đóng đúng tab do Bridge tạo rồi gửi lại đầy đủ yêu cầu trong một tab mới với cùng AI. Nếu lượt mới vẫn bị từ chối, tạm dừng; tối đa ba lượt trả lời cho chuỗi phục hồi định dạng. Quyền gửi, lượt sửa, lỗi và hạn mức được lưu bền; Reload không gửi trùng, câu trả lời sửa giống hệt câu cũ vẫn được kiểm tra. Không tự đổi AI, không biến kết quả kiểm duyệt FAIL/bất đồng thành PASS, giữ các cổng kiểm tra dữ liệu hiện tại.
+
+## v3.1.43 — Lớp âm thanh mở đầu, điểm nhấn theo truyện và nhạc Lyria dài
+
+- Ghép nền bí ẩn trong 30 giây đầu và các điểm nhấn ngắn tại tình tiết căng thẳng, bất ngờ hoặc hé lộ. Kế hoạch scene có thể chọn hiệu ứng cùng trích đoạn lời kể; app đặt thời điểm bằng thời lượng TTS thực tế, không dùng mốc giây AI tự đoán. Các kế hoạch đã có được nhận diện thận trọng từ lời kể; không thêm tiếng động cụ thể nếu truyện không có.
+- Sáu hiệu ứng gốc được tạo cục bộ một lần trong `shared_sound_effects`, dùng lại giữa các dự án. Không phát sinh lượt AI riêng cho mỗi cảnh. Tài nguyên có nút bật/tắt, chuẩn bị, nghe thử và bảng thời điểm hiệu ứng. Các điểm nhấn được cân riêng, giới hạn số lượng và đỉnh âm thanh.
+- Tài nguyên > Nhạc nền dùng chung có danh sách chọn bản nhạc và nghe thử. Nhận WAV/MP3/M4A/AAC/FLAC/OGG/OPUS chép vào thư mục `background_music` khi mở/làm mới danh sách. Mỗi dự án giữ lựa chọn riêng; lựa chọn thủ công không bị thay bằng bản mới nhất khi tiếp tục quy trình. File gốc trong thư mục không bị sửa hoặc xóa khi dọn tài nguyên dự án.
+- Nhạc nền giữ mức của file gốc (gain 0 dB), bỏ cân/hạ mức theo lời kể và không áp dụng cài đặt Music (dB) cũ. Cài đặt cũ được giữ trong dữ liệu, giọng đọc/âm thanh môi trường giữ quy tắc hiện có. Giới hạn đỉnh ở bản ghép cuối vẫn ngăn vỡ tiếng; báo cáo ghi rõ mức nguồn được giữ và không ducking.
+- Browser Bridge 1.1.38 chọn Pro / Đầy đủ / Không lời cho lượt Lyria mới, yêu cầu nhạc khoảng 2–3 phút mang phong cách huyền bí, gây tò mò với đầu/cuối tương thích để lặp. Không gửi khi cài đặt bị đổi hoặc chưa có thời lượng Đầy đủ. Lượt tạo nhạc cũ vẫn dùng cài đặt của lượt đó.
+- Nhập nhạc không còn cắt còn 30 giây. Giữ đến ba phút và hòa điểm cuối vào điểm đầu để lặp mượt. Lượt Lyria mới trả file dưới 90 giây được báo thiếu thay vì nhận nhầm; nhạc cũ được giữ khi bản dài đang tạo hoặc tạo lỗi. Có nút Tạo nhạc Lyria dài mới, dùng chung một bản nhạc giữa các dự án và tránh gửi trùng.
+- Ghi hiệu ứng và mức ghép trong báo cáo dựng/`sound_design.json`. Cache âm thanh đổi theo hiệu ứng; vẫn dùng lại scene, chuyển động ảnh và chuyển cảnh. Video final đã có chỉ thay đổi khi dựng lại. Giữ thao tác dựng thủ công trong Có hỗ trợ.
+
+## v3.1.42 — Nhạc nền ổn định, tải ảnh Flow và tự khóa truyện Có hỗ trợ
+
+- Browser Bridge 1.1.37 tải đúng ảnh tham chiếu qua ô chọn tệp của Flow, kể cả ô chọn tệp không nằm trong DOM hoặc dùng bộ chọn file Windows. Chọn ảnh đã tải, bấm Thêm vào câu lệnh và xác minh toàn bộ ảnh trong ô prompt trước khi dán và tạo video. Dùng lại ảnh cùng dự án, hỗ trợ chọn từng file và khôi phục khi mất phản hồi tải; không gửi lại ảnh hoặc tạo video trùng.
+- Chế độ Có hỗ trợ tự khóa sau các vòng kiểm duyệt, xử lý bất đồng, chỉnh sửa và hai kiểm định cuối cho đúng bản nháp, kể cả còn bất đồng hoặc cảnh báo chất lượng. Các lỗi đã xác nhận vẫn được sửa; kiểm tra giữ người xem vẫn chạy và sửa tới giới hạn hiện có. Cảnh báo và kết quả AI được giữ nguyên, việc tự khóa được ghi riêng, không ghi thành xác nhận thủ công. Tác vụ lỗi, kết quả thiếu hoặc kiểm định cũ không bị bỏ qua.
+- Sau tự khóa, tiếp tục TTS và kế hoạch/tài nguyên như thiết lập hiện tại. Chế độ Có hỗ trợ vẫn cần bấm dựng video thủ công; các chế độ khác giữ chính sách khóa hiện có.
+
+- Nhạc nền được cân theo âm lượng thực của file và giọng đọc, với mục tiêu thấp hơn giọng đọc trung bình khoảng 9 dB thay cho 14 dB. Mức Music (dB) đã lưu vẫn điều chỉnh được độ lớn; giọng đọc giữ nguyên cài đặt.
+- Bỏ giảm nhạc/âm thanh nền theo giọng đọc. Nhạc phát ở một mức xuyên suốt, kể cả lúc có lời kể và khoảng nghỉ; các mức hạ nhạc theo phần đầu/phần sau lưu trong tài nguyên Lyria cũ cũng không còn áp dụng.
+- Giữ giới hạn mức nhạc theo biên độ đỉnh và giới hạn đỉnh âm thanh tổng để tránh vỡ tiếng. Nhạc im lặng vẫn được cảnh báo, không khuếch đại nguồn im lặng.
+- Đổi phiên bản trộn âm thanh trong báo cáo, cache và dấu vết tài nguyên dựng. Dựng lại dùng bản trộn mới; vẫn dùng lại scene, timeline, chuyển động ảnh, chuyển cảnh và waveform đã dựng. Video đã xuất giữ nguyên đến khi dựng lại.
+
+## v3.1.41 — Tách Hộp thư nội dung và Thư viện nguồn
+
+- Hộp thư nội dung chứa nguồn mới chờ xử lý. Thư viện nguồn chứa nguồn đã phân tích hoặc được duyệt. Phân tích Story DNA thành công hoặc lưu DNA hợp lệ tự chuyển nguồn vào thư viện; phân tích lỗi không chuyển nguồn.
+- Có thể duyệt vào thư viện hoặc chuyển về hộp thư từng nguồn, nhiều nguồn cùng lúc và ngay trong trang chi tiết. Chuyển nguồn giữ nguyên nội dung, DNA, kênh, dự án liên quan và ghi chú số hồ sơ đã dùng; không chạy tác vụ AI chỉ để chuyển nguồn.
+- Mỗi danh sách có tìm kiếm, phân trang, trạng thái trống và số lượng riêng. Số trên Hộp thư nội dung chỉ tính nguồn đang chờ. Nguồn thêm mới hoặc nhập TXT/MD/CSV luôn vào hộp thư; các luồng tạo dự án hiện tại vẫn dùng được toàn bộ nguồn.
+- Sao lưu trước nâng cấp dữ liệu. Nguồn hiện có đã phân tích hoặc đã được dùng trong dự án được xếp vào thư viện một lần. Lựa chọn chuyển lại về hộp thư được giữ khi mở lại app; quy trình sản xuất, tài nguyên và các cài đặt khác giữ nguyên.
+
+## v3.1.40 — Dùng lại ý tưởng và phân loại dự án
+
+- Dự án đã duyệt video cuối vẫn tạo được dự án mới từ ý tưởng chưa dùng sau cập nhật app hoặc xóa tài nguyên. Việc kiểm tra phiên bản truyện, kiểm định kỹ thuật, duyệt hoàn thành và tác vụ đang chạy vẫn giữ nguyên; kiểm tra file khi tải/dựng không thay đổi.
+- Lưu lịch sử ý tưởng đã dùng, làm mờ và ngăn chọn lại, kể cả khi đã xóa dự án Extend. Mỗi lần chọn ý tưởng mới tạo một dự án độc lập cùng kênh, nguồn cảm hứng, thời lượng và lựa chọn sản xuất; bắt đầu tạo Hồ sơ truyện, không tạo lại Định hướng/Ý tưởng.
+- Thêm tiền tố Full Step / Extend / Customize cho dự án mới và toàn bộ dự án hiện có. Tên truyện gửi AI, chữ thumbnail và thông tin YouTube vẫn dùng tên gốc. Sao lưu dữ liệu trước chuyển đổi và cập nhật liên kết thư mục/tài nguyên khi đổi tên.
+- Hộp thư nội dung và Thư viện nguồn hiển thị “Đã dùng trong x Hồ sơ” hoặc “Chưa được dùng”, tính từ số dự án hiện có dùng nguồn, gồm Extend và các dự án đã xóa tài nguyên.
+
+## v3.1.39 — Cân nhạc nền theo giọng đọc
+
+- Đo âm lượng thực tế của giọng đọc và nhạc trước khi ghép, cân nhạc ở mức thấp hơn lời kể. Khi có giọng đọc, nhạc chỉ giảm nhẹ tối đa khoảng 3,7 dB để không bị chìm; nhạc không bật lớn đột ngột ở khoảng nghỉ.
+- Nhạc dùng chung nổi hơn khoảng 3 dB trong 30 giây đầu rồi hạ êm trong 5 giây. Áp dụng cả file Lyria đã có, thay cách hạ cố định 8 dB và nén sâu ở phiên bản trước.
+- Cài đặt Music (dB) có hiệu lực với nhạc Lyria; tăng giá trị để nhạc rõ hơn, có giới hạn theo lời kể và biên độ đỉnh để tránh lấn giọng hoặc vỡ tiếng. File nhạc im lặng được cảnh báo.
+- Lưu kết quả đo và cache bản ghép âm thanh theo cấu hình mới; giữ cache scene và chuyển cảnh. Video đã xuất cần dựng lại để nhận cách trộn mới. Chế độ Có hỗ trợ vẫn chờ bấm dựng thủ công.
+
+## v3.1.38 — Nhận thumbnail đã nhập và mở nút dựng đúng tài nguyên
+
+- Nhận ba thumbnail A/B/C đã nhập thủ công theo tên file, kể cả khi kế hoạch thumbnail cũ không còn khớp sau cập nhật prompt. Không thay đổi metadata hay coi ảnh cũ là ảnh đã kiểm định theo kế hoạch mới.
+- Điều kiện dựng chỉ yêu cầu tài nguyên thực sự dùng trong video: giọng đọc, scene, ảnh kết thúc, logo và lớp sóng nhạc đã bật. Thiếu thumbnail dùng để đăng YouTube chỉ cảnh báo, không khóa nút dựng.
+- Giữ yêu cầu tạo đủ ba thumbnail có hình và chữ trong luồng tạo ảnh. Chế độ Có hỗ trợ vẫn chờ người dùng bấm dựng, không tự dựng hoặc tự xác nhận video cuối.
+
+## v3.1.37 — Thumbnail có hình và chữ, dựng thủ công trong Có hỗ trợ
+
+- Cả ba phương án thumbnail A/B/C bắt buộc có ảnh và câu chữ riêng 1–4 từ gây tò mò, bí ẩn hoặc kịch tính phù hợp cốt truyện. Font, ánh sáng và hiệu ứng bám theo nội dung; không tiết lộ cú ngoặt hay thêm chi tiết không có trong truyện.
+- Luồng tạo hình tự động tạo đủ ba thumbnail; kế hoạch cũ cần tạo lại để đáp ứng yêu cầu có chữ. Giữ nguyên file cũ và các tài nguyên scene đã hợp lệ.
+- Bỏ bước xác nhận tài nguyên. Kiểm tra đủ file, phiên bản truyện và thời lượng vẫn giữ nguyên. Chế độ Có hỗ trợ dừng ở trạng thái sẵn sàng và chỉ dựng khi người dùng bấm Dựng bản đầu tiên; hàng đợi tiếp tục chuẩn bị tài nguyên cho dự án tiếp theo.
+
+## v3.1.36 — Thêm ảnh tham chiếu vào câu lệnh video Flow
+
+- Sửa bổ sung Bridge 1.1.36: khung xác nhận nhận đúng bản ảnh vừa chọn khi có nhiều ảnh trùng tên. Lưu dấu vết ảnh đã tải trong đúng dự án Flow để dùng lại ở các scene sau và sau khi Reload Bridge; không chọn ảnh khác chỉ vì trùng tên.
+- Tách tiến trình tải ảnh trong thư viện khỏi tiến trình tạo video. Mỗi bước tải/chọn/thêm ảnh có thời gian chờ riêng khi thực sự tiến triển; trang đứng quá ba phút vẫn được bỏ qua, toàn bộ chuẩn bị Flow giới hạn mười phút và ghi rõ bước đang kẹt.
+- Tạm tắt Auto giữ liên lạc cho tác vụ đang sở hữu và tạm dừng bộ đếm, tránh app hiểu nhầm là trình duyệt mất kết nối rồi bỏ qua kết quả đã tạo. Hiện phiên bản Bridge đang nạp trong popup.
+
+- Bridge 1.1.35 xử lý thư viện thành phần đã mở dù ô nhập phía sau bị khóa, nhận các nhãn tải nội dung và nút “Thêm vào câu lệnh”/“Add to prompt”.
+- Chọn đúng ảnh vừa tải, bấm thêm vào câu lệnh nếu Flow mở khung xem trước, hoặc nhận ảnh được thêm ngay ở giao diện thu gọn. Chờ đủ ảnh thực sự nằm trong ô nhập rồi mới dán prompt và tạo video.
+- Không lấy ảnh trong thư viện/khung xem trước làm bằng chứng đã đính kèm; không chọn ảnh khác hoặc tải trùng ảnh chỉ vì phải bấm thêm. Giữ nguyên model, thời lượng, số lượng, phiên dự án và các luồng TTS/ảnh/tải video.
+
+## v3.1.35 — Đọc tệp JSON/TXT từ ChatGPT và tên hồ sơ nhập
+
+- Bridge 1.1.34 nhận biết tệp JSON/TXT trong đúng lượt trả lời ChatGPT, đọc bản xuất đầy đủ từ nút tải của tệp/khung mã; không đọc từng dòng đang hiển thị của editor. Giữ nguyên trích dẫn, dấu nháy và xuống dòng trước khi app kiểm tra cấu trúc.
+- Tệp chưa đọc được thì giữ lượt đã gửi để tiếp tục thu kết quả, không gửi thêm prompt chỉ vì nội dung nằm trong tệp. Không lấy khung mã cũ, tệp khác tên hoặc liên kết ngoài nhà cung cấp; giới hạn nguồn văn bản 2 MB.
+- Nhập Hồ sơ truyện sẽ đổi tên dự án và thư mục theo trường title/story_title/working_title hoặc tiêu đề rõ ràng ở đầu summary của hồ sơ cũ. Giữ nguyên ID, kênh, nguồn và dữ liệu truyện/tài nguyên.
+
+## v3.1.34 — Tự chạy tài nguyên trong chế độ Có hỗ trợ
+
+- Dàn ý và bản nháp tự chuyển sang bước tiếp theo khi tiếp tục quy trình.
+- Dùng số lượng ảnh/video đã chốt khi tạo dự án; tạo đủ ba thumbnail A/B/C cùng các scene, giữ nguyên hàng đợi sau TTS và tham chiếu nhân vật.
+- Tự tạo hoặc dùng lại nhạc nền theo lựa chọn của dự án; vẫn báo các tài nguyên bị lỗi để bổ sung thủ công.
+- Dự án được yêu cầu chạy có hàng đợi lưu bền; hoàn tất tài nguyên thì tiếp tục dự án chờ, không chạy lại dự án cũ chưa được yêu cầu.
+- Bắt buộc duyệt bộ tài nguyên hiện tại trước khi dựng trong chế độ Có hỗ trợ. Tạo lại, thay file hoặc đổi ánh xạ làm hết hiệu lực duyệt; cả API dựng trực tiếp cũng kiểm tra.
+- Giữ nguyên chế độ Thủ công, Tự động có kiểm duyệt, lựa chọn ý tưởng và các cài đặt khác.
+
 ## v3.1.33 — Sửa Bridge chờ ô nhập vô hạn
 
+- Sửa bổ sung local cho Bản nháp đầy đủ: chỉ gửi toàn bộ hồ sơ truyện, dàn ý đã chỉnh sửa, mở đầu đã chọn và thông tin dự án/kênh/thời lượng. Bỏ dàn ý cũ, kiểm định đã xử lý và dữ liệu truyện khác khỏi prompt; không cắt cảnh hoặc rút ngắn truyện.
+- Bridge 1.1.33 phát hiện lượt trả lời mới đã hoàn tất nhưng rỗng, kiểm tra lại tối thiểu 12 giây rồi dùng giới hạn thử lại JSON hiện có. Không gửi lại khi AI còn xử lý, chưa có lượt trả lời mới hoặc người dùng đang chỉnh nội dung. Bổ sung nhận diện nút Ngừng của ChatGPT; giữ các tác vụ media và điểm duyệt hiện có.
 - Dùng phiên bản extension thực tế để xác minh kết nối, độc lập với phiên bản bộ selector. Sửa việc nạp lại content script mỗi lần kiểm tra và làm mất bộ đếm ổn định 2 giây trên ChatGPT/Gemini và các tab media.
 - Giữ listener đang hoạt động; chỉ nạp lại khi mất kết nối hoặc nâng cấp extension. Tab bị treo vẫn có giới hạn thời gian chờ; giữ kiểm tra bản nháp và chống gửi trùng.
 - Kiểm thử hồi quy với các lần kiểm tra liên tiếp, nâng cấp, mất listener, tab treo và Paste thật trong extension. Kèm Bridge 1.1.32; Reload Bridge để áp dụng, không cần thay khóa ghép nối.

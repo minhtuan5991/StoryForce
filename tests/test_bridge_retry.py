@@ -9,10 +9,23 @@ class Recorder:
 
 def setup_retry(client,reason='INVALID_JSON'):
     headers=bridge(client)
-    jid=add(client,Job(kind='outline',provider='chatgpt',status='waiting_user',attempts=1,payload={'_bridge_auto':{'owner':'one','attempt':1,'phase':'sent' if reason=='INVALID_JSON' else 'claimed'}}))
+    payload={'_bridge_auto':{'owner':'one','attempt':1,'phase':'sent' if reason=='INVALID_JSON' else 'claimed'}}
+    if reason=='INVALID_JSON':
+        payload.update(_bridge_repair={'id':'correction','owner':'one','attempt':1,'phase':'sent'},
+                       _bridge_rejection={'attempt':1,'reason':reason,'repair_id':'correction','inputs_hash':None,'message':'Invalid JSON'})
+    jid=add(client,Job(kind='outline',provider='chatgpt',status='waiting_user',attempts=1,payload=payload))
     recorder=Recorder();client.app.state.workflow.executor=recorder
-    body={'owner':'one','attempt':1,'retry_id':'retry-1','reason':reason}
+    body={'owner':'one','attempt':1,'retry_id':'retry-1','reason':reason,'repair_id':'correction'}
     return headers,jid,body,recorder
+
+
+def authorize_correction(client,path,headers,attempt=1,reason='INVALID_JSON'):
+    body={'owner':'one','attempt':attempt,'repair_id':'same-chat-'+str(attempt),'reason':reason}
+    prepared=client.post(path+'/repair',headers=headers,json=body)
+    assert prepared.status_code==200,prepared.text
+    sent=client.post(path+'/repair',headers=headers,json={**body,'authorize_send':True})
+    assert sent.status_code==200 and sent.json()['send'],sent.text
+    return body['repair_id']
 
 def test_retry_is_idempotent_and_records_reason(client):
     headers,jid,body,recorder=setup_retry(client)
@@ -32,20 +45,20 @@ def test_retry_budget_persists_and_owner_attempt_status_are_checked(client):
     path='/api/bridge/jobs/'+jid+'/retry'
     for change in [{'owner':'other'},{'attempt':0},{'reason':'TIMEOUT'}]:
         assert client.post(path,json={**body,**change},headers=headers).status_code in (409,422)
-    for attempt in range(1,4):
+    for attempt in range(1,2):
         with client.app.state.database.session() as db:
             j=db.get(Job,jid);j.status='waiting_user';j.attempts=attempt
             j.payload={**j.payload,'_bridge_auto':{'owner':'one','attempt':attempt,'phase':'sent'}};db.commit()
         response=client.post(path,json={**body,'attempt':attempt,'retry_id':f'retry-{attempt}'},headers=headers)
         assert response.json()['retry_count']==attempt
     with client.app.state.database.session() as db:
-        j=db.get(Job,jid);j.status='waiting_user';j.attempts=4
-        j.payload={**j.payload,'_bridge_auto':{'owner':'one','attempt':4,'phase':'sent'}};db.commit()
-    assert client.post(path,json={**body,'attempt':4,'retry_id':'four'},headers=headers).status_code==409
-    assert len(recorder.calls)==3
+        j=db.get(Job,jid);j.status='waiting_user';j.attempts=2
+        j.payload={**j.payload,'_bridge_auto':{'owner':'one','attempt':2,'phase':'sent'}};db.commit()
+    assert client.post(path,json={**body,'attempt':2,'retry_id':'second'},headers=headers).status_code==409
+    assert len(recorder.calls)==1
     with client.app.state.database.session() as db:
         j=db.get(Job,jid);j.status='cancelled';db.commit()
-    assert client.post(path,json={**body,'attempt':4,'retry_id':'cancelled'},headers=headers).status_code==409
+    assert client.post(path,json={**body,'attempt':2,'retry_id':'cancelled'},headers=headers).status_code==409
 
 def test_presend_retry_and_stale_result_rejection(client):
     headers,jid,body,recorder=setup_retry(client,'SEND_NOT_READY')
@@ -64,7 +77,10 @@ def test_real_workflow_retry_regenerates_prompt_and_new_attempt_accepts_result(c
     path='/api/bridge/jobs/'+jid
     old=next(j for j in client.get('/api/bridge/jobs',headers=headers).json()['items'] if j['id']==jid)
     client.post(path+'/claim',headers=headers,json={'owner':'one','attempt':1,'authorize_send':True})
-    body={'owner':'one','attempt':1,'retry_id':'real','reason':'INVALID_JSON'}
+    assert client.post(path+'/parse-result',headers=headers,json={'attempt':1,'result':'Not JSON'}).status_code==422
+    repair_id=authorize_correction(client,path,headers)
+    assert client.post(path+'/parse-result',headers=headers,json={'attempt':1,'result':'Not JSON','repair_id':repair_id}).status_code==422
+    body={'owner':'one','attempt':1,'retry_id':'real','reason':'INVALID_JSON','repair_id':repair_id}
     assert client.post(path+'/retry',headers=headers,json=body).status_code==200
     new=next(j for j in client.get('/api/bridge/jobs',headers=headers).json()['items'] if j['id']==jid)
     assert new['attempt']==2 and new['prompt']==old['prompt']

@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 import pytest
 from PIL import Image
-from conftest import job,build_story
+from conftest import job,build_story,approve_resources
 from backend.media import map_asset,parse_probe,timeline_from_audio,build_render_plan,find_binary,validate_assets
 from backend.config import DEFAULT_SETTINGS,safe_path
 from backend.portability import safe_extract
@@ -67,7 +67,10 @@ def test_missing_audio_blocks_even_with_visual_fallback(tmp_path):
 @pytest.mark.skipif(not find_binary('ffmpeg',DEFAULT_SETTINGS),reason='FFmpeg unavailable')
 def test_real_end_to_end_ffmpeg_render(client,project,tmp_path):
     detail=build_story(client,project)
+    # Prepare a manual import fixture without enrolling automatic media work.
+    client.patch('/api/settings',json={'pipeline_mode':'manual'}).raise_for_status()
     job(client,project,'chunk_tts')
+    client.patch('/api/settings',json={'pipeline_mode':'assisted'}).raise_for_status()
     job(client,project,'visual_director',{'count':2})
     detail=client.get('/api/projects/'+project['id']).json()
     assert detail['chunks']
@@ -82,6 +85,7 @@ def test_real_end_to_end_ffmpeg_render(client,project,tmp_path):
     timeline=job(client,project,'sync')
     assert timeline['duration']==len(detail['chunks'])*1.5
     assert client.patch('/api/settings',json={'render_width':320,'render_height':180,'render_fps':12}).status_code==200
+    approve_resources(client,project)
     result=job(client,project,'render')
     assert result['status']=='READY',result
     assert result['captions_burned_in'] is True

@@ -4,6 +4,8 @@ import {createContentConnection} from './content-connection.js';
 import {copyResponseSource} from './raw-response.js';
 import {createMediaBridge} from './media-automatic.js';
 import {armDownloadCapture,readDownloadCapture} from './download-capture.js';
+import {uploadFlowReferences} from './reference-upload.js';
+import {bridgePollDelay} from './preparation-timing.js';
 const BASE = 'http://127.0.0.1:8787';
 const ALLOWED = ['chatgpt.com','gemini.google.com','aistudio.google.com','labs.google','flow.google.com'];
 const ensureContent=createContentConnection({chrome,allowedHosts:ALLOWED});
@@ -12,7 +14,7 @@ async function request(path, method='GET', body) {
   if (!token) throw new Error('Pair the extension first. Generate a key in StoryForge Settings.');
   const response = await fetch(BASE + '/api/bridge' + path, {method,headers:{'X-Bridge-Token':token,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
   const result = await response.json();
-  if (!response.ok) throw Object.assign(new Error(result.detail || 'Bridge request failed'), {code:result.code});
+  if (!response.ok) throw Object.assign(new Error(result.detail || 'Bridge request failed'), {code:result.code,status:response.status});
   return result;
 }
 async function open(job) {
@@ -49,7 +51,7 @@ async function handle(message) {
     await request('/jobs/'+job.id+'/status','POST',{step:result?.error || 'Bridge unavailable; use manual mode'});
     throw new Error(result?.error || 'Reload this provider page to activate the extension.');
   }
-  if (result.text) {await capture(job,result.text);return {message:'Validated result saved to StoryForge.'};}
+  if (result.text) {const text=result.fileTarget?(await captureFile(tabId,result.fileTarget)).text:result.text;await capture(job,text);return {message:'Validated result saved to StoryForge.'};}
   await request('/jobs/'+job.id+'/status','POST',{step:result.message});
   return result;
 }
@@ -67,8 +69,24 @@ async function captureRaw(tabId,target){
   if(!results[0]?.result?.text)throw new Error('Raw response unavailable');
   return results[0].result;
 }
-const automatic=createAutomaticBridge({chrome,request,ensureContent,captureRaw});
+async function captureFile(tabId,target){
+  const tab=await chrome.tabs.get(tabId);
+  if(new URL(tab.url).hostname!=='chatgpt.com')throw new Error('Unsupported response file tab');
+  await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},world:'MAIN',files:['response-files.js']}));
+  const results=await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},world:'MAIN',
+    func:async target=>globalThis.storyForgeResponseFiles.read(target),args:[target]}));
+  const result=results[0]?.result;
+  if(!result?.text)throw Object.assign(new Error(result?.error||'Response file unavailable'),{code:'FILE_RESPONSE_UNAVAILABLE'});
+  return result;
+}
+const automatic=createAutomaticBridge({chrome,request,ensureContent,captureRaw,captureFile});
 const mediaAutomatic=createMediaBridge({chrome,request,ensureContent,
+  uploadReferences:async(tabId,ticket,files)=>{
+    const tab=await chrome.tabs.get(tabId);
+    if(!['flow.google.com','labs.google'].includes(new URL(tab.url).hostname))throw new Error('Không đúng tab Flow để tải ảnh tham chiếu');
+    const results=await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},world:'MAIN',func:uploadFlowReferences,args:[ticket,files]}));
+    return results[0]?.result;
+  },
   armCapture:async(tabId,ticket,provider)=>withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},world:'MAIN',func:armDownloadCapture,args:[ticket,provider]})),
   readCapture:async(tabId,ticket)=>{
     const results=await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},func:readDownloadCapture,args:[ticket]}));
@@ -87,7 +105,7 @@ function schedule(delay=0){clearTimeout(timer);timer=setTimeout(async()=>{
     }
   }finally{
     const state=await automatic.read(),media=await mediaAutomatic.read();
-    if(state.enabled)schedule(state.jobId||media.jobId?2000:5000);
+    if(state.enabled)schedule(bridgePollDelay(state,media));
   }
 },delay)}
 async function initialize(){

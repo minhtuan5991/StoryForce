@@ -3,18 +3,20 @@ import io
 import json
 import pytest
 from PIL import Image
-from conftest import job
+from conftest import job, confirm_setup
 from backend import premise_policy
 from backend.models import Artifact, Job, Project
 from backend.story_import import validate_import
 from test_media import wav_data
 
 
-def imported_project(client, project):
+def imported_project(client, project, confirm=True):
     response=client.post('/api/projects',json={'channel_id':project['channel_id'],'title':'Supplied Bible',
                         'entry_mode':'existing_bible','target_minutes':5,'duration_mode':'5'})
     assert response.status_code==200,response.text
-    return response.json()
+    result=response.json()
+    if confirm:confirm_setup(client,result)
+    return result
 
 
 def bible(client):
@@ -22,11 +24,12 @@ def bible(client):
 
 
 def test_import_mode_starts_at_bible_and_blocks_skipped_jobs(client,project):
-    p=imported_project(client,project)
+    p=imported_project(client,project,confirm=False)
     detail=client.get('/api/projects/'+p['id']).json()
     assert detail['stage']=='BIBLE' and not detail['premises']
-    assert detail['next']['action_kind']=='import_bible'
-    assert client.post('/api/projects/'+p['id']+'/pipeline').json()['action_kind']=='import_bible'
+    assert detail['next']['action_kind']=='project_setup'
+    assert client.post('/api/projects/'+p['id']+'/pipeline').json()['action_kind']=='project_setup'
+    assert confirm_setup(client,p)['action_kind']=='import_bible'
     for kind in ('content_direction','premise_generation','premise_mini_test','story_bible'):
         assert client.post('/api/jobs',json={'kind':kind,'project_id':p['id']}).status_code==422
     assert not client.get('/api/projects/'+p['id']).json()['jobs']

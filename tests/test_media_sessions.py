@@ -71,27 +71,37 @@ def test_session_cannot_share_another_projects_chat_and_aistudio_keeps_voice_sty
     ('flow', 'https://labs.google/fx/tools/flow/project/id/edit/clip?x=1', 'https://labs.google/fx/tools/flow/project/id'),
     ('flow', 'https://flow.google.com/projects/id/edit/clip', 'https://flow.google.com/projects/id'),
     ('aistudio', 'https://aistudio.google.com/prompts/dialog?x=1', 'https://aistudio.google.com/prompts/dialog'),
+    ('lyria', 'https://aistudio.google.com/new_music?model=lyria-3-pro-preview', None),
+    ('lyria', 'https://aistudio.google.com/generate-speech', None),
+    ('lyria', 'https://aistudio.google.com/prompts/new_chat', None),
+    ('lyria', 'https://aistudio.google.com/music/track?account=private#clip', 'https://aistudio.google.com/music/track'),
+    ('lyria', 'https://aistudio.google.com/prompts/track?model=lyria-3-pro-preview', 'https://aistudio.google.com/prompts/track'),
+    ('aistudio', 'https://aistudio.google.com/new_music?model=lyria-3-pro-preview', None),
 ])
 def test_home_pages_are_not_recovery_chats_and_transient_routes_are_removed(provider, url, expected):
     assert provider_page(provider, url) == expected
 
 
-def test_first_verified_scene_becomes_reference_for_flow_and_stays_fixed_on_plan_replacement(client, production):
+def test_first_verified_scene_becomes_reference_for_images_and_manual_flow_and_stays_fixed_on_plan_replacement(client, production):
     p = production
     with client.app.state.database.session() as db:
         db.add(Artifact(project_id=p['id'], kind='story_bible', content={'characters': [{'name': 'Ethan', 'appearance': 'Brown eyes'}]}))
+        db.add(Scene(project_id=p['id'],story_version=1,number=3,scene_key='scene_003',visual_type='IMAGE',prompt='Next view of Ethan.'))
         db.commit()
     state = visuals(client, p)
-    thumbnail = media_job(client, p); claim(client, p, thumbnail)
-    assert owned_post(client, p, thumbnail, 'references').json() == {'files': []}
-    path = Path(state['download_path']) / 'thumbnail.png'; Image.new('RGB', (100, 80), 'black').save(path)
-    assert result(client, p, thumbnail, path).status_code == 200
+    for variant in 'ABC':
+        thumbnail = media_job(client, p); claim(client, p, thumbnail)
+        assert thumbnail['media']['variant_id']==variant
+        assert owned_post(client, p, thumbnail, 'references').json() == {'files': []}
+        path = Path(state['download_path']) / f'thumbnail_{variant}.png'; Image.new('RGB', (100, 80), 'black').save(path)
+        assert result(client, p, thumbnail, path).status_code == 200
     scene = media_job(client, p); claim(client, p, scene)
     assert 'PROJECT CHARACTER REFERENCE' in scene['prompt'] and 'Brown eyes' in scene['prompt']
     assert owned_post(client, p, scene, 'references').json() == {'files': []}
     path = path.with_name('scene_001.png'); Image.new('RGB', (100, 80), 'green').save(path)
     completed = result(client, p, scene, path).json()
     video = media_job(client, p); claim(client, p, video)
+    assert video['provider']=='gemini' and video['media']['filename']=='scene_003.png'
     files = owned_post(client, p, video, 'references').json()['files']
     assert len(files) == 1 and files[0]['asset_id'] == completed['asset_id']
     assert files[0]['mime'] == 'image/jpeg' and files[0]['name'].startswith('sf_ref_')
@@ -99,6 +109,8 @@ def test_first_verified_scene_becomes_reference_for_flow_and_stays_fixed_on_plan
         assert image.size == (100, 80)
     detail = client.get('/api/projects/' + p['id']).json()
     assert detail['settings']['character_references']['asset_ids'] == [completed['asset_id']]
+    assert detail['manual_video_references'][0]['id']==completed['asset_id']
+    assert not detail['scenes'][1]['asset_id']
     assert detail['settings']['character_references']['manual'] is False
     with client.app.state.database.session() as db:
         db.query(Scene).filter_by(project_id=p['id'], number=1).delete()
@@ -114,7 +126,9 @@ def test_reference_selection_is_validated_snapshot_is_fixed_and_changes_allowed_
     assert client.post(p['path'] + '/references', json={'asset_ids': [a]}).status_code == 200
     client.post(p['path'] + '/stop')
     visuals(client, p)
-    thumbnail = media_job(client, p); claim(client, p, thumbnail); fail(client, p, thumbnail)
+    for variant in 'ABC':
+        thumbnail = media_job(client, p); claim(client, p, thumbnail); fail(client, p, thumbnail)
+        assert thumbnail['media']['variant_id']==variant
     scene = media_job(client, p); claim(client, p, scene)
     files = owned_post(client, p, scene, 'references').json()['files']
     assert files[0]['asset_id'] == a

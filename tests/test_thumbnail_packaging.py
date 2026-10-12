@@ -34,7 +34,8 @@ def test_concepts_are_isolated_and_do_not_modify_story_or_publishing(client,proj
     assert after['draft']==before['draft'] and after['publish']==before['publish'] and after['locked']
     assert after['scenes']==before['scenes'] and after['settings']==before['settings']
     assert len(output['thumbnail_variants'])==3 and after['thumbnail_packaging']['current']
-    assert all(v['text_mode']=='NO_TEXT' for v in output['thumbnail_variants'])
+    assert all(v['text_mode']=='MICRO_HOOK' and v['text_overlay'] and v['text_safe_area']!='NONE' for v in output['thumbnail_variants'])
+    assert len({v['text_overlay'] for v in output['thumbnail_variants']})==3
     assert 'not CTR' in output['score_provenance']
     workflow=client.app.state.workflow
     with client.app.state.database.session() as db:
@@ -75,7 +76,7 @@ def test_thumbnail_quote_bank_uses_literal_source_sentences_and_does_not_change_
         assert plan_fingerprint(db,p)==before
 
 
-@pytest.mark.parametrize('change',['fake_quote','missing_variant','same_concept','bad_strategy','long_text','true_claim','unexplained_alternative'])
+@pytest.mark.parametrize('change',['fake_quote','missing_variant','same_concept','bad_strategy','long_text','true_claim','unexplained_alternative','no_text','empty_text','same_text','no_area'])
 def test_invalid_concepts_are_rejected(client,project,change):
     ready(client,project);data=generated(client,project)
     if change=='fake_quote':data['visual_dna']['evidence_quotes']=['An unrelated demon appeared in a different story.']
@@ -85,6 +86,10 @@ def test_invalid_concepts_are_rejected(client,project,change):
     if change=='long_text':data['thumbnail_variants'][0].update(text_mode='MICRO_HOOK',text_overlay='This headline contains far too many words')
     if change=='true_claim':data['thumbnail_variants'][0].update(text_mode='MICRO_HOOK',text_overlay='TRUE HORROR STORY')
     if change=='unexplained_alternative':data['thumbnail_variants'][1]['strategy']='alternative_evidence'
+    if change=='no_text':data['thumbnail_variants'][0]['text_mode']='NO_TEXT'
+    if change=='empty_text':data['thumbnail_variants'][0]['text_overlay']=' '
+    if change=='same_text':data['thumbnail_variants'][1]['text_overlay']=data['thumbnail_variants'][0]['text_overlay']
+    if change=='no_area':data['thumbnail_variants'][0]['text_safe_area']='NONE'
     with client.app.state.database.session() as db:
         ctx=thumbnail_context(db,db.get(Project,project['id']))
     with pytest.raises(ValueError):validate_plan(data,ctx)
@@ -103,6 +108,21 @@ def test_channel_preferences_reuse_and_stale_plan_guards(client,project):
     settings['research_evidence'][0]['observed_on']=''
     assert client.patch(base+'/thumbnail-style',json=settings).status_code==422
     assert client.get(base).json()['settings']['render_options']=={'subtitles':False}
+
+
+def test_legacy_no_text_setting_still_requires_three_finished_thumbnails_with_text(client,project):
+    base=ready(client,project)
+    with client.app.state.database.session() as db:
+        channel=db.get(Channel,project['channel_id'])
+        channel.settings={**channel.settings,'thumbnail_style':{'text_usage':'NO_TEXT'}}
+        db.commit()
+    plan=generated(client,project)
+    state=client.get(base).json()['thumbnail_packaging']
+    assert state['channel_style']['text_usage']=='SHORT_TEXT'
+    assert len({v['text_overlay'] for v in plan['thumbnail_variants']})==3
+    for variant in plan['thumbnail_variants']:
+        prompt=state['generation_prompts'][variant['id']]
+        assert variant['text_overlay'] in prompt and 'BOTH a story image and headline are mandatory' in prompt
 
 
 def bridge(client):
@@ -136,12 +156,16 @@ def test_thumbnail_contract_retry_corrects_the_sent_attempt_without_accepting_in
     assert rejected.status_code==422 and rejected.json()['code']=='THUMBNAIL_CONTRACT'
     assert not client.get(base+'/thumbnail-packaging').json()['current']
     retry={'owner':'one','attempt':1,'retry_id':'repair-thumbnail','reason':'THUMBNAIL_CONTRACT'}
+    from test_bridge_retry import authorize_correction
+    repair_id=authorize_correction(client,path,headers,reason='THUMBNAIL_CONTRACT')
+    assert client.post(path+'/result',headers=headers,json={'attempt':1,'result':bad,'repair_id':repair_id}).status_code==422
+    retry['repair_id']=repair_id
     assert client.post(path+'/retry',headers=headers,json=retry).status_code==200
     current=next(j for j in client.get('/api/bridge/jobs',headers=headers).json()['items'] if j['id']==identifier)
     assert current['attempt']==2 and 'Previous response validation feedback' in current['prompt']
     assert client.post(path+'/result',headers=headers,json={'attempt':1,'result':valid}).status_code==422
     client.post(path+'/claim',headers=headers,json={'owner':'one','attempt':2,'authorize_send':True}).raise_for_status()
-    assert client.post(path+'/retry',headers=headers,json={**retry,'attempt':2,'retry_id':'unrejected-attempt'}).status_code==422
+    assert client.post(path+'/retry',headers=headers,json={**retry,'attempt':2,'retry_id':'unrejected-attempt'}).status_code in (409,422)
     assert client.post(path+'/result',headers=headers,json={'attempt':2,'result':valid}).json()['accepted']
     assert client.get(base+'/thumbnail-packaging').json()['current']
     assert client.get(base).json()['draft']==DRAFT
@@ -171,10 +195,12 @@ def test_approved_visual_queue_prepares_concepts_then_resumes_without_new_count_
     assert response.json()['kind']=='thumbnail_plan'
     complete_concepts(client,project,response.json()['id'])
     p=client.get(base).json();state=p['settings']['media_automation']
-    assert state['kind']=='visuals' and state['confirmed_counts']=={'images':1,'videos':0} and state['total']==2
+    assert state['kind']=='visuals' and state['confirmed_counts']=={'images':1,'videos':0} and state['total']==4
     current=next(j for j in p['jobs'] if j['id']==state['current_job_id'])
     assert current['payload']['_media']['target_type']=='thumbnail'
-    assert 'No overlay headline' in current['prompt'] and 'STRUCTURED STORY' in current['prompt']
+    items=[current['payload']['_media'],*state['pending']]
+    assert [item['variant_id'] for item in items if item['target_type']=='thumbnail']==['A','B','C']
+    assert 'BOTH a story image and headline are mandatory' in current['prompt'] and 'STRUCTURED STORY' in current['prompt']
     assert 'thumbnail_pending_visuals' not in p['settings']
 
 

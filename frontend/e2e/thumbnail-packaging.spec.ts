@@ -5,10 +5,10 @@ const picture=`<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720"
 function fixture(withImage=false){
  const plan={content_fingerprint:'inputs-hash',plan_hash:hash,recommended_thumbnail_variant:'A',recommendation_reason:'The numbered room is evidence of the central anomaly.',test_notes:'Hold the title fixed. Compare watch time in eligible YouTube Studio tests; the result can be inconclusive.',
    official_sources:['https://support.google.com/youtube/answer/16391400'],visual_dna:{primary_setting:'A print shop',central_anomaly:'An impossible room appears on the hotel blueprint',signature_object:'A numbered blueprint',evidence_quotes:['Room 614 appeared on the blueprint.']},
-   thumbnail_variants:['A','B','C'].map((id,i)=>({id,strategy:['concrete_anomaly','human_threat','atmospheric_context'][i],concept:['Room 614 appears on a blueprint where no room exists.','The clerk studies a newly printed plan, unaware a doorway has appeared.','The hotel corridor contains a door absent from the original plan.'][i],composition:'One concrete detail, believable materials and light.',lighting:'Practical fluorescent light.',text_overlay:'',title_complement_reason:'The picture supplies visible evidence for the event in the title.',hypothesis:'Test whether this evidence creates accurate curiosity.',scores:{story_accuracy:90,mobile_readability:82,clutter_risk:8},evidence_quotes:['Room 614 appeared on the blueprint.'],generation_prompt:'A photographic plan with room 614.',negative_prompt:'No monsters or unrelated ghosts.'}))};
+   thumbnail_variants:['A','B','C'].map((id,i)=>({id,strategy:['concrete_anomaly','human_threat','atmospheric_context'][i],concept:['Room 614 appears on a blueprint where no room exists.','The clerk studies a newly printed plan, unaware a doorway has appeared.','The hotel corridor contains a door absent from the original plan.'][i],composition:'One concrete detail, believable materials and light.',lighting:'Practical fluorescent light.',text_mode:'MICRO_HOOK',text_overlay:['WHERE IS 614?','WHO OPENED IT?','THE MISSING ROOM'][i],text_safe_area:'UPPER_LEFT',title_complement_reason:'The picture supplies visible evidence for the event in the title.',hypothesis:'Test whether this evidence creates accurate curiosity.',scores:{story_accuracy:90,mobile_readability:82,clutter_risk:8},evidence_quotes:['Room 614 appeared on the blueprint.'],generation_prompt:'A photographic plan with room 614.',negative_prompt:'No monsters or unrelated ghosts.'}))};
  const image={asset_id:'image-a',sha256:sha,name:'thumbnail_A.png',checks:{file_readable:true,width:1280,height:720,aspect_16_9:true,at_least_720p:true},review:{}};
  return {id:'p',title:'Room project',channel_id:'c',channel:{name:'The Midnight Log',color:'blue',settings:{}},target_minutes:5,wpm:150,story_version:1,locked:true,stage:'LOCKED',draft:'Room 614 appeared on the blueprint.',word_count:7,profile:{word_range:[690,810]},lock_gate:{can_lock:true,reasons:[]},versions:[],jobs:[],issues:[],assets:withImage?[{id:'image-a',kind:'image',name:'thumbnail_A.png',metadata_json:{role:'thumbnail'}}]:[],chunks:[],scenes:[],premises:[],settings:{render_options:{subtitles:false}},workflow_settings:{},publish:{title:'Saved story title',url:'https://youtube.com/watch?v=kept'},artifacts:{},
- thumbnail_packaging:{plan,current:true,selected_variant:'A',assets:withImage?{A:image}:{},channel_style:{visual_language:'Grounded cinematic realism',text_usage:'AUTO',typography:'LEGACY_2_3_FONTS',color_mode:'LEGACY_TWO_ACCENTS',research_evidence:[]}}};
+ thumbnail_packaging:{plan,current:true,selected_variant:'A',assets:withImage?{A:image}:{},channel_style:{visual_language:'Grounded cinematic realism',text_usage:'SHORT_TEXT',typography:'LEGACY_2_3_FONTS',color_mode:'LEGACY_TWO_ACCENTS',research_evidence:[]}}};
 }
 async function prepare(page:any,project:any){
  const requests:any[]=[];
@@ -68,11 +68,13 @@ test('actual image review and optional channel style preserve story and render s
  await expect.poll(()=>requests.length).toBe(2);
  expect(project.publish).toEqual({title:'Saved story title',url:'https://youtube.com/watch?v=kept',thumbnail_asset_id:'image-a'});
  await page.getByText('Phong cách thumbnail của kênh (không bắt buộc)',{exact:true}).click();
- await page.getByRole('combobox',{name:'Chế độ chữ trên thumbnail',exact:true}).selectOption('NO_TEXT');
+ await expect(page.getByRole('combobox',{name:'Chế độ chữ trên thumbnail',exact:true})).toBeDisabled();
+ await expect(page.getByRole('combobox',{name:'Chế độ chữ trên thumbnail',exact:true})).toHaveValue('SHORT_TEXT');
+ await page.getByRole('combobox',{name:'Cách dùng màu thumbnail',exact:true}).selectOption('STORY_DRIVEN');
  await expect(page.getByRole('button',{name:'Tạo ảnh thumbnail đã chọn',exact:true})).toBeDisabled();
  await page.getByRole('button',{name:'Lưu phong cách thumbnail',exact:true}).click();
  await expect.poll(()=>requests.length).toBe(3);
- expect(requests[2].body).toMatchObject({text_usage:'NO_TEXT',typography:'LEGACY_2_3_FONTS',color_mode:'LEGACY_TWO_ACCENTS'});
+ expect(requests[2].body).toMatchObject({text_usage:'SHORT_TEXT',typography:'LEGACY_2_3_FONTS',color_mode:'STORY_DRIVEN'});
  expect(project.settings.render_options).toEqual({subtitles:false});
  await expect(page.getByRole('button',{name:'Tạo ảnh thumbnail đã chọn',exact:true})).toBeDisabled();
 });

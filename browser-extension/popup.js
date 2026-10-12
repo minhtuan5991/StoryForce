@@ -1,5 +1,7 @@
 let jobs=[];
 const $=id=>document.getElementById(id);
+document.title='StoryForge Bridge '+chrome.runtime.getManifest().version;
+document.querySelector('header small').textContent='Browser Bridge '+chrome.runtime.getManifest().version;
 function current(){return jobs.find(j=>j.id===$('jobs').value)}
 async function send(action,extra={}){
   document.querySelectorAll('button').forEach(b=>b.disabled=true);

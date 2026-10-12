@@ -33,3 +33,23 @@ it('visuals only start after the user sees and confirms the exact counts',async(
   fireEvent.click(screen.getByRole('button',{name:'Confirm counts and create resources'}));
   await waitFor(()=>expect(api).toHaveBeenCalledWith('/projects/p/media-automation/start','POST',{kind:'visuals',regenerate:false,confirmation:'current-plan',image_count:12,video_count:3}));
 });
+
+it('assisted visuals reuse the counts confirmed at project creation without another dialog',async()=>{
+  const preview={confirmation:'current-plan',image_count:3,video_count:2};
+  vi.mocked(api).mockResolvedValueOnce(preview).mockResolvedValue({phase:'running'});
+  const p={...project,workflow_settings:{pipeline_mode:'assisted'},settings:{production_options:{preset_counts:true,image_count:3,video_count:2}}};
+  render(<MediaAutomation project={p} kind="visuals" active={false} act={act}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Review image/video counts'}));
+  await waitFor(()=>expect(api).toHaveBeenCalledWith('/projects/p/media-automation/start','POST',{kind:'visuals',regenerate:false,confirmation:'current-plan',image_count:3,video_count:2}));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+it('assisted visuals still require confirmation when the plan changes the original counts',async()=>{
+  vi.mocked(api).mockResolvedValue({confirmation:'changed-plan',image_count:4,video_count:2});
+  const p={...project,workflow_settings:{pipeline_mode:'assisted'},settings:{production_options:{preset_counts:true,image_count:3,video_count:2}}};
+  render(<MediaAutomation project={p} kind="visuals" active={false} act={act}/>);
+  fireEvent.click(screen.getByRole('button',{name:'Review image/video counts'}));
+  await screen.findByRole('dialog');
+  expect(api).toHaveBeenCalledTimes(1);
+  expect(screen.getByText(/4 images.*2 videos.*3 Thumbnails/)).toBeInTheDocument();
+});

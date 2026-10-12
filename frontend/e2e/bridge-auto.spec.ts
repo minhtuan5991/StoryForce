@@ -18,7 +18,7 @@ test.beforeEach(async({page})=>{
 
 async function chatgptFixture(page:Page,body:string,url='https://chatgpt.com/'){
   await page.route(new URL(url).origin+'/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8">'+body}));
-  await page.addInitScript(()=>{(window as any).chrome={runtime:{onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
+  await page.addInitScript(()=>{(window as any).chrome={runtime:{getManifest:()=>({version:'1.1.34'}),onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
   await page.goto(url);
   await page.addScriptTag({path:path.resolve('../browser-extension/adapters.js')});
   await page.addScriptTag({path:path.resolve('../browser-extension/content.js')});
@@ -125,7 +125,7 @@ test('capture combines all blocks of the newest assistant reply and ignores the 
   const invoke=await chatgptFixture(page,'<main><textarea placeholder="Hỏi ChatGPT"></textarea><article data-turn="assistant" data-testid="conversation-turn-1"><div data-message-author-role="assistant" data-message-id="old"><div class="markdown">Old answer</div></div></article></main>');
   const prepared=await invoke({action:'auto-prepare'});expect(prepared.ok).toBe(true);
   await page.evaluate(()=>document.querySelector('main')!.insertAdjacentHTML('beforeend',
-    '<article data-turn="user"><div class="markdown">{"prompt":"do not capture"}</div></article><article data-turn="assistant" data-testid="conversation-turn-3"><div data-message-author-role="assistant" data-message-id="new"><div class="markdown">{"answer":</div><div class="markdown">"new response"}</div></div></article>'));
+    '<article data-turn="user"><div class="markdown">{"prompt":"do not capture"}</div></article><article data-turn="assistant" data-testid="conversation-turn-3"><div data-message-author-role="assistant" data-message-id="new"><div class="markdown">{"answer":</div><div class="markdown">"new response"}</div></div><div class="turn-action-controls"><button aria-label="Copy">Copy</button></div></article>'));
   const result=await invoke({action:'auto-poll',baseline:prepared.baseline});
   expect(result).toMatchObject({ok:true,busy:false});expect(JSON.parse(result.text)).toEqual({answer:'new response'});
   expect(JSON.parse((await invoke({action:'capture'})).text)).toEqual({answer:'new response'});
@@ -142,6 +142,7 @@ test('new assistant message identity survives unchanged DOM counts and streaming
   });
   expect((await invoke({action:'auto-poll',baseline:prepared.baseline})).busy).toBe(true);
   await page.locator('[data-testid="stop-button"]').evaluate(el=>el.remove());
+  await page.locator('article').evaluate(el=>el.insertAdjacentHTML('beforeend','<div class="turn-action-controls"><button aria-label="Copy">Copy</button></div>'));
   const result=await invoke({action:'auto-poll',baseline:prepared.baseline});
   expect(result.busy).toBe(false);expect(JSON.parse(result.text)).toEqual({answer:'new response'});
 });
@@ -228,7 +229,7 @@ test('Vietnamese Gemini waits for the enabled send control and never clicks a hi
     <button class="send-button" disabled>Disabled copy</button>
     <button id="real-send" aria-label="Gửi tin nhắn" disabled>Send</button>
     <model-response>Old reply</model-response>`}));
-  await page.addInitScript(()=>{(window as any).chrome={runtime:{onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
+  await page.addInitScript(()=>{(window as any).chrome={runtime:{getManifest:()=>({version:'1.1.34'}),onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
   await page.goto('https://gemini.google.com/app');
   await page.evaluate(()=>{
     document.querySelector('[contenteditable]')!.addEventListener('input',()=>setTimeout(()=>{(document.querySelector('#real-send') as HTMLButtonElement).disabled=false},500));
@@ -258,7 +259,7 @@ test('multiline prompt survives a rich editor and only matching content can send
     <div id="prompt-textarea" contenteditable="true" role="textbox"><p><br></p></div>
     <button data-testid="send-button" disabled>Send</button>`}));
   await page.addInitScript(()=>{
-    (window as any).chrome={runtime:{onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}};
+    (window as any).chrome={runtime:{getManifest:()=>({version:'1.1.34'}),onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}};
   });
   await page.goto('https://chatgpt.com/');
   await page.evaluate(()=>{
@@ -291,14 +292,14 @@ test('multiline prompt survives a rich editor and only matching content can send
 test('automatic content adapter sends once and ignores old or streaming replies',async({page})=>{
   await page.route('https://chatgpt.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:`<!doctype html><meta charset="utf-8"><textarea id="prompt-textarea"></textarea><button data-testid="send-button" onclick="window.sentCount=(window.sentCount||0)+1;document.querySelector('textarea').value=''">Send</button><div data-message-author-role="assistant"><div class="markdown">Old answer</div></div>`}));
   await page.addInitScript(()=>{
-    (window as any).chrome={runtime:{onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}};
+    (window as any).chrome={runtime:{getManifest:()=>({version:'1.1.34'}),onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}};
   });
   await page.goto('https://chatgpt.com/');
   await page.addScriptTag({path:path.resolve('../browser-extension/adapters.js')});
   await page.addScriptTag({path:path.resolve('../browser-extension/content.js')});
   const invoke=(message:any)=>page.evaluate(message=>new Promise<any>(resolve=>(window as any).bridgeListener({type:'storyforge',jobKey:'test:1',prompt:'New prompt',...message},{},resolve)),message);
   const prepared=await invoke({action:'auto-prepare'});
-  expect(prepared.ok).toBeTruthy();expect(prepared.baseline).toEqual({count:1,last:'Old answer'});
+  expect(prepared.ok).toBeTruthy();expect(prepared.baseline).toEqual({count:1,last:'Old answer',finished:false});
   await expect(page.locator('textarea')).toHaveValue('New prompt');
   expect((await invoke({action:'auto-poll',baseline:prepared.baseline})).text).toBe('');
   expect((await invoke({action:'auto-check-send',baseline:prepared.baseline})).ready).toBeTruthy();
@@ -309,12 +310,13 @@ test('automatic content adapter sends once and ignores old or streaming replies'
   await page.evaluate(()=>{document.body.insertAdjacentHTML('beforeend','<div data-message-author-role="assistant"><div class="markdown">{"new":true}</div></div><button data-testid="stop-button">Stop</button>')});
   expect((await invoke({action:'auto-poll',baseline:prepared.baseline})).busy).toBe(true);
   await page.locator('[data-testid="stop-button"]').evaluate(el=>el.remove());
+  await page.locator('[data-message-author-role="assistant"]').last().evaluate(el=>el.insertAdjacentHTML('beforeend','<div class="turn-action-controls"><button aria-label="Copy">Copy</button></div>'));
   expect(await invoke({action:'auto-poll',baseline:prepared.baseline})).toMatchObject({ok:true,busy:false,text:'{"new":true}'});
 });
 
 test('automatic adapter does not overwrite a user draft or pass a visible checkpoint',async({page})=>{
   await page.route('https://gemini.google.com/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:'<!doctype html><meta charset="utf-8"><rich-textarea><div contenteditable="true">My unsent draft</div></rich-textarea><button class="send-button">Send</button>'}));
-  await page.addInitScript(()=>{(window as any).chrome={runtime:{onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
+  await page.addInitScript(()=>{(window as any).chrome={runtime:{getManifest:()=>({version:'1.1.34'}),onMessage:{addListener:(fn:any)=>{(window as any).bridgeListener=fn},removeListener:()=>{}}}}});
   await page.goto('https://gemini.google.com/app');
   await page.addScriptTag({path:path.resolve('../browser-extension/adapters.js')});
   await page.addScriptTag({path:path.resolve('../browser-extension/content.js')});

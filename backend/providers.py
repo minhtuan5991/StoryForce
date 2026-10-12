@@ -8,6 +8,7 @@ from .intelligence import duration_profile, words
 from .premise_policy import mock_batch
 
 PROVIDERS = {
+    "channel_research": "chatgpt",
     "story_dna": "chatgpt", "channel_fit": "chatgpt", "content_direction": "chatgpt",
     "discovery": "chatgpt", "premise_generation": "chatgpt", "premise_mini_test": "chatgpt",
     "story_bible": "chatgpt", "outline": "chatgpt", "outline_audit": "chatgpt",
@@ -19,7 +20,7 @@ PROVIDERS = {
 }
 PROVIDER_URLS = {"chatgpt": "https://chatgpt.com/", "gemini": "https://gemini.google.com/app",
                  "aistudio": "https://aistudio.google.com/generate-speech", "flow": "https://flow.google.com/",
-                 "lyria": "https://gemini.google.com/app"}
+                 "lyria": "https://aistudio.google.com/new_music?model=lyria-3-pro-preview"}
 
 
 class LLMProvider(ABC):
@@ -45,19 +46,18 @@ class MockProvider(LLMProvider):
         if kind == 'thumbnail_plan':
             from .thumbnail_packaging import ConceptScores
             quote = project.get('draft', '').strip()[:180]
-            headline = 'A STRANGE DETAIL'
-            text_mode = 'MICRO_HOOK' if context['channel_visual_profile']['text_usage'] == 'SHORT_TEXT' else 'NO_TEXT'
+            headlines = ['A STRANGE DETAIL', 'WHO WAS THERE?', 'THE HIDDEN ROOM']
             concepts = ['A close-up of the story evidence', 'A person confronting the story evidence', 'The setting containing the story evidence']
             return {'visual_dna': {'primary_setting': 'Story location', 'signature_object': 'Story evidence',
                     'central_anomaly': quote, 'threat_visibility': ['UNKNOWN'], 'spoiler_boundary': 'Do not reveal the ending', 'evidence_quotes': [quote]},
                 'thumbnail_variants': [{'id': key, 'strategy': strategy, 'concept': concept, 'composition': concept,
                     'focal_subject': 'Story evidence', 'background': 'The actual setting', 'lighting': 'Practical story lighting',
-                    'text_mode': text_mode, 'text_overlay': headline if text_mode != 'NO_TEXT' else '', 'text_safe_area': 'NONE',
+                    'text_mode': 'MICRO_HOOK', 'text_overlay': headline, 'text_safe_area': 'UPPER_LEFT',
                     'complement_strategy': 'TITLE_EVENT_THUMBNAIL_EVIDENCE', 'title_complement_reason': 'Show concrete evidence rather than repeat the full title.',
                     'hypothesis': 'Synthetic offline concept fixture, not a measured audience result.',
                     'generation_prompt': concept + '. Reference: ' + quote, 'negative_prompt': 'Unsupported entities, added gore, spoilers, watermarks',
                     'evidence_quotes': [quote], 'scores': {k: 10 if k.endswith('_risk') else 80 for k in ConceptScores.model_fields}}
-                    for key, strategy, concept in zip('ABC', ('concrete_anomaly', 'human_threat', 'atmospheric_context'), concepts)],
+                    for key, strategy, concept, headline in zip('ABC', ('concrete_anomaly', 'human_threat', 'atmospheric_context'), concepts, headlines)],
                 'recommended_thumbnail_variant': 'A', 'recommendation_reason': 'Synthetic fixture for isolated workflow tests.',
                 'test_notes': 'Hold the title fixed to compare thumbnails; use YouTube Studio watch time results. No audience winner is predicted.'}
         if kind == 'opening_variants':
@@ -97,6 +97,15 @@ class MockProvider(LLMProvider):
                     'review_notes': ['Review the final video, media rights, audience and synthetic-content disclosure settings.']}
         if kind == "story_dna":
             return self.fixture["story_dna"]
+        if kind == 'channel_research':
+            from .channel_guidance import baseline
+            profile = baseline(context['creative_brief'])
+            part = context['payload']['part']
+            research = {'mode': 'dna_only', 'sources': [], 'notes': 'Synthetic test output; no live web research was performed.'}
+            if part == 'identity':
+                return {key: profile[key] for key in ('identity', 'global_rules', 'hook_examples', 'avoid')} | {'research': research}
+            keys = ('ideas', 'bible', 'outline', 'draft') if part == 'writing' else ('review', 'packaging')
+            return {'step_rules': {key: profile['step_rules'][key] for key in keys}, 'research': research}
         if kind == "discovery":
             return {"hypotheses": [{"name": name, "genres": genres, "scores": {"source_supply": 70+i*3, "adaptability": 82-i*4, "audio_suitability": 87, "content_depth": 76, "novelty": 79, "similarity_risk": 20+i*5}, "test_videos": context.get("payload", {}).get("test_videos", 5), "basis": "Mock heuristic"} for i, (name, genres) in enumerate([("Rules After Dark", ["Horror", "Mystery"]), ("After the Grid", ["Survival", "Apocalypse"]), ("Second Chance Stories", ["Speculative fiction", "Mystery"])])], "sample_size": len(context.get("sources", [])), "clusters": [{"genre": "Mystery", "motifs": ["rules", "isolation", "moral choice"], "source_ids": [s["id"] for s in context.get("sources", [])]}]}
         if kind == "content_direction":

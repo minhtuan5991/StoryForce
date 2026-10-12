@@ -21,7 +21,8 @@ def production(client, project, monkeypatch, tmp_path):
         db.add_all([Scene(project_id=p.id,story_version=1,number=i,scene_key=f'scene_{i:03}',visual_type='VIDEO' if i==2 else 'IMAGE',prompt=f'Visual {i}.') for i in (1,2)])
         db.commit()
     job(client, project, 'thumbnail_plan')
-    client.patch('/api/settings',json={'provider_mode':'browser'})
+    # Auto and Assisted modes both create all three mandatory thumbnails.
+    client.patch('/api/settings',json={'provider_mode':'browser','pipeline_mode':'auto'})
     token=client.post('/api/settings/pair-bridge').json()['token']
     return {'path':'/api/projects/'+project['id']+'/media-automation', 'headers':{'X-Bridge-Token':token},'download':download,'id':project['id']}
 
@@ -116,9 +117,10 @@ def test_visuals_require_exact_current_count_confirmation(client,production):
         assert client.post(p['path']+'/start',json={'kind':'visuals',**body}).status_code==422
     assert not client.get('/api/bridge/jobs',headers=p['headers']).json()['items']
     state=start(client,p,'visuals',**{k:preview[k] for k in ('confirmation','image_count','video_count')})
-    assert state['total']==3 and state['confirmed_counts']=={'images':1,'videos':1}
+    assert state['total']==4 and state['confirmed_counts']=={'images':1,'videos':1}
+    assert state['manual_video_count']==1 and preview['video_mode']=='manual'
     j=media_job(client,p)
-    assert j['media']['target_type']=='thumbnail' and j['media']['filename']=='thumbnail.png'
+    assert j['media']['target_type']=='thumbnail' and j['media']['filename']=='thumbnail_A.png'
 
 
 def test_new_visual_direction_matches_copy_and_batch_preserves_existing_plan(client, production):
@@ -155,9 +157,10 @@ def test_new_visual_direction_matches_copy_and_batch_preserves_existing_plan(cli
     with client.app.state.database.session() as db:
         project = db.get(Project, p['id'])
         pending = project.settings['media_automation']['pending']
-        assert [item['prompt'] for item in pending] == [image['generation_prompt'], video['generation_prompt']]
-        assert [item['filename'] for item in pending] == ['scene_001.png', 'scene_002.mp4']
-        assert pending[1]['flow']['seconds'] == 10
+        assert [item['prompt'] for item in pending if item['target_type']=='scene'] == [image['generation_prompt']]
+        assert [item['variant_id'] for item in pending if item['target_type']=='thumbnail']==['B','C']
+        assert [item['filename'] for item in pending] == ['thumbnail_B.png','thumbnail_C.png','scene_001.png']
+        assert not any(item['kind']=='video_generation' or item['provider']=='flow' for item in pending)
         assert [serialize(s) for s in db.query(Scene).filter_by(project_id=p['id']).order_by(Scene.number)] == original
         assert project.publish == {'title': 'The Room That Passed Inspection'} and project.draft == detail['draft']
         # Changed packaging must still invalidate the old approved thumbnail.
@@ -175,6 +178,9 @@ def test_single_image_job_uses_the_same_prompt_as_copy_without_altering_flow(cli
         response = client.post('/api/jobs', json={'project_id': p['id'],
             'kind': 'video_generation' if scene['visual_type'] == 'VIDEO' else 'image_generation',
             'payload': {'scene_id': scene['id'], 'prompt': scene['prompt'], 'negative_prompt': scene['negative_prompt']}})
+        if scene['visual_type']=='VIDEO':
+            assert response.status_code==422 and 'manually' in response.text
+            continue
         assert response.status_code == 200, response.text
         with client.app.state.database.session() as db:
             created = db.get(Job, response.json()['id'])
@@ -187,6 +193,20 @@ def test_single_image_job_uses_the_same_prompt_as_copy_without_altering_flow(cli
 
 def fail(client,p,j,reason='Tab AI is frozen',owner='one'):
     return client.post('/api/bridge/media/'+j['id']+'/failure',headers=p['headers'],json={'owner':owner,'attempt':j['attempt'],'reason':reason,'stage':'submitted'})
+
+
+def test_invalid_voice_pauses_tts_batch_instead_of_failing_every_chunk_and_can_be_corrected(client,production):
+    p=production;start(client,p);first=media_job(client,p);claim(client,p,first)
+    response=client.post('/api/bridge/media/'+first['id']+'/failure',headers=p['headers'],json={
+        'owner':'one','attempt':first['attempt'],'reason':'Speaker not found','stage':'opening','code':'TTS_CONFIG'})
+    assert response.status_code==200 and response.json()['paused']
+    detail=client.get('/api/projects/'+p['id']).json()
+    assert detail['settings']['media_automation']['phase']=='stopped'
+    assert not [j for j in detail['jobs'] if j['kind']=='tts_context' and j['status']=='waiting_user']
+    assert len([j for j in detail['jobs'] if j['kind']=='tts_context'])==1
+    assert client.put('/api/projects/'+p['id']+'/narration',json={'speaker':'Fola','style':'Calm'}).status_code==200
+    start(client,p);new=media_job(client,p)
+    assert new['id']!=first['id'] and new['media']['voice']=='Fola' and new['media']['style']=='Calm'
 
 
 def test_failed_item_advances_once_reports_missing_and_rejects_late_download(client,production):
@@ -219,7 +239,7 @@ def test_confirmed_visuals_wait_for_tts_and_begin_after_all_audio_items(client,p
     for _ in range(2):
         j=media_job(client,p);claim(client,p,j);assert fail(client,p,j).status_code==200
     nextj=media_job(client,p)
-    assert nextj['provider']=='gemini' and nextj['media']['filename']=='thumbnail.png'
+    assert nextj['provider']=='gemini' and nextj['media']['filename']=='thumbnail_A.png'
     assert not client.get('/api/projects/'+p['id']).json()['settings']['production_queue']
 
 
@@ -238,7 +258,7 @@ def test_new_visual_plan_is_queued_during_tts_and_runs_with_confirmed_counts(cli
     output={'scenes':[{'scene_id':f'scene_{i:03}','visual_type':'IMAGE','prompt':f'Concrete image {i}'} for i in (1,2)]}
     completed=client.post('/api/jobs/'+plan['id']+'/result',json={'result':output})
     assert completed.status_code==200,completed.text
-    nextj=media_job(client,p);assert nextj['media']['filename']=='thumbnail.png'
+    nextj=media_job(client,p);assert nextj['media']['filename']=='thumbnail_A.png'
     assert len(client.get('/api/projects/'+p['id']).json()['scenes'])==2
 
 
@@ -257,12 +277,16 @@ def test_queued_visual_confirmation_expires_if_plan_changes_and_stop_clears_queu
     assert not client.get('/api/projects/'+p['id']).json()['settings']['production_queue']
 
 
-def test_browser_heartbeat_skips_only_claimed_stale_item_and_renewal_wins(client,production):
+def test_browser_heartbeat_skips_only_claimed_stale_item_and_renewal_wins(client,production,monkeypatch):
     from datetime import datetime,timezone,timedelta
+    fixed=datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr('backend.media_automation.now',lambda:fixed)
     p=production;start(client,p);first=media_job(client,p);claim(client,p,first)
     service=client.app.state.workflow.media_automation
     old=client.get('/api/bridge/jobs',headers=p['headers']).json()['items'][0]['media_claim']['last_seen_at']
     claim(client,p,first)
+    renewed=client.get('/api/bridge/jobs',headers=p['headers']).json()['items'][0]['media_claim']['last_seen_at']
+    assert datetime.fromisoformat(renewed)>datetime.fromisoformat(old)
     stale=client.post('/api/bridge/media/'+first['id']+'/failure',headers=p['headers'],json={
         'owner':'one','attempt':first['attempt'],'reason':'stale heartbeat','stage':'browser_disconnected','last_seen_at':old})
     assert stale.status_code==422
@@ -297,19 +321,20 @@ def test_tts_downloads_attach_once_and_queue_next_in_order(client,production):
     assert detail['settings']['media_automation']['completed']==1 and len(detail['assets'])==1
 
 
-def test_completed_thumbnail_then_scene_then_exact_flow_settings(client,production):
+def test_completed_thumbnails_and_image_wait_for_manually_created_flow_video(client,production):
     p=production;preview=client.get(p['path']+'/preview').json()
     state=start(client,p,'visuals',**{k:preview[k] for k in ('confirmation','image_count','video_count')})
-    for name in ('thumbnail.png','scene_001.png'):
+    for name in ('thumbnail_A.png','thumbnail_B.png','thumbnail_C.png','scene_001.png'):
         j=media_job(client,p);assert j['media']['filename']==name;claim(client,p,j)
         path=Path(state['download_path'])/name
         Image.new('RGB',(1280,720),'navy').save(path)
         response=result(client,p,j,path);assert response.status_code==200,response.text
-    video=media_job(client,p)
-    assert video['media']['filename']=='scene_002.mp4'
-    assert video['media']['flow']=={'mode':'Video','input_mode':'Ingredients','aspect':'16:9','model':'Omni 1.1 Flash','resolution':'720p','seconds':10,'outputs':1}
+    assert client.get('/api/bridge/jobs',headers=p['headers']).json()['items']==[]
     detail=client.get('/api/projects/'+p['id']).json()
     assert detail['publish']['thumbnail_asset_id'] and detail['scenes'][0]['asset_id']
+    assert not detail['scenes'][1]['asset_id']
+    assert detail['settings']['media_automation']['phase']=='completed'
+    assert any(m['filename']=='scene_002.mp4' and not m['automatic_failure'] for m in detail['missing_resources'])
 
 
 def test_changed_story_or_prompt_and_cancel_never_accept_old_result(client,production):
@@ -378,4 +403,4 @@ def test_assigned_video_in_an_image_scene_is_kept_unless_regeneration_is_selecte
         scene=db.query(Scene).filter_by(project_id=p['id'],number=1).one();scene.asset_id=asset.id;scene.status='ATTACHED';db.commit()
     preview=client.get(p['path']+'/preview').json()
     state=start(client,p,'visuals',**{k:preview[k] for k in ('confirmation','image_count','video_count')})
-    assert state['skipped']==1 and state['total']==2
+    assert state['skipped']==1 and state['total']==3

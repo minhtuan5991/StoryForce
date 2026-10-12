@@ -15,6 +15,9 @@ export function VisualPlanOptions({project,active,act,run}:{project:Row,active:b
   useEffect(()=>{setOptions({mode:budget.mode,image_count:budget.image_count,video_count:budget.video_count})},[saved]);
   const presets={...budget,efficient:budget.efficient||{image_count:budget.minimum.image_count,video_count:budget.standard.video_count}};
   const counts=options.mode==='custom'?options:presets[options.mode];
+  const assisted=project.workflow_settings?.pipeline_mode==='assisted';
+  const initial=project.settings?.production_options;
+  const approvedCounts=assisted&&initial?.preset_counts&&initial.image_count===counts.image_count&&initial.video_count===counts.video_count;
   const valid=Number.isInteger(counts.image_count)&&counts.image_count>=1&&Number.isInteger(counts.video_count)&&counts.video_count>=0&&counts.image_count+counts.video_count<=200;
   async function generate(){
     setBusy(true);
@@ -37,9 +40,10 @@ export function VisualPlanOptions({project,active,act,run}:{project:Row,active:b
     <label className="check-field"><input type="checkbox" checked={autoCreate} onChange={e=>setAutoCreate(e.target.checked)}/>{tr('Automatically create and download after this plan')}</label>
     {ttsBusy&&<p className="muted">{tr('Narration is running. This plan will wait until all audio items are completed or skipped.')}</p>}
     {!valid&&<p role="alert" className="error-text">{tr('Choose at least one image, zero or more videos, and at most 200 visuals')}</p>}
-    <Button primary disabled={!project.locked||blocked||busy||!valid} onClick={()=>autoCreate?setConfirm(true):generate()}><Image size={16}/>{tr(busy?'Saving…':ttsBusy?'Queue visual plan':'Create visual plan')}</Button>
+    {approvedCounts&&<p className="notice compact">{tr('These counts were confirmed when creating the project. Assisted mode will create all three thumbnails and scene resources automatically after narration.')}</p>}
+    <Button primary disabled={!project.locked||blocked||busy||!valid} onClick={()=>autoCreate&&!approvedCounts?setConfirm(true):generate()}><Image size={16}/>{tr(busy?'Saving…':ttsBusy?'Queue visual plan':'Create visual plan')}</Button>
   </fieldset>{confirm&&<Modal title={tr('Confirm image and video counts')} onClose={()=>{if(!busy)setConfirm(false)}}>
-    <p><strong>{counts.image_count} {tr('images')} · {counts.video_count} {tr('videos')} + 1 {tr('thumbnail')}</strong></p>
+    <p><strong>{counts.image_count} {tr('images')} · {counts.video_count} {tr('videos')} + {assisted?3:1} {tr(assisted?'Thumbnails':'thumbnail')}</strong></p>
     <p>{tr('Thumbnail is created first. Images and videos start only after this count confirmation and after narration finishes.')}</p>
     <p>{tr('If opening videos need a character reference, one main-cast reference image is created before the clips and shared by Gemini and Flow. It is saved separately and is not included in the timeline or scene counts.')}</p>
     <p>{tr('Video creation uses Flow credits at the rate shown on its page.')}</p>

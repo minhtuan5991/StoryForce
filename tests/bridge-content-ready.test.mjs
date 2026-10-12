@@ -11,6 +11,7 @@ function fixture(host='chatgpt.com') {
     {url:'https://'+host+'/',runScripts:'outside-only'});
   const w=dom.window,listeners=new Set();let time=0,version=manifest.version,injections=0;
   w.HTMLElement.prototype.getClientRects=()=>[{}];
+  Object.defineProperty(w.HTMLElement.prototype,'innerText',{get(){return this.textContent},configurable:true});
   Object.defineProperty(w.HTMLElement.prototype,'isContentEditable',{get(){return this.getAttribute('contenteditable')==='true'}});
   Object.defineProperty(w.document,'readyState',{value:'complete',configurable:true});
   w.performance.now=()=>time;
@@ -88,6 +89,41 @@ test('loading, changed editors and an active AI response reset readiness instead
   } finally {f.dom.window.close()}
 });
 
+for(const host of ['chatgpt.com','gemini.google.com']){
+test(host+' requires 500ms of an unchanged usable editor and resets on remount, draft edits or busy state',async()=>{
+  const f=fixture(host);try {
+    const observe=()=>f.invoke({action:'auto-ready'});
+    assert.equal((await observe()).ready,false);
+    f.advance(499);assert.equal((await observe()).ready,false);
+    f.advance(1);await f.ensure(9);assert.equal((await observe()).ready,true);
+    let field=f.w.document.querySelector('#prompt-textarea');
+    const replacement=field.cloneNode(true);field.replaceWith(replacement);field=replacement;
+    assert.equal((await observe()).ready,false);
+    f.advance(499);field.textContent='My unsent draft';assert.equal((await observe()).ready,false);
+    f.advance(500);assert.equal((await observe()).ready,true);
+    field.setAttribute('aria-disabled','true');assert.equal((await observe()).ready,false);
+    f.advance(1000);field.removeAttribute('aria-disabled');assert.equal((await observe()).ready,false);
+    f.advance(500);assert.equal((await observe()).ready,true);
+    const busy=f.w.document.createElement('button');busy.setAttribute(host==='chatgpt.com'?'data-testid':'data-test-id','stop-button');
+    f.w.document.querySelector('main').append(busy);assert.equal((await observe()).ready,false);
+    f.advance(1000);busy.remove();assert.equal((await observe()).ready,false);
+    f.advance(500);assert.equal((await observe()).ready,true);
+    assert.equal(field.textContent,'My unsent draft');assert.equal(f.injections(),0);
+  } finally {f.dom.window.close()}
+});
+}
+
+test('a page that resumes loading after readiness never starts Paste',async()=>{
+  const f=fixture();try {
+    await f.invoke({action:'auto-ready'});f.advance(500);
+    assert.equal((await f.invoke({action:'auto-ready'})).ready,true);
+    Object.defineProperty(f.w.document,'readyState',{value:'loading',configurable:true});
+    const result=await f.invoke({action:'auto-prepare',jobKey:'load:1',prompt:'Must not be pasted'});
+    assert.equal(result.ok,false);assert.equal(result.code,'INPUT_NOT_READY');
+    assert.equal(f.w.document.querySelector('#prompt-textarea').textContent,'');
+  } finally {f.dom.window.close()}
+});
+
 test('every provider reports the installed extension version without repeated reinjection',async()=>{
   for(const host of hosts){const f=fixture(host);try {
     for(let i=0;i<3;i++)await f.ensure(9);
@@ -100,5 +136,39 @@ test('a disconnected tab on an unsupported site cannot receive Bridge scripts',a
   const f=fixture('example.com');try {
     f.listeners.clear();await assert.rejects(f.ensure(9),/Unsupported provider tab/);
     assert.equal(f.injections(),0);
+  } finally {f.dom.window.close()}
+});
+
+test('only a new completed assistant turn can report an empty response',async()=>{
+  const f=fixture();try {
+    const main=f.w.document.querySelector('main');
+    main.insertAdjacentHTML('beforeend','<div data-turn="assistant" data-turn-key="a1"><div class="turn-action-controls"><button aria-label="Sao chép"></button></div></div>');
+    const result=await f.invoke({action:'auto-poll',baseline:{count:0,last:''}});
+    assert.equal(result.emptyResponse,true);assert.equal(result.busy,false);
+    assert.equal((await f.invoke({action:'auto-poll',baseline:{count:1,last:''}})).emptyResponse,false);
+    main.insertAdjacentHTML('beforeend','<button aria-label="Ngừng"></button>');
+    const active=await f.invoke({action:'auto-poll',baseline:{count:0,last:''}});
+    assert.equal(active.busy,true);assert.equal(active.emptyResponse,false);
+  } finally {f.dom.window.close()}
+});
+
+test('user Copy controls and unfinished empty assistant turns never report completion',async()=>{
+  const f=fixture();try {
+    f.w.document.querySelector('main').insertAdjacentHTML('beforeend','<div data-turn-key="turn"><div data-turn="user"><div class="turn-action-controls"><button aria-label="Sao chép"></button></div></div><div data-turn="assistant"></div></div>');
+    const result=await f.invoke({action:'auto-poll',baseline:{count:0,last:''}});
+    assert.equal(result.busy,true);assert.equal(result.emptyResponse,false);
+  } finally {f.dom.window.close()}
+});
+
+test('a distinct completed correction with identical text is read once instead of treated as the old reply',async()=>{
+  const f=fixture();try {
+    const main=f.w.document.querySelector('main');
+    for(const id of ['reply1','reply2'])main.insertAdjacentHTML('beforeend',
+      '<div data-turn="assistant" data-turn-key="'+id+'"><div class="markdown">Not JSON</div><div class="turn-action-controls"><button aria-label="Copy"></button></div></div>');
+    const baseline={count:1,last:'Not JSON',id:'reply1'};
+    const result=await f.invoke({action:'auto-poll',baseline});
+    assert.equal(result.text,'Not JSON');assert.equal(result.busy,false);assert.equal(result.capture.fresh,true);
+    const old=await f.invoke({action:'auto-poll',baseline:{count:2,last:'Not JSON',id:'reply2'}});
+    assert.equal(old.text,'');assert.equal(old.capture.fresh,false);
   } finally {f.dom.window.close()}
 });

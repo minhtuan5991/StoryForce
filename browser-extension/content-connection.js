@@ -13,6 +13,6 @@ export function createContentConnection({chrome,allowedHosts,readTimeoutMs=12000
     }
     const tab=await chrome.tabs.get(tabId);
     if(!allowedHosts.includes(new URL(tab.url).hostname))throw new Error('Unsupported provider tab');
-    await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},files:['adapters.js','paste.js','media-content.js','content.js']}),readTimeoutMs);
+    await withTabReadDeadline(()=>chrome.scripting.executeScript({target:{tabId},files:['adapters.js','paste.js','media-content.js','response-files.js','content.js']}),readTimeoutMs);
   };
 }

@@ -6,6 +6,60 @@ import {installPasteFixture} from './helpers/media-paste-fixture.mjs';
 
 const adapter='('+installPasteFixture.toString()+')(window);\n'+readFileSync(new URL('../browser-extension/media-content.js',import.meta.url),'utf8');
 
+function customStyleStudio(persist=true){
+  const {window}=new JSDOM('<button>Speaker 1 - Fola</button><button id="style" aria-label="Style">Style</button><textarea id="speech">Narration stays here.</textarea><button>Run</button>',{url:'https://aistudio.google.com/generate-speech',runScripts:'outside-only'});
+  const d=window.document;window.HTMLElement.prototype.getClientRects=()=>[{}];
+  Object.defineProperty(d,'readyState',{value:'complete'});
+  let stored='Old style',opened=0;
+  d.querySelector('#style').onclick=()=>{
+    const popup=d.querySelector('.cdk-overlay-pane');
+    if(popup){if(persist)stored=popup.querySelector('textarea').value;popup.remove();return}
+    opened++;const menu=d.createElement('div');menu.className='cdk-overlay-pane';
+    menu.innerHTML='<textarea placeholder="Describe the voice style. e.g. Tone, mood, pace..."></textarea><button>Friendly</button>';
+    menu.querySelector('textarea').value=stored;d.body.append(menu);
+  };
+  window.eval(adapter);
+  const run=()=>window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'custom-tts',media:{voice:'Fola',style:'Calm, intimate narration.\nMeasured pauses.'}});
+  return {window,run,stored:()=>stored,opened:()=>opened};
+}
+
+test('AI Studio pastes custom Style in its popup, reopens to verify persistence, and leaves narration untouched',async()=>{
+  const f=customStyleStudio();let result,now=1000;f.window.Date.now=()=>now;
+  for(let i=0;i<10;i++){result=await f.run();now+=1000;if(result.ready)break}
+  assert.equal(result.ready,true);assert.equal(f.opened(),2);
+  assert.equal(f.stored(),'Calm, intimate narration.\nMeasured pauses.');
+  assert.equal(f.window.document.querySelector('#speech').value,'Narration stays here.');
+  assert.equal(f.window.document.querySelector('.cdk-overlay-pane'),null);
+  assert.equal((await f.run()).ready,true);assert.equal(f.opened(),2);
+});
+
+test('AI Studio refuses to send if custom Style does not survive closing the menu',async()=>{
+  const f=customStyleStudio(false);let now=1000;f.window.Date.now=()=>now;
+  for(let i=0;i<6;i++){await f.run();now+=1000}
+  now+=21000;await assert.rejects(f.run(),/Không xác minh được Style/);
+  assert.equal(f.window.document.querySelector('#speech').value,'Narration stays here.');
+});
+
+test('AI Studio searches the project Speaker and reports a missing voice without substituting Enzo',async()=>{
+  const f=studio(),d=f.window.document;d.querySelector('[data-voice-name]').remove();
+  let now=1000;f.window.Date.now=()=>now;
+  const run=()=>f.window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'new-voice',media:{voice:'Kore',style:'Friendly'}});
+  assert.equal((await run()).ready,false);
+  assert.equal(d.querySelector('input').value,'Kore');
+  now+=21000;await assert.rejects(run(),/Không tìm thấy Speaker "Kore"/);
+  assert.equal(d.querySelector('#speaker').textContent,'Speaker 1 - Fola');
+});
+
+test('AI Studio selects a dynamic voice card and verifies its speech badge',async()=>{
+  const f=studio(),d=f.window.document;f.card.setAttribute('data-voice-name','Kore');f.option.textContent='Kore';f.option.setAttribute('aria-label','Kore');
+  let now=1000;f.window.Date.now=()=>now;
+  f.option.onclick=()=>{f.card.classList.add('selected');f.option.setAttribute('aria-label','Kore (Current)');d.querySelector('#speaker').textContent='Speaker 1 - Kore'};
+  const run=()=>f.window.storyForgeMediaExecute({provider:'aistudio',action:'media-setup',jobId:'new-voice',media:{voice:'Kore',style:'Friendly'}});
+  assert.equal((await run()).ready,false);assert.equal((await run()).ready,false);assert.equal((await run()).ready,false);
+  now+=2100;assert.equal((await run()).ready,true);
+  assert.equal(d.querySelector('#speaker').textContent,'Speaker 1 - Kore');
+});
+
 test('AI Studio downloads the assembled WAV, reads its visible duration, and waits for the total to stop changing',async()=>{
   const dom=new JSDOM(`<main><textarea>At 11:47 p.m., the story begins.</textarea>
     <section><audio src="blob:https://aistudio.google.com/40ms-packet"></audio>
@@ -204,9 +258,33 @@ test('Gemini ignores its offscreen Quill clipboard but still refuses two actual 
   window.eval(adapter);
   const setup={provider:'gemini',action:'media-setup',jobId:'image-one'};
   assert.equal((await window.storyForgeMediaExecute(setup)).ready,false);
-  now+=2000;assert.equal((await window.storyForgeMediaExecute(setup)).ready,true);
+  now+=499;assert.equal((await window.storyForgeMediaExecute(setup)).ready,false);
+  now++;assert.equal((await window.storyForgeMediaExecute(setup)).ready,true);
   const second=d.createElement('div');second.setAttribute('contenteditable','true');second.setAttribute('role','textbox');d.body.append(second);
   await assert.rejects(window.storyForgeMediaExecute(setup),/duy nhất/);
+});
+
+test('Gemini media restarts the 500ms editor check after loading, busy responses, disabled controls or edited drafts',async()=>{
+  const dom=new JSDOM('<div contenteditable="true" role="textbox"></div>',{url:'https://gemini.google.com/app',runScripts:'outside-only'});
+  const {window}=dom,d=window.document;try {
+    window.HTMLElement.prototype.getClientRects=()=>[{}];
+    Object.defineProperty(d,'readyState',{value:'complete',configurable:true});
+    let now=1000;window.Date.now=()=>now;window.eval(adapter);
+    const message={provider:'gemini',action:'media-setup',jobId:'image-one'};
+    const observe=()=>window.storyForgeMediaExecute(message),field=d.querySelector('[contenteditable]');
+    assert.equal((await observe()).ready,false);now+=500;assert.equal((await observe()).ready,true);
+    field.textContent='My own draft';assert.equal((await observe()).ready,false);
+    now+=499;assert.equal((await observe()).ready,false);now++;assert.equal((await observe()).ready,true);
+    field.setAttribute('aria-disabled','true');await assert.rejects(observe(),/duy nhất/);
+    now+=1000;field.removeAttribute('aria-disabled');assert.equal((await observe()).ready,false);
+    now+=500;assert.equal((await observe()).ready,true);
+    Object.defineProperty(d,'readyState',{value:'loading',configurable:true});assert.equal((await observe()).ready,false);
+    now+=1000;Object.defineProperty(d,'readyState',{value:'complete',configurable:true});assert.equal((await observe()).ready,false);
+    now+=500;assert.equal((await observe()).ready,true);
+    const busy=d.createElement('button');busy.textContent='Stop';d.body.append(busy);assert.equal((await observe()).ready,false);
+    now+=1000;busy.remove();assert.equal((await observe()).ready,false);now+=500;assert.equal((await observe()).ready,true);
+    assert.equal(field.textContent,'My own draft');
+  } finally {dom.window.close()}
 });
 
 test('Flow verifies the visible Omni model caption behind its generic accessible label without reopening the model menu',async()=>{

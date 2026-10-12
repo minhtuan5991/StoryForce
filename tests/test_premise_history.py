@@ -6,13 +6,22 @@ from backend.models import PremiseUsage, Project, serialize
 from backend.portability import inspect_database
 from test_premise_reuse import finished
 from test_deletion import preview, confirm
+from conftest import confirm_setup
 
 
-def branch(client, project):
+def branch(client, project, completed=True):
     ideas, _, _ = finished(client, project)
     response = client.post('/api/projects/'+project['id']+'/select-premise', json={'premise_id': ideas[1]['id']})
     assert response.status_code == 200, response.text
-    return ideas, response.json()
+    child=response.json()
+    if completed:
+        confirm_setup(client,child)
+        with client.app.state.database.session() as db:
+            p=db.get(Project,child['id'])
+            p.settings={**p.settings,'video_completed':True}
+            db.commit()
+        child=client.get('/api/projects/'+child['id']).json()
+    return ideas, child
 
 
 def test_deleted_branch_keeps_history_and_cannot_be_created_again(client, project):
@@ -67,10 +76,12 @@ def test_schema_three_backfills_existing_choices_without_editing_projects(client
     ideas, child = branch(client, project)
     with client.app.state.database.session() as db:
         before = {p.id: serialize(p) for p in db.query(Project)}
+    # v7 records successful renders so cleanup cannot later release used ideas.
+    before[project['id']]['settings']['video_completed']=True
     # Simulate v2's complete stored projects without the new history table.
     with sqlite3.connect(client.app.state.database.path) as db:
         db.execute('DROP TABLE premise_usage')
-        db.execute('DELETE FROM schema_migrations WHERE version=3')
+        db.execute('DELETE FROM schema_migrations WHERE version>=3')
     updated = Database(client.app.state.root)
     with updated.session() as db:
         assert {p.id: serialize(p) for p in db.query(Project)} == before

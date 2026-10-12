@@ -116,6 +116,10 @@ def test_rejected_retention_callback_authorizes_one_corrected_attempt_and_preser
     assert not client.get('/api/projects/' + project['id']).json()['locked']
     retry = {'owner': 'one', 'attempt': 1, 'retry_id': 'correct-time', 'reason': 'RETENTION_EVIDENCE'}
     assert client.post(path + '/retry', headers=headers, json={**retry, 'owner': 'other'}).status_code == 409
+    from test_bridge_retry import authorize_correction
+    repair_id=authorize_correction(client,path,headers,reason='RETENTION_EVIDENCE')
+    assert client.post(path+'/result',headers=headers,json={'attempt':1,'result':bad,'repair_id':repair_id}).status_code==422
+    retry['repair_id']=repair_id
     assert client.post(path + '/retry', headers=headers, json=retry).status_code == 200
     assert client.post(path + '/retry', headers=headers, json=retry).json()['retry_count'] == 1
     waiting = next(j for j in client.get('/api/bridge/jobs', headers=headers).json()['items'] if j['id'] == jid)

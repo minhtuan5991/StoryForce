@@ -8,7 +8,7 @@ HTMLDialogElement.prototype.close=function(){this.removeAttribute('open')};
 afterEach(()=>{cleanup();vi.clearAllMocks()});
 const act=async(fn:()=>Promise<any>)=>fn();
 const plan={content_fingerprint:'inputs-hash',plan_hash:'hash',recommended_thumbnail_variant:'A',recommendation_reason:'Concrete blueprint evidence',test_notes:'Keep title fixed and compare watch time.',visual_dna:{central_anomaly:'An impossible room'},official_sources:[],
- thumbnail_variants:['A','B','C'].map((id,i)=>({id,strategy:['concrete_anomaly','human_threat','atmospheric_context'][i],concept:['A room on the blueprint','A clerk examining the plan','A hallway that differs from the plan'][i],text_overlay:'',title_complement_reason:'The picture adds evidence',scores:{story_accuracy:90,clutter_risk:5},evidence_quotes:['Room 614 appeared on the blueprint.'],hypothesis:'An editorial hypothesis',generation_prompt:'Generate this concept',negative_prompt:'No ghost'}))};
+ thumbnail_variants:['A','B','C'].map((id,i)=>({id,strategy:['concrete_anomaly','human_threat','atmospheric_context'][i],concept:['A room on the blueprint','A clerk examining the plan','A hallway that differs from the plan'][i],text_overlay:['WHERE IS 614?','WHO OPENED IT?','THE MISSING ROOM'][i],title_complement_reason:'The picture adds evidence',scores:{story_accuracy:90,clutter_risk:5},evidence_quotes:['Room 614 appeared on the blueprint.'],hypothesis:'An editorial hypothesis',generation_prompt:'Generate this concept',negative_prompt:'No ghost'}))};
 const project:any={id:'p',locked:true,jobs:[],settings:{},thumbnail_packaging:{plan,current:true,selected_variant:'A',assets:{},channel_style:{}}};
 
 it('shows distinct concepts and treats text and image review separately',()=>{
@@ -16,17 +16,20 @@ it('shows distinct concepts and treats text and image review separately',()=>{
  expect(screen.getByText('A · Concrete visual anomaly')).toBeInTheDocument();
  expect(screen.getByText('B · Human stakes')).toBeInTheDocument();
  expect(screen.getByText('C · Atmosphere and setting')).toBeInTheDocument();
- expect(screen.getAllByText('No overlay text')).toHaveLength(4);
+ expect(screen.queryByText('No overlay text')).not.toBeInTheDocument();
+ for(const text of ['WHERE IS 614?','WHO OPENED IT?','THE MISSING ROOM'])expect(screen.getByText(text)).toBeVisible();
  expect(screen.getByText(/Concept scores are not measurements/)).toBeInTheDocument();
 });
 
-it('saves optional no-text styling and blocks generation while inputs are dirty',async()=>{
+it('keeps text mandatory and blocks generation while other style inputs are dirty',async()=>{
  vi.mocked(api).mockImplementation(async(_path,_method,body)=>body);
  render(<ThumbnailPackaging project={project} act={act}/>);
- fireEvent.change(screen.getByRole('combobox',{name:'Thumbnail text mode'}),{target:{value:'NO_TEXT'}});
+ expect(screen.getByRole('combobox',{name:'Thumbnail text mode'})).toBeDisabled();
+ expect(screen.getByRole('combobox',{name:'Thumbnail text mode'})).toHaveValue('SHORT_TEXT');
+ fireEvent.change(screen.getByRole('combobox',{name:'Thumbnail color treatment'}),{target:{value:'STORY_DRIVEN'}});
  expect(screen.getByRole('button',{name:'Create selected thumbnail image'})).toBeDisabled();
  fireEvent.click(screen.getByRole('button',{name:'Save thumbnail style'}));
- await waitFor(()=>expect(api).toHaveBeenCalledWith('/projects/p/thumbnail-style','PATCH',expect.objectContaining({text_usage:'NO_TEXT',typography:'LEGACY_2_3_FONTS'})));
+ await waitFor(()=>expect(api).toHaveBeenCalledWith('/projects/p/thumbnail-style','PATCH',expect.objectContaining({text_usage:'SHORT_TEXT',typography:'LEGACY_2_3_FONTS',color_mode:'STORY_DRIVEN'})));
  await waitFor(()=>expect(screen.getByRole('button',{name:'Create selected thumbnail image'})).toBeEnabled());
 });
 

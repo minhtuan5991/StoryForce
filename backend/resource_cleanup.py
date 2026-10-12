@@ -305,7 +305,13 @@ class ResourceCleanup:
             publish = dict(p.publish or {})
             if publish.get('thumbnail_asset_id') in removed_ids:
                 publish.pop('thumbnail_asset_id', None)
-            if not report['was_current']: publish['final_reviewed'] = False
+            # Cleanup does not revoke completion just because an app update or
+            # export preference changed the renderer hash. A reviewed story can
+            # still supply unused ideas; actual render freshness stays strict.
+            if (render.story_version != p.story_version or render.content.get('story_version') != p.story_version
+                    or render.content.get('status') == 'BLOCKED' or not render.content.get('checks')
+                    or not all(render.content['checks'].values())):
+                publish['final_reviewed'] = False
             p.publish = publish
             settings = dict(p.settings or {})
             options = dict(settings.get('render_options', {}))

@@ -56,3 +56,7 @@
 .studio-nav .locked-stage {display:flex;align-items:center;gap:10px;min-height:44px;padding:12px 14px;color:var(--muted,#8798ac);opacity:.6;cursor:default}
 
 .storage-path{display:flex;align-items:flex-start;gap:10px;overflow-wrap:anywhere;min-width:0}.storage-path span{min-width:0;overflow-wrap:anywhere}.storage-path svg{flex-shrink:0;margin-top:3px}
+
+.project-type-guide{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}.project-type-guide>span{display:flex;align-items:flex-start;gap:8px}.source-usage{display:block;margin-top:4px}@media(max-width:800px){.project-type-guide{grid-template-columns:1fr}}
+/* Voice controls reuse the standard fields without a second nested border. */
+.plain-fieldset { border:0; padding:0; margin:0; min-width:0; }

@@ -16,6 +16,7 @@ import sqlite3
 import zipfile
 from contextlib import asynccontextmanager, closing
 from datetime import date
+from typing import Literal
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Query, Body
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -26,9 +27,10 @@ from .database import Database
 from .deletion import Deletions, DeletionRequest
 from .asset_management import delete_assets
 from .media_automation import MediaAutomation
+from .media_sessions import visual_identity
 from .background_music import production_suggestion
 from .models import *
-from .schemas import ChannelCreate, SourceCreate, ProjectCreate, JobCreate, AnalyticsCreate, StoryDNA
+from .schemas import ChannelCreate, SourceCreate, SourceCollectionMove, ProjectCreate, ProjectSetup, NarrationVoice, JobCreate, AnalyticsCreate, StoryDNA
 from .intelligence import duration_profile, channel_fit, novelty_check, words, digest, tokens, recommend_duration
 from .workflow import Workflow, settings_for, latest, set_draft, gate_lock, lock_story, active_issues
 from . import audience
@@ -37,13 +39,19 @@ from .channel_learning import learning_data, normalize_snapshot, reminders
 from .production_extras import tts_scene_context, thumbnail_prompt, scene_generation_prompt, compose_thumbnail, outro_chunk
 from .providers import PROVIDERS, PROVIDER_URLS
 from .ai_result import parse_ai_result
-from .story_import import imported_bible, validate_import
+from .bridge_recovery import (BridgeRecovery, OutputContractError, InvalidJsonResponse,
+                              rejection, validate_turn, response_retry_count)
+from .story_import import imported_bible, validate_import, bible_title
+from .project_naming import name_project, story_title
 from . import premise_policy
+from . import channel_guidance
+from . import narration
 from .media import find_binary, probe, asset_kind, map_asset, MEDIA_FOLDERS, project_folder, validate_assets, timeline_from_audio, render_options, validate_logo, validate_waveform_video
 from .visual_planning import visual_budget
 from .portability import project_archive, inspect_database
 from .project_storage import migrate_project_folders, project_path
 from .resource_cleanup import ResourceCleanup, archived, recover_final_moves
+from .resource_review import state as resource_review_state, approve as approve_resources
 from .youtube_metadata import MetadataInputs, metadata_inputs, metadata_fingerprint, upload_text
 from .thumbnail_packaging import (ThumbnailStyle, ImageReview, current_plan, plan_state, variant_prompt,
                                   save_review, assign_thumbnail, export_plan, plan_identifier)
@@ -70,8 +78,10 @@ def create_app(data_root: str | Path | None = None):
     recover_final_moves(database, root)
     migrate_project_folders(database, root)
     workflow = Workflow(database,root)
+    bridge_recovery = BridgeRecovery(database, workflow)
     media_automation = MediaAutomation(workflow)
     workflow.media_automation = media_automation
+    media_automation.manualize_videos()
     csrf = secrets.token_urlsafe(32)
     deletions = Deletions(database, workflow, csrf)
     resource_cleanup = ResourceCleanup(database, workflow, csrf)
@@ -91,6 +101,7 @@ def create_app(data_root: str | Path | None = None):
             while not stop_watchdog.wait(10):
                 try:media_automation.check_stalled()
                 except Exception:logging.getLogger('app').exception('Media heartbeat check failed')
+                workflow.assisted_queue.tick()
         monitor=threading.Thread(target=monitor_media,name='storyforge-media-heartbeat',daemon=True)
         monitor.start()
         try:
@@ -133,7 +144,7 @@ def create_app(data_root: str | Path | None = None):
     @app.exception_handler(ValueError)
     async def value_error(request,exc):
         payload = {"detail": str(exc)}
-        if isinstance(exc, (audience.RetentionEvidenceError, ThumbnailContractError)):
+        if isinstance(exc, (audience.RetentionEvidenceError, ThumbnailContractError, OutputContractError, InvalidJsonResponse)):
             payload['code'] = exc.code
         return JSONResponse(payload,status_code=422)
 
@@ -157,6 +168,8 @@ def create_app(data_root: str | Path | None = None):
     def dashboard():
         with database.session() as db:
             return {"channels":db.query(Channel).count(),"projects":db.query(Project).count(),"sources":db.query(Source).count(),"locked":db.query(Project).filter_by(locked=True).count(),
+                    "inbox_sources":db.query(Source).filter_by(collection='inbox').count(),
+                    "library_sources":db.query(Source).filter_by(collection='library').count(),
                     "active_jobs":db.query(Job).filter(Job.status.in_(["queued","running","waiting_user"])).count(),
                     "recent_projects":[serialize(p) for p in db.query(Project).order_by(desc(Project.updated_at)).limit(6).all()],
                     "jobs":[serialize(j) for j in db.query(Job).order_by(desc(Job.created_at)).limit(8).all()],"settings":settings_for(db)}
@@ -182,6 +195,7 @@ def create_app(data_root: str | Path | None = None):
                 raise ValueError("Channel name is required")
             channel=Channel(**data,dna={"primary_genres":[data["niche"]] if data["niche"] else [],"core_tropes":[],"tone":"Atmospheric, grounded, engaging","narration_style":"Natural American English, warm and measured","avoid_genres":[],"avoid_tropes":[],"allowed_durations":[5,10,20,30,45,60],"content_mix":{"Core":40,"Adjacent":30,"Experimental":20,"Wildcard":10},"audience":{"country":data["country"],"age_range":data["age_range"],"language":data["language"]}})
             db.add(channel);db.flush()
+            channel_guidance.initialize_channel(db, channel)
             db.add(DNAVersion(channel_id=channel.id,version=1,dna=channel.dna,note="Channel created"))
             db.commit()
             return serialize(channel)
@@ -193,7 +207,8 @@ def create_app(data_root: str | Path | None = None):
             return {**serialize(channel),"projects":[serialize(p) for p in db.query(Project).filter_by(channel_id=id).order_by(desc(Project.updated_at)).limit(100)],
                     "dna_versions":[serialize(v) for v in db.query(DNAVersion).filter_by(channel_id=id).order_by(desc(DNAVersion.created_at)).all()],
                     "discovery":[serialize(a) for a in db.query(Artifact).filter_by(channel_id=id,kind="discovery").order_by(desc(Artifact.created_at)).limit(1)],
-                    "sources":[serialize(s) for s in db.query(Source).filter_by(channel_id=id).limit(100)],"learning":learning_data(db,id)}
+                    "sources":[serialize(s) for s in db.query(Source).filter_by(channel_id=id).limit(100)],"learning":learning_data(db,id),
+                    "creative_guidance":channel_guidance.state(db,channel)}
 
     @app.patch("/api/channels/{id}")
     def update_channel(id:str,body:dict=Body(...)):
@@ -216,13 +231,18 @@ def create_app(data_root: str | Path | None = None):
                 raise ValueError("Move or delete this channel's projects first")
             db.delete(channel);db.commit();return {"deleted":True}
 
+    @app.put('/api/channels/{id}/narration')
+    def save_channel_narration(id:str, body:NarrationVoice):
+        with database.session() as db:
+            channel=get(db,Channel,id)
+            channel.settings={**(channel.settings or {}),'narration_voice':body.model_dump()}
+            db.commit();return serialize(channel)
+
     @app.post("/api/channels/{id}/dna")
     def save_dna(id:str,body:dict=Body(...)):
         with database.session() as db:
             channel=get(db,Channel,id)
-            dna=body.get("dna")
-            if not isinstance(dna,dict):
-                raise ValueError("DNA must be a JSON object")
+            dna=channel_guidance.validate_dna(body.get("dna"))
             version=(db.query(func.max(DNAVersion.version)).filter_by(channel_id=id).scalar() or 0)+1
             status=body.get("status","accepted")
             if status not in ("accepted","proposed","testing","rejected"):
@@ -237,6 +257,41 @@ def create_app(data_root: str | Path | None = None):
                 channel.niche=", ".join(dna.get("primary_genres",[]))
             db.commit();return serialize(record)
 
+    @app.post('/api/channels/{id}/research-dna')
+    def research_channel_dna(id:str,body:dict=Body(default={})):
+        with database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            channel=get(db,Channel,id)
+            channel_guidance.validate_dna(channel.dna)
+            record,job,cached=channel_guidance.start_research(db,channel,bool(body.get('regenerate')))
+            db.commit()
+            result={'guidance_id':record.id,'version':record.version,'job_id':job.id if job else None,'cached':cached}
+        if job:workflow.executor.submit(workflow.run,job.id)
+        return result
+
+    @app.post('/api/channels/{id}/guidance/{guidance_id}/resume')
+    def resume_channel_research(id:str,guidance_id:str):
+        with database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            get(db,Channel,id)
+            record=get(db,ChannelGuidance,guidance_id)
+            if record.channel_id!=id or record.status!='researching':
+                raise ValueError('This channel research cannot be resumed')
+            job=channel_guidance.queue_part(db,record)
+            db.commit()
+            result={'guidance_id':record.id,'job_id':job.id if job else None}
+        if job:workflow.executor.submit(workflow.run,job.id)
+        return result
+
+    @app.post('/api/channels/{id}/guidance/{guidance_id}/apply')
+    def apply_channel_guidance(id:str,guidance_id:str):
+        with database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            channel=get(db,Channel,id)
+            record=channel_guidance.apply(db,channel,get(db,ChannelGuidance,guidance_id))
+            db.commit()
+            return serialize(record)
+
     @app.post("/api/channels/{id}/test-plan")
     def test_plan(id:str,body:dict=Body(...)):
         with database.session() as db:
@@ -248,12 +303,27 @@ def create_app(data_root: str | Path | None = None):
             db.commit();return {"created":count}
 
     @app.get("/api/sources")
-    def sources(q:str="",channel_id:str|None=None,offset:int=0,limit:int=Query(50,ge=1,le=100)):
+    def sources(q:str="",channel_id:str|None=None,collection:Literal['inbox','library']|None=None,offset:int=0,limit:int=Query(50,ge=1,le=100)):
         with database.session() as db:
             query=db.query(Source)
             if q:query=query.filter(or_(Source.title.ilike(f"%{q}%"),Source.summary.ilike(f"%{q}%")))
             if channel_id:query=query.filter_by(channel_id=channel_id)
-            return {"items":[serialize(s) for s in query.order_by(desc(Source.created_at)).offset(max(0,offset)).limit(limit)],"total":query.count()}
+            if collection:query=query.filter_by(collection=collection)
+            rows=query.order_by(desc(Source.created_at)).offset(max(0,offset)).limit(limit).all()
+            counts=dict(db.query(Project.source_id,func.count(Project.id)).filter(Project.source_id.in_([s.id for s in rows])).group_by(Project.source_id).all()) if rows else {}
+            return {"items":[{**serialize(s),'usage_count':counts.get(s.id,0)} for s in rows],"total":query.count()}
+
+    @app.post("/api/sources/collection")
+    def move_sources(body:SourceCollectionMove):
+        with database.session() as db:
+            ids = set(body.ids)
+            items = db.query(Source).filter(Source.id.in_(ids)).all()
+            if len(items) != len(ids):
+                raise HTTPException(404, 'One or more sources no longer exist. Refresh the list and try again.')
+            for item in items:
+                item.collection = body.collection
+            db.commit()
+            return {'ids': sorted(ids), 'collection': body.collection, 'count': len(ids)}
 
     @app.post("/api/sources")
     def create_source(body:SourceCreate):
@@ -287,7 +357,7 @@ def create_app(data_root: str | Path | None = None):
     def source_detail(id:str):
         with database.session() as db:
             source=get(db,Source,id)
-            return {**serialize(source),"fits":sorted([channel_fit(source.dna,serialize(c),[serialize(n) for n in db.query(Novelty).filter_by(channel_id=c.id).all()],[serialize(e) for e in db.query(CalendarEntry).filter_by(channel_id=c.id).all()]) for c in db.query(Channel).all()],key=lambda f:-f["score"]) if source.dna else []}
+            return {**serialize(source),'usage_count':db.query(Project).filter_by(source_id=id).count(),"fits":sorted([channel_fit(source.dna,serialize(c),[serialize(n) for n in db.query(Novelty).filter_by(channel_id=c.id).all()],[serialize(e) for e in db.query(CalendarEntry).filter_by(channel_id=c.id).all()]) for c in db.query(Channel).all()],key=lambda f:-f["score"]) if source.dna else []}
 
     @app.patch("/api/sources/{id}")
     def update_source(id:str,body:dict=Body(...)):
@@ -297,7 +367,7 @@ def create_app(data_root: str | Path | None = None):
             if merged.channel_id:get(db,Channel,merged.channel_id)
             for key,value in merged.model_dump().items():setattr(source,key,value)
             if "dna" in body:
-                source.dna=StoryDNA.model_validate(body["dna"]).model_dump();source.status="ANALYZED"
+                source.dna=StoryDNA.model_validate(body["dna"]).model_dump();source.status="ANALYZED";source.collection='library'
             if "status" in body and body["status"] in ("INBOX","ASSIGNED","ANALYZED"):source.status=body["status"]
             db.commit();return serialize(source)
 
@@ -333,17 +403,24 @@ def create_app(data_root: str | Path | None = None):
             data=body.model_dump()
             entry_mode=data.pop('entry_mode')
             production=data.pop('production_options')
+            voice=data.pop('narration_voice')
             if entry_mode=='existing_bible' and body.source_id:
                 raise ValueError('Choose an existing Bible or a source inspiration, not both')
             if body.duration_mode=="Auto":data["target_minutes"]=channel.default_duration
             if production and production['video_count'] * 10 >= data['target_minutes'] * 60:
                 raise ValueError('Leave narration time for the still images after the opening videos')
             options={'audience_policy': 1, 'entry_mode':entry_mode}
+            if entry_mode=='existing_bible':
+                options['setup_confirmation']={'required':True,'confirmed':False}
+            if voice is not None:options['narration_voice']=voice
             if production:
                 options.update(production_options={**production, 'preset_counts': True},
                                visual_options={'mode':'custom', 'image_count':production['image_count'], 'video_count':production['video_count']})
             item=Project(**data, stage='BIBLE' if entry_mode=='existing_bible' else 'DIRECTION',
-                         settings=options);db.add(item);db.commit()
+                         settings=options)
+            channel_guidance.freeze_project(db,item,channel)
+            if entry_mode!='existing_bible':narration.freeze_voice(db,item,voice)
+            name_project(item);db.add(item);db.commit()
             migrate_project_folders(database, root, [item.id])
             project_folder(root,item.id)
             return serialize(item)
@@ -357,9 +434,11 @@ def create_app(data_root: str | Path | None = None):
             for a in db.query(Artifact).filter_by(project_id=id).order_by(Artifact.created_at).all():artifacts[a.kind]=serialize(a)
             chunks=[serialize(v) for v in db.query(Chunk).filter_by(project_id=id).order_by(Chunk.number)]
             scenes=[serialize(v) for v in db.query(Scene).filter_by(project_id=id).order_by(Scene.number)]
+            bible = latest(db, id, 'story_bible')
+            identity = visual_identity(bible.content if bible else {})
             for scene in scenes:
                 scene['scene_key']=f"scene_{scene['number']:03}"
-                scene['generation_prompt']=scene_generation_prompt(scene)
+                scene['generation_prompt']=scene_generation_prompt(scene) + (identity if scene['visual_type']=='VIDEO' else '')
             assets=[serialize(v) for v in db.query(Asset).filter_by(project_id=id).order_by(desc(Asset.created_at))]
             try:render_timeline=timeline_from_audio(chunks,scenes,assets,render_options(serialize(p))['ending_asset_id'])
             except ValueError as exc:render_timeline={'error':str(exc)}
@@ -374,10 +453,14 @@ def create_app(data_root: str | Path | None = None):
                     "visual_budget":visual_budget(serialize(p),config),
                     "youtube_metadata_current":bool(artifacts.get('youtube_metadata') and artifacts['youtube_metadata']['content'].get('content_fingerprint')==metadata_fingerprint(db,p)),
                     "workflow_settings":{key:config[key] for key in ("pipeline_mode","default_premise_count")},
+                    "narration_voice":narration.project_voice(db,p),
+                    "setup_pending":narration.setup_pending(p),
+                    "resource_review":resource_review_state(db,p,root,config),
                     "premise_reuse":workflow.premise_reuse(db,p),
                     "premise_pool":workflow.premise_pool(db,p),
                     "audience_readiness":audience.readiness(db,p,gate_lock(db,p,include_audience=False)['can_lock']),
                     "missing_resources":media_automation.missing(db,p),
+                    "manual_video_references":[serialize(a) for a in media_automation.reference_assets(db,p)],
                     "artifacts":artifacts,"premises":[premise_policy.record(v) for v in premise_policy.ordered(db,id)],
                     "issues":[serialize(v) for v in db.query(Issue).filter_by(project_id=id).order_by(desc(Issue.cycle))],
                     "versions":[serialize(v) for v in db.query(StoryVersion).filter_by(project_id=id).order_by(desc(StoryVersion.version))],
@@ -410,7 +493,7 @@ def create_app(data_root: str | Path | None = None):
             p=get(db,Project,id);asset=get(db,Asset,str(body.get('asset_id','')))
             if archived(p):raise ValueError('Reopen resource production before creating new media.')
             if asset.project_id!=id or asset.kind!='image':raise ValueError('Choose an image from this project')
-            title=p.publish.get('title') or p.title
+            title=p.publish.get('title') or story_title(p)
             folder=project_folder(root,id)/'images'
             output=folder/f'thumbnail-{uid()}.jpg'
             compose_thumbnail(safe_path(root,asset.path),output,title)
@@ -428,8 +511,8 @@ def create_app(data_root: str | Path | None = None):
                 raise ValueError('Finish the active project job before changing the storage title.')
             if "draft" in body:result=set_draft(db,p,body["draft"])
             else:result={}
-            for key in ("title","publish"):
-                if key in body:setattr(p,key,body[key])
+            if 'title' in body:name_project(p, body['title'])
+            if 'publish' in body:p.publish=body['publish']
             if any(k in body for k in ("target_minutes","wpm","duration_mode")):
                 if p.locked:raise ValueError("Create a new draft version before changing locked production settings")
                 data=ProjectCreate.model_validate({**serialize(p),**body})
@@ -439,6 +522,43 @@ def create_app(data_root: str | Path | None = None):
             if 'title' in body:
                 migrate_project_folders(database,root,[id])
         return result
+
+    @app.post('/api/projects/{id}/setup')
+    def confirm_project_setup(id:str, body:ProjectSetup):
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p=get(db,Project,id)
+            if not narration.setup_pending(p):
+                raise ValueError('Initial project setup has already been confirmed. Its narration voice is fixed.')
+            if p.locked or p.draft or db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish or cancel active work before confirming project setup')
+            production=body.production_options.model_dump()
+            p.target_minutes=body.target_minutes
+            p.duration_mode='Custom'
+            narration.freeze_voice(db,p,body.narration_voice.model_dump() if body.narration_voice else None)
+            p.settings={**p.settings,'production_options':{**production,'preset_counts':True},
+                        'visual_options':{'mode':'custom','image_count':production['image_count'],'video_count':production['video_count']},
+                        'setup_confirmation':{'required':True,'confirmed':True,'confirmed_at':now()}}
+            db.commit()
+        return pipeline(id)
+
+    @app.put('/api/projects/{id}/narration')
+    def correct_project_narration(id:str, body:NarrationVoice):
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p=get(db,Project,id)
+            if narration.setup_pending(p):raise ValueError(narration.SETUP_NOTICE)
+            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish or cancel the active project job before changing its voice')
+            chunks=db.query(Chunk).filter_by(project_id=id,story_version=p.story_version).all()
+            if any(c.asset_id for c in chunks):raise ValueError('Narration already exists. Keep this voice to avoid mixing voices within the project.')
+            chosen=narration.freeze_voice(db,p,body.model_dump())
+            for chunk in chunks:chunk.voice_profile={**(chunk.voice_profile or {}),'voice_name':chosen['speaker'],'style':chosen['style']}
+            options={k:v for k,v in p.settings.items() if k!='media_automation'}
+            if options.get('auto_production'):
+                options['auto_production']={**{k:v for k,v in options['auto_production'].items() if k!='tts_started'},'cancelled':False}
+            p.settings=options;db.commit()
+            return {'narration_voice':chosen}
 
     @app.get('/api/projects/{id}/resources/cleanup-preview')
     def preview_resource_cleanup(id:str):
@@ -469,11 +589,18 @@ def create_app(data_root: str | Path | None = None):
                 raise ValueError('Finish or cancel active jobs before importing a Bible')
             previous=latest(db,id,'story_bible')
             checksum=digest(content)
-            if previous and previous.output_hash==checksum:return serialize(previous)
-            item=Artifact(project_id=id,kind='story_bible',provider='manual_import',content=content,
-                          raw_result=json.dumps(content,ensure_ascii=False),template_version='import-1.0',
-                          inputs_hash=previous.output_hash if previous else None,output_hash=checksum,story_version=p.story_version)
-            db.add(item);p.stage='OUTLINE';db.commit();return serialize(item)
+            title=bible_title(content)
+            rename=name_project(p, title) if title else False
+            if previous and previous.output_hash==checksum:
+                item=previous
+            else:
+                item=Artifact(project_id=id,kind='story_bible',provider='manual_import',content=content,
+                              raw_result=json.dumps(content,ensure_ascii=False),template_version='import-1.0',
+                              inputs_hash=previous.output_hash if previous else None,output_hash=checksum,story_version=p.story_version)
+                db.add(item)
+            p.stage='OUTLINE';db.commit();result=serialize(item)
+            if rename:migrate_project_folders(database,root,[id])
+            return result
 
     @app.post('/api/projects/{id}/story-bible/validate')
     def validate_bible(id:str, body:dict=Body(...)):
@@ -531,7 +658,9 @@ def create_app(data_root: str | Path | None = None):
     @app.post("/api/projects/{id}/pipeline")
     def pipeline(id:str):
         with database.session() as db:
-            selected = get(db,Project,id).selected_premise_id
+            project=get(db,Project,id)
+            if narration.setup_pending(project):return narration.setup_checkpoint()
+            selected = project.selected_premise_id
             obsolete = db.query(Job).filter(Job.project_id==id,Job.kind=="premise_mini_test",Job.status.in_(["queued","running","waiting_user"])).count()
         if selected and obsolete:
             workflow.select_premise(id,selected)
@@ -543,6 +672,12 @@ def create_app(data_root: str | Path | None = None):
         with database.session() as db:
             p=get(db,Project,id)
             config=settings_for(db,db.get(Channel,p.channel_id))
+            queue_assisted = config['pipeline_mode']=='assisted'
+        if queue_assisted:
+            return workflow.assisted_queue.request(id)
+        with database.session() as db:
+            p=get(db,Project,id)
+            config=settings_for(db,db.get(Channel,p.channel_id))
             workflow.auto_choose_premise(db,p,config)
             db.commit()
             next_action=workflow.next_step(db,p)
@@ -551,6 +686,17 @@ def create_app(data_root: str | Path | None = None):
             auto_continue=config["pipeline_mode"]!="manual"
         if "kind" not in next_action:return next_action
         return workflow.submit(next_action["kind"],project_id=id,payload={**next_action.get('payload', {}), "auto_continue":auto_continue})
+
+    @app.post('/api/projects/{id}/resource-review')
+    def resource_review(id:str,body:dict=Body(...)):
+        with workflow.deletion_lock, database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            p=get(db,Project,id)
+            if archived(p):raise ValueError('Reopen resource production before approving resources.')
+            result=approve_resources(db,p,root,settings_for(db,db.get(Channel,p.channel_id)),body)
+            db.commit()
+        workflow.assisted_queue.tick()
+        return result
 
     @app.post("/api/issues/{id}/resolve")
     def human_resolve(id:str,body:dict=Body(...)):
@@ -659,8 +805,27 @@ def create_app(data_root: str | Path | None = None):
 
     @app.get('/api/background-music')
     def background_music_library():
-        with database.session() as db:
-            return media_automation.music.public(db)
+        with workflow.deletion_lock, database.session() as db:
+            errors=media_automation.music.scan_folder(db,settings_for(db))
+            db.commit()
+            return media_automation.music.public(db,errors)
+
+    @app.post('/api/projects/{id}/background-music/select')
+    def select_background_music(id:str, body:dict=Body(...)):
+        if set(body)!={'library_id'} or not isinstance(body.get('library_id'),str):
+            raise ValueError('Choose a shared music track')
+        with workflow.deletion_lock, database.session() as db:
+            p=media_automation.project(db,id)
+            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish the active project job before changing its music')
+            media_automation.music.scan_folder(db,settings_for(db))
+            library=db.get(Asset,body['library_id'])
+            if not media_automation.music.available(library) or not (library.metadata_json.get('role')=='shared_background_music' or library.metadata_json.get('library_profile') in ('mystery','user')):
+                raise ValueError('This shared music file is unavailable. Refresh the list and choose an available track.')
+            p.settings={**p.settings,'production_options':{**p.settings.get('production_options',{}),'music_enabled':True}}
+            asset=media_automation.music.link(db,p,library,manual=True)
+            db.commit()
+            return {'status':'ready','asset_id':asset.id,'library_id':library.id,'selection_mode':'manual'}
 
     @app.post('/api/projects/{id}/background-music')
     def prepare_background_music(id:str, body:dict=Body(...)):
@@ -670,7 +835,45 @@ def create_app(data_root: str | Path | None = None):
                 raise ValueError('Finish the active project job before changing its music')
             p.settings={**p.settings, 'production_options':{**p.settings.get('production_options', {}), 'music_enabled':True}}
             db.commit()
-        return media_automation.start(id, {'kind':'music', 'retry':body.get('retry') is True})
+        return media_automation.start(id, {'kind':'music', 'retry':body.get('retry') is True, 'regenerate':body.get('regenerate') is True})
+
+    @app.get('/api/projects/{id}/sound-design')
+    def project_sound_design(id:str):
+        from .sound_design import plan, effect_path
+        with database.session() as db:
+            p=get(db,Project,id)
+            chunks=[serialize(c) for c in db.query(Chunk).filter_by(project_id=id,story_version=p.story_version)]
+            scenes=[serialize(s) for s in db.query(Scene).filter_by(project_id=id,story_version=p.story_version)]
+            result=plan(serialize(p),chunks,scenes)
+            result['prepared']=bool(result['cues']) and all(effect_path(root,c['kind']).is_file() for c in result['cues'])
+            return result
+
+    @app.post('/api/projects/{id}/sound-design')
+    def prepare_project_sound_design(id:str, body:dict=Body(...)):
+        from .sound_design import enabled, prepare_library
+        if set(body)-{'enabled'} or 'enabled' in body and not isinstance(body['enabled'],bool):
+            raise ValueError('Choose whether story sound effects are enabled')
+        with workflow.deletion_lock, database.session() as db:
+            p=media_automation.project(db,id)
+            if db.query(Job).filter(Job.project_id==id,Job.status.in_(['queued','running','waiting_user'])).count():
+                raise ValueError('Finish the active project job before changing sound effects')
+            before=enabled(serialize(p))
+            p.settings={**p.settings,'sound_design':{**p.settings.get('sound_design',{}),**body}}
+            if enabled(serialize(p)):
+                prepare_library(root)
+                p.settings={**p.settings,'sound_design':{**p.settings['sound_design'],'prepared':True,'error':''}}
+            if before != enabled(serialize(p)):
+                p.publish={**p.publish,'final_reviewed':False}
+            db.commit()
+        return project_sound_design(id)
+
+    @app.get('/api/projects/{id}/sound-design/effects/{kind}')
+    def preview_sound_effect(id:str, kind:str):
+        from .sound_design import effect_path
+        with database.session() as db:get(db,Project,id)
+        path=effect_path(root,kind)
+        if not path.is_file() or path.is_symlink():raise HTTPException(404,'Prepare the shared sound effects first')
+        return FileResponse(path,media_type='audio/wav',headers={'Cache-Control':'no-store'})
 
     @app.post('/api/projects/{id}/background-music/import')
     async def import_background_music(id:str, file:UploadFile=File(...)):
@@ -684,7 +887,7 @@ def create_app(data_root: str | Path | None = None):
                 if not data or len(data)>50_000_000:raise ValueError('Music file must be at most 50 MB')
                 source.write_bytes(data)
                 p.settings={**p.settings,'production_options':{**p.settings.get('production_options',{}),'music_enabled':True}}
-                asset=media_automation.music.import_track(db,p,source,settings_for(db,db.get(Channel,p.channel_id)))
+                asset=media_automation.music.import_track(db,p,source,settings_for(db,db.get(Channel,p.channel_id)),original_name=file.filename)
                 p.publish={**p.publish,'final_reviewed':False}
                 db.commit()
                 return serialize(asset)
@@ -713,6 +916,14 @@ def create_app(data_root: str | Path | None = None):
                     checksum=sha.hexdigest()
                     existing=db.query(Asset).filter_by(project_id=id,sha256=checksum).first()
                     if existing:
+                        target,number=map_asset(name)
+                        if (target=='scene' and kind=='video' and existing.kind=='video'
+                                and existing.story_version==p.story_version
+                                and safe_path(root,existing.path).is_file()):
+                            scene=db.query(Scene).filter_by(project_id=id,number=number,story_version=p.story_version).first()
+                            if scene:
+                                scene.asset_id,scene.status=existing.id,'ATTACHED'
+                                p.publish={**(p.publish or {}),'final_reviewed':False}
                         items.append({**serialize(existing),"duplicate":True});temporary.unlink();continue
                     info={}
                     if kind=="image":
@@ -744,6 +955,9 @@ def create_app(data_root: str | Path | None = None):
                 except Exception:
                     if temporary.exists():temporary.unlink()
                     raise
+            if p.settings.get('assisted_queue', {}).get('status') in ('resources_pending', 'ready_to_render'):
+                db.flush()
+                workflow.assisted_queue.enroll(p, workflow.assisted_queue.production_checkpoint(db,p,config))
             db.commit()
         return {"items":items}
 
@@ -954,6 +1168,7 @@ def create_app(data_root: str | Path | None = None):
             output=root/"exports"/f"channel-{id}.zip"
             with zipfile.ZipFile(output,"w",zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr("channel.json",json.dumps(serialize(c),ensure_ascii=False,indent=2))
+                archive.writestr('creative_guidance.json',json.dumps(channel_guidance.state(db,c),ensure_ascii=False,indent=2))
                 for p in db.query(Project).filter_by(channel_id=id):
                     project_file=project_archive(db,root,p)
                     archive.write(project_file,project_file.name)
@@ -1126,12 +1341,13 @@ def create_app(data_root: str | Path | None = None):
     def bridge_jobs():
         with database.session() as db:
             items = []
-            for j in db.query(Job).filter_by(status='waiting_user').filter(~Job.provider.like('mock:%')).order_by(Job.created_at).limit(20):
+            for j in db.query(Job).filter_by(status='waiting_user').filter(~Job.provider.like('mock:%'), Job.provider!='flow', Job.kind!='video_generation').order_by(Job.created_at).limit(20):
                 p = db.get(Project, j.project_id) if j.project_id else None
                 media = j.payload.get('_media')
                 items.append({'id': j.id, 'project_id': j.project_id, 'kind': j.kind, 'provider': j.provider, 'prompt': j.prompt,
                     'url': PROVIDER_URLS.get(j.provider), 'step': j.step, 'attempt': j.attempts,
                     'auto_claim': j.payload.get('_bridge_auto', {}), 'media': {**media, 'project_id': j.project_id} if media else None,
+                    'auto_repair': j.payload.get('_bridge_repair', {}), 'response_retry_count': response_retry_count(j),
                     'media_session': p.settings.get('media_sessions', {}).get(j.provider, {}) if p and media else {},
                     'media_claim': j.payload.get('_media_claim', {}), 'timeout': settings_for(db)['browser_timeout']})
             return {'items': items}
@@ -1198,50 +1414,11 @@ def create_app(data_root: str | Path | None = None):
 
     @app.post("/api/bridge/jobs/{id}/retry")
     def bridge_retry(id:str,body:dict=Body(...)):
-        owner=str(body.get("owner",""));retry_id=str(body.get("retry_id",""))
-        reason=body.get("reason")
-        if not owner or len(owner)>128 or not retry_id or len(retry_id)>128:
-            raise ValueError("Invalid automatic retry request")
-        if reason not in ("INVALID_JSON","SEND_NOT_READY","RETENTION_EVIDENCE","THUMBNAIL_CONTRACT"):
-            raise ValueError("This error requires manual review")
-        with database.session() as db:
-            db.execute(sql_text("BEGIN IMMEDIATE"))
-            job=get(db,Job,id)
-            retry=job.payload.get("_bridge_retry",{})
-            if retry.get("id")==retry_id and retry.get("owner")==owner:
-                return {"accepted":True,"retry_count":retry["count"]}
-            if job.status!="waiting_user" or job.attempts!=body.get("attempt"):
-                raise HTTPException(409,"Job changed; refresh the queue")
-            if job.provider not in ("chatgpt","gemini") or job.kind in ("image_generation","video_generation","tts_context"):
-                raise ValueError("This media job requires manual download and attachment")
-            claim=job.payload.get("_bridge_auto",{})
-            if claim.get("owner")!=owner or claim.get("attempt")!=job.attempts:
-                raise HTTPException(409,"Another browser owns this attempt")
-            if reason in ("INVALID_JSON","RETENTION_EVIDENCE","THUMBNAIL_CONTRACT") and claim.get("phase")!="sent":
-                raise ValueError("Cannot retry a response before sending")
-            if reason == 'RETENTION_EVIDENCE':
-                feedback = job.payload.get('_retention_feedback', {})
-                project = db.get(Project, job.project_id) if job.project_id else None
-                if (job.kind != 'retention_audit' or not project or feedback.get('attempt') != job.attempts
-                        or feedback.get('audience_hash') != audience.fingerprint(db, project)):
-                    raise ValueError('Only a rejected current retention assessment can be retried')
-            if reason == 'THUMBNAIL_CONTRACT':
-                feedback = job.payload.get('_thumbnail_feedback', {})
-                project = db.get(Project, job.project_id) if job.project_id else None
-                if (job.kind != 'thumbnail_plan' or not project or feedback.get('attempt') != job.attempts
-                        or feedback.get('thumbnail_hash') != thumbnail_fingerprint(db, project)):
-                    raise ValueError('Only a rejected current thumbnail plan can be retried')
-            if reason=="SEND_NOT_READY" and claim.get("phase")=="sent":
-                raise ValueError("The request was already sent; collect its response")
-            count=retry.get("count",0)+1
-            if count>3:
-                raise HTTPException(409,"Đã tự gửi lại 3 lần. Kiểm tra tab AI rồi tiếp tục thủ công hoặc bấm Thử lại.")
-            job.payload={**job.payload,"_bridge_retry":{"id":retry_id,"owner":owner,"from_attempt":job.attempts,"count":count,"reason":reason}}
-            job.status="queued";job.error="";job.step=f"Đang tự thử lại bằng yêu cầu mới ({count}/3)."
-            job.logs=[*(job.logs or []),{"time":now(),"message":f"Automatic new request retry {count}/3 after {reason}; previous attempt {job.attempts}."}]
-            db.commit()
-        workflow.executor.submit(workflow.run,id)
-        return {"accepted":True,"retry_count":count}
+        return bridge_recovery.retry(id, body)
+
+    @app.post("/api/bridge/jobs/{id}/repair")
+    def bridge_repair(id:str,body:dict=Body(...)):
+        return bridge_recovery.repair(id, body)
 
     @app.post("/api/bridge/jobs/{id}/status")
     def bridge_status(id:str,body:dict=Body(...)):
@@ -1252,48 +1429,56 @@ def create_app(data_root: str | Path | None = None):
             logging.getLogger("browser_bridge").info("Job %s: %s",id,job.step)
             return {"updated":True}
 
+    def record_bridge_rejection(id, body, exc):
+        with database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            job = get(db, Job, id)
+            if not rejection(job, body, exc.code, str(exc)):
+                return
+            if isinstance(exc, ThumbnailContractError):
+                job.payload = {**job.payload, '_thumbnail_feedback': {
+                    'attempt': job.attempts, 'message': str(exc)[:3000],
+                    'thumbnail_hash': job.payload.get('_thumbnail_hash')}}
+            if isinstance(exc, audience.RetentionEvidenceError):
+                job.payload = {**job.payload, '_retention_feedback': {
+                    'attempt': job.attempts, 'message': str(exc)[:1500],
+                    'audience_hash': job.payload.get('_audience_hash')}}
+            job.logs = [*(job.logs or []), {'time': now(), 'message':
+                'Text response rejected: ' + exc.code + (' after correction' if body.get('repair_id') else '')}]
+            db.commit()
+
     @app.post("/api/bridge/jobs/{id}/parse-result")
     def bridge_parse_result(id:str,body:dict=Body(...)):
-        # Read-only recovery: the normal completion route still validates schema,
-        # input hashes and attempt ownership before storing anything.
+        # Parsing never stores an artifact. A rejection marker authorizes only
+        # bounded recovery of the current reply; completion still validates it.
         with database.session() as db:
             job=get(db,Job,id)
             if job.status!="waiting_user":raise ValueError("Job is not waiting for the bridge")
             if body.get("attempt") is not None and job.attempts!=body["attempt"]:
                 raise ValueError("The attempt changed; discard the old browser response")
+            workflow.validate_result_context(db, job, body.get('attempt'))
+            validate_turn(job, body)
         if not isinstance(body.get("result"),str):raise ValueError("AI result must be text")
-        return {"result":parse_ai_result(body["result"])}
+        try:
+            return {"result":parse_ai_result(body["result"])}
+        except ValueError as exc:
+            error = InvalidJsonResponse(str(exc))
+            record_bridge_rejection(id, body, error)
+            raise error from exc
 
     @app.post("/api/bridge/jobs/{id}/result")
     def bridge_result(id:str,body:dict=Body(...)):
         result=body.get("result")
-        if isinstance(result,str):result=parse_ai_result(result)
         try:
+            with database.session() as db:
+                validate_turn(get(db, Job, id), body)
+            if isinstance(result,str):
+                try:result=parse_ai_result(result)
+                except ValueError as exc:raise InvalidJsonResponse(str(exc)) from exc
+            if not isinstance(result,dict):raise InvalidJsonResponse('AI result must be a JSON object')
             workflow.complete_ai(id,result,expected_attempt=body.get("attempt"))
-        except ThumbnailContractError as exc:
-            with database.session() as db:
-                db.execute(sql_text("BEGIN IMMEDIATE"))
-                job = get(db, Job, id)
-                project = db.get(Project, job.project_id) if job.project_id else None
-                if (job.kind == 'thumbnail_plan' and project and body.get('attempt') == job.attempts
-                        and job.status == 'waiting_user' and job.payload.get('_bridge_auto', {}).get('phase') == 'sent'):
-                    job.payload = {**job.payload, '_thumbnail_feedback': {
-                        'attempt': job.attempts, 'message': str(exc)[:3000],
-                        'thumbnail_hash': thumbnail_fingerprint(db, project)}}
-                    db.commit()
-            raise
-        except audience.RetentionEvidenceError as exc:
-            # Persist only a rejection from the current sent attempt. The
-            # retry endpoint verifies this marker, ownership and retry limit.
-            with database.session() as db:
-                db.execute(sql_text("BEGIN IMMEDIATE"))
-                job = get(db, Job, id)
-                if (body.get('attempt') == job.attempts and job.status == 'waiting_user'
-                        and job.payload.get('_bridge_auto', {}).get('phase') == 'sent'):
-                    job.payload = {**job.payload, '_retention_feedback': {
-                        'attempt': job.attempts, 'message': str(exc)[:1500],
-                        'audience_hash': job.payload.get('_audience_hash')}}
-                    db.commit()
+        except (OutputContractError, InvalidJsonResponse, ThumbnailContractError, audience.RetentionEvidenceError) as exc:
+            record_bridge_rejection(id, body, exc)
             raise
         logging.getLogger("browser_bridge").info("Job %s: result accepted via %s",id,
             "automatic collection" if body.get("attempt") is not None else "manual bridge capture")
@@ -1342,9 +1527,10 @@ def create_app(data_root: str | Path | None = None):
                 db.add(c);db.flush();db.add(DNAVersion(channel_id=c.id,version=1,dna=c.dna,note="Demo fixture"));channels.append(c)
             fixture=workflow.mock.fixture
             for i,(title,summary) in enumerate([("A signal from an empty station","Isolation, a warning with missing context, and a difficult rescue."),("The rules of the last shelter","A community survives by questioning rules that have lost their purpose."),("A town at the edge of tomorrow","Second chances and the cost of changing a single decision.")]):
-                s=Source(channel_id=channels[i].id,title=title,summary=summary,transcript="\n\n".join(fixture["draft_paragraphs"][:2]),tags=["demo","original fixture"],dna=fixture["story_dna"],status="ANALYZED")
+                s=Source(channel_id=channels[i].id,title=title,summary=summary,transcript="\n\n".join(fixture["draft_paragraphs"][:2]),tags=["demo","original fixture"],dna=fixture["story_dna"],status="ANALYZED",collection='library')
                 db.add(s);db.flush()
                 p=Project(channel_id=channels[i].id,source_id=s.id,title=["The Last Signal from Station Nine","When the City Went Quiet","A Story Waiting to Be Found"][i],target_minutes=[10,20,5][i],duration_mode=str([10,20,5][i]),is_demo=True)
+                name_project(p)
                 db.add(p);db.flush();project_folder(root,p.id)
             db.commit()
         migrate_project_folders(database,root)

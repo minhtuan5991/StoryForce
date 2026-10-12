@@ -1,15 +1,17 @@
 // Canonical provider URLs contain no account/query data or transient clip route.
 export function providerPage(provider,value){
   try{
-    const u=new URL(value),hosts={gemini:['gemini.google.com'],lyria:['gemini.google.com'],aistudio:['aistudio.google.com'],flow:['flow.google.com','labs.google']}[provider];
+    const u=new URL(value),hosts={gemini:['gemini.google.com'],lyria:['aistudio.google.com'],aistudio:['aistudio.google.com'],flow:['flow.google.com','labs.google']}[provider];
     if(u.protocol!=='https:'||!hosts?.includes(u.hostname)||u.username||u.password||u.port)return;
     let path=u.pathname.replace(/\/$/,'')||'/';
     if(provider==='flow'){
       const match=path.match(/\/projects?\/[^/]+/);if(!match)return;
       path=path.slice(0,match.index+match[0].length);
     }
-    if(['gemini','lyria'].includes(provider)&&! /\/app\/[\w-]+$/.test(path))return;
+    if(provider==='gemini'&&! /\/app\/[\w-]+$/.test(path))return;
+    if(provider==='lyria'&&(! /^\/(?:music|prompts)\/[\w-]+$/.test(path)||path==='/prompts/new_chat'))return;
     if(provider==='aistudio'&&['/','/app'].includes(path))return;
+    if(provider==='aistudio'&&(path==='/new_music'||path.startsWith('/music/')))return;
     return u.origin+path;
   }catch{}
 }

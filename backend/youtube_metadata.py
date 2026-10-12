@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from .models import Artifact, Asset, Channel, Chunk, Scene, Premise, serialize
 from .intelligence import digest
+from .project_naming import story_title
 
 CONTRACT_VERSION = 2
 POLICY_SOURCES = [
@@ -270,9 +271,10 @@ def metadata_context(db, project):
             if variant:
                 pairing = {'concept':variant['concept'], 'composition':variant['composition'],
                            'provenance':'human_confirmed_image_matches_concept; evaluate title pairing editorially'}
-    return {
+    context = {
         'contract_version': CONTRACT_VERSION,
-        'project': {k: serialize(project)[k] for k in ('id', 'title', 'draft', 'story_version', 'target_minutes', 'locked')},
+        'project': {**{k: serialize(project)[k] for k in ('id', 'draft', 'story_version', 'target_minutes', 'locked')},
+                    'title': story_title(project)},
         'channel': {k: serialize(channel)[k] for k in ('name', 'language', 'niche', 'country', 'age_range', 'dna')},
         'narration_segments': [{'number': c.number, 'text': c.text, 'status': c.status, 'seconds': c.real_duration} for c in chunks],
         'visual_plan': [{'scene': s.scene_key, 'prompt': s.prompt} for s in scenes],
@@ -287,6 +289,9 @@ def metadata_context(db, project):
         'fiction_policy': 'This app adapts fictional stories. Source inspirations are not verification of true events.',
         'policy_sources': POLICY_SOURCES,
     }
+    from .channel_guidance import scope_context
+    from .models import Job
+    return scope_context(db, Job(kind='youtube_metadata',project_id=project.id,payload={}), context)
 
 
 def metadata_fingerprint(db, project):

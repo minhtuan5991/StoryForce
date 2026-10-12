@@ -31,16 +31,18 @@ def test_select_replaces_broken_mini_test_and_uses_exact_choice(client, project)
     assert client.get('/api/projects/'+project['id']).json()['next']['kind']=='story_bible'
 
 
-def test_select_auto_continues_only_to_assisted_checkpoint(client, project):
+def test_select_auto_continues_through_assisted_story_steps_without_repeating_a_choice(client, project):
     premise = prepare(client, project)
     url = '/api/projects/'+project['id']
     assert client.post(url+'/select-premise',json={'premise_id':premise['id']}).status_code==200
     detail = client.get(url).json()
     assert 'outline_rewrite' in detail['artifacts']
-    assert not detail['draft']
+    assert detail['draft'] and detail['locked'] and detail['chunks']
     assert 'premise_mini_test' not in detail['artifacts']
     assert client.post(url+'/select-premise',json={'premise_id':premise['id']}).status_code==200
-    assert not client.get(url).json()['draft']
+    after=client.get(url).json()
+    assert after['draft']==detail['draft'] and after['story_version']==detail['story_version']
+    assert len(after['jobs'])==len(detail['jobs'])
 
 
 def test_manual_selection_keeps_manual_mode(client, project):

@@ -361,7 +361,7 @@ def render_inputs_hash(project, chunks, scenes, assets, settings):
     def fields(items, keys):
         return [{k: item.get(k) for k in keys} for item in sorted(items, key=lambda x:x["id"])]
     value = {
-        "renderer": 8, "version": project["story_version"], "render_options": options,
+        "renderer": 9, "version": project["story_version"], "render_options": options,
         "chunks": fields(chunks, ("id", "text", "asset_id", "real_duration")),
         "scenes": fields(scenes, ("id", "number", "start_word", "end_word", "offset", "duration", "asset_id", "fallback_asset_id")),
         "assets": fields(selected_assets, ("id", "sha256", "path", "duration", "metadata_json")),
@@ -370,6 +370,13 @@ def render_inputs_hash(project, chunks, scenes, assets, settings):
     selected_music = project.get('settings', {}).get('background_music', {}).get('asset_id')
     if selected_music:
         value['background_music_asset_id'] = selected_music
+    if any(a['kind'] == 'music' for a in selected_assets):
+        from .audio_balance import MIX_VERSION
+        value['music_mix_version'] = MIX_VERSION
+    from .sound_design import plan as sound_plan
+    sound = sound_plan(project, chunks, scenes)
+    if sound['enabled'] and sound['cues']:
+        value['sound_design'] = sound
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -543,34 +550,56 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     plan['stream_copy_compatible'] = len(scene_encoders) == 1 and 'unknown' not in scene_encoders
     plan['smart_join_ready'] = bool(smart_parts) and scene_encoders == {encoder}
     stage_done('scenes')
-    progress(76, "Mixing audio with narration ducking")
+    progress(76, "Mixing narration with steady background music")
     from .background_music import music_volume_filter
+    from .audio_balance import MIX_VERSION, measure_level, music_balance
     selected_music = project.get('settings', {}).get('background_music', {}).get('asset_id')
     shared = next((a for a in assets if a['kind'] == 'music' and a['id'] == selected_music), None)
     beds = ([shared] + [a for a in assets if a['kind'] == 'ambient'])[:2] if shared else [
         a for a in assets if a['kind'] in ('music', 'ambient') and not a.get('metadata_json', {}).get('shared_library_id')][:2]
-    effects = [a for a in assets if a["kind"] == "sfx"][:30]
+    from .sound_design import plan as sound_plan, assets_for_plan, sound_gain
+    story_sound = sound_plan(project, chunks, scenes)
+    generated_effects = assets_for_plan(root, story_sound)
+    effects = [a for a in assets if a["kind"] == "sfx"][:30] + generated_effects
+    music_beds = [a for a in beds if a['kind'] == 'music']
+    narration_level = measure_level(cached_master, binary, processing_cache.directory, log) if music_beds or generated_effects else None
+    music_levels = {}
+    for bed in music_beds:
+        source_level = measure_level(safe_path(root, bed['path']), binary, processing_cache.directory, log)
+        music_levels[bed['id']] = music_balance(bed, settings.get('music_db', -28), narration_level,
+                                               source_level, settings.get('narration_db', 0))
+        if source_level['silent']:
+            validation['warnings'].append('Background music is silent. Replace the track before publishing.')
     audio_args = source_base + ["-i", str(master)]
-    filters = [f"[0:a]volume={float(settings.get('narration_db',0))}dB[n]"]
-    if beds:
-        filters.append(f"[n]asplit={len(beds)+1}[main]" + "".join(f"[sc{i}]" for i in range(len(beds))))
-    else:
-        filters.append("[n]anull[main]")
+    filters = [f"[0:a]volume={float(settings.get('narration_db',0))}dB[main]"]
     labels = ["[main]"]
     for i, bed in enumerate(beds):
         audio_args += ["-stream_loop", "-1", "-protocol_whitelist", "file,pipe", "-i", str(safe_path(root, bed["path"]))]
         db = float(settings.get(f"{bed['kind']}_db", -28))
-        filters.append(f"[{i+1}:a]{music_volume_filter(bed, db)}[b{i}];[b{i}][sc{i}]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[d{i}]")
+        balance = music_levels.get(bed['id'])
+        filters.append(f"[{i+1}:a]{music_volume_filter(bed, db, balance=balance)}[d{i}]")
         labels.append(f"[d{i}]")
+    sound_levels = []
     for i, effect in enumerate(effects):
         audio_args += ["-protocol_whitelist", "file,pipe", "-i", str(safe_path(root, effect["path"]))]
         delay = max(0, round(float(effect.get("metadata_json", {}).get("offset", 0))*1000))
         volume = float(effect.get("metadata_json", {}).get("volume_db", -18))
-        filters.append(f"[{1+len(beds)+i}:a]volume={volume}dB,adelay={delay}:all=1[e{i}]")
+        trim = ''
+        metadata = effect.get('metadata_json', {})
+        if metadata.get('role') == 'automatic_story_sound':
+            source_level = measure_level(safe_path(root, effect['path']), binary, processing_cache.directory, log)
+            volume = sound_gain(narration_level, source_level, metadata['kind'] == 'opening_texture', settings.get('narration_db', 0))
+            length = effect['duration']
+            fade = min(.2, length / 2)
+            trim = f'atrim=duration={length},asetpts=PTS-STARTPTS,afade=t=out:st={length-fade}:d={fade},'
+            sound_levels.append({**metadata, 'volume_db': volume})
+        filters.append(f"[{1+len(beds)+i}:a]{trim}volume={volume}dB,adelay={delay}:all=1[e{i}]")
         labels.append(f"[e{i}]")
-    filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0,alimiter=limit=0.95[out]")
-    audio_key = {'renderer':1, 'master':file_signature(cached_master), 'duration':total,
-                 'beds':[[file_signature(safe_path(root,a['path'])), a['kind'], music_volume_filter(a,settings.get(f"{a['kind']}_db", -28))] for a in beds],
+    limiter = 'alimiter=limit=0.95:level=false:latency=true' if music_beds or generated_effects else 'alimiter=limit=0.95'
+    filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:normalize=0,{limiter}[out]")
+    audio_key = {'renderer':MIX_VERSION, 'master':file_signature(cached_master), 'duration':total,
+                 'beds':[[file_signature(safe_path(root,a['path'])), a['kind']] for a in beds],
+                 'filter_graph': filters,
                  'effects':[[file_signature(safe_path(root,a['path'])), a.get('metadata_json',{}).get('offset',0), a.get('metadata_json',{}).get('volume_db',-18)] for a in effects],
                  'narration_db':settings.get('narration_db',0)}
     cached_audio = processing_cache.path('mixed-audio', audio_key, '.wav')
@@ -645,6 +674,12 @@ def render_project(root: Path, project: dict, chunks: list[dict], scenes: list[d
     report['captions_burned_in'] = options['subtitles']
     report['render_options'] = options
     report['inputs_hash'] = input_hash
+    report['audio_mix'] = {'version': MIX_VERSION, 'music_present': bool(music_beds),
+                           'ducking': False, 'volume_mode': 'constant',
+                           'narration_level': narration_level,
+                           'music': [{'asset_id': a['id'], 'name': a.get('name'), **music_levels[a['id']]} for a in music_beds]}
+    report['audio_mix']['sound_design'] = {**story_sound, 'cues': sound_levels}
+    (folder / 'sound_design.json').write_text(json.dumps(report['audio_mix']['sound_design'], ensure_ascii=False, indent=2), encoding='utf-8')
     report['render_performance']={**performance,'encoder':encoder,'scene_workers':workers,'cached_scenes':reused,'rendered_scenes':len(scenes)-reused,
                                   'elapsed_seconds':round(time.monotonic()-started,2),'target_video_mbps':5,'audio_kbps':160,
                                   'join_groups':join_groups,'wave_key_color':wave_color if wave else None,'stages_seconds':stage_times}

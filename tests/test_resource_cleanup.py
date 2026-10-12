@@ -6,7 +6,7 @@ from backend.models import Asset, Artifact, Chunk, Scene, Project, Premise, Chan
 from backend.media import render_inputs_hash
 from backend.project_storage import project_path
 from backend.workflow import settings_for
-from backend.resource_cleanup import recover_final_moves
+from backend.resource_cleanup import recover_final_moves, archived_final_matches
 from backend.project_storage import write_json
 
 
@@ -154,11 +154,35 @@ def test_owned_capcut_copy_is_cleaned_but_wrong_manifest_is_preserved(client,pro
     assert not owned.exists() and (foreign/'media/clip.mp4').is_file()
 
 
-def test_changed_final_or_render_options_do_not_unlock_new_premise(client,project,tmp_path,monkeypatch):
+def test_archived_completion_is_separate_from_final_file_freshness(client,project,tmp_path,monkeypatch):
     files=finished(client,project,tmp_path,monkeypatch)
     result=clean(client,project,preview(client,project)).json()
     final=Path(result['final']);final.write_bytes(b'a different video')
-    assert not client.get('/api/projects/'+project['id']).json()['premise_reuse']['ready']
+    assert client.get('/api/projects/'+project['id']).json()['premise_reuse']['ready']
+    with client.app.state.database.session() as db:
+        p=db.get(Project,project['id']);report=db.query(Artifact).filter_by(kind='render_report').one()
+        assert not archived_final_matches(client.app.state.root,p,report,settings_for(db,db.get(Channel,p.channel_id)))
+
+
+def test_cleanup_after_settings_update_keeps_completion_and_unused_ideas(client,project,tmp_path,monkeypatch):
+    files=finished(client,project,tmp_path,monkeypatch)
+    with client.app.state.database.session() as db:
+        idea=Premise(project_id=project['id'],title='The Second Unopened Door',warnings=[])
+        db.add(idea);db.commit();idea_id=idea.id
+    client.patch('/api/settings',json={'music_db':-20})
+    report=preview(client,project)
+    assert not report['was_current'] and not report['blocked']
+    response=clean(client,project,report)
+    assert response.status_code==200,response.text
+    Path(response.json()['final']).unlink()
+    detail=client.get('/api/projects/'+project['id']).json()
+    assert detail['publish']['final_reviewed'] and detail['premise_reuse']['ready']
+    client.patch('/api/settings',json={'pipeline_mode':'manual'})
+    branch=client.post('/api/projects/'+project['id']+'/select-premise',json={'premise_id':idea_id})
+    assert branch.status_code==200,branch.text
+    child=client.get('/api/projects/'+branch.json()['id']).json()
+    assert child['title']=='Extend - The Second Unopened Door'
+    assert child['next']['action_kind']=='project_setup' and not child['assets']
 
 
 def test_interrupted_final_move_restores_the_original_reference(client,project,tmp_path,monkeypatch):

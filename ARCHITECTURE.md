@@ -8,6 +8,7 @@ The desktop product is a local React application served by FastAPI, opened by a 
 - `backend/models.py`: explicit relational SQLAlchemy tables. JSON columns contain bounded structured artifacts, profiles and provenance. Foreign keys, indexes and WAL support multi-project work.
 - `backend/database.py`: schema migration registry, SQLite online backup, interrupted-job recovery.
 - `backend/workflow.py`: persistent jobs, provider contracts, premise gates, cross-review/resolver, exact-version verification, story locking, chunking, sync and rendering.
+- `backend/channel_guidance.py`: bounded creative briefs, versioned channel guidance, three-part ChatGPT research, explicit preview/apply, stale-result rejection and per-project frozen creative snapshots. Migration 6 seeds only the approved Heart & Hurdles / The Veiled Signal profiles; existing projects and The Midnight Log stay on legacy behavior. Scoped task contexts specialize creativity without changing providers or production settings.
 - `backend/intelligence.py`: duration budgets, local token/motif novelty heuristics, channel fit and semantic sentence-boundary scoring.
 - `backend/providers.py`: `LLMProvider`, `MockProvider`, `BrowserBridgeProvider`.
 - `backend/media.py`: local-only ffprobe inputs, real-duration timeline, sentence-weighted captions, normalized audio concatenation, H.264/AAC render, slow image motion, crossfades, video-to-image fallback, sidechain ducking and technical QA.
@@ -54,3 +55,12 @@ The loopback API is intended for one trusted Windows user. It is not a multi-use
 ## Schema migrations
 
 Migration 1 creates all named tables from SQLAlchemy metadata inside the `schema_migrations` transaction. Add subsequent numbered migrations in `Database.migrate`; never silently edit existing schemas. Snapshot the database before destructive future migrations. See `docs/SCHEMA.md` for tables and relationships.
+
+
+### Narration and initial project setup (v3.1.46)
+
+`channel.settings.narration_voice` supplies independent Speaker/Style defaults. `project.settings.narration_voice` freezes the resolved profile for all chunks/outro and Studio media descriptors. Blank Style means neutral delivery; omitted project profile inherits channel defaults. Migration 7 preserves the effective legacy Enzo/Friendly settings, rather than the previously ignored global voice_name. Voice correction is allowed only before narration assets exist and with no active job; stale batches are invalidated and new TTS downloads carry a voice signature.
+
+New Extend/Customize projects require `setup_confirmation.confirmed` before dispatch. `next_step`, job validation, the assisted queue and media start enforce the gate. A setup POST atomically validates duration/counts/voice, freezes settings, and invokes the existing pipeline. Importing a Bible is allowed before confirmation but does not authorize an outline.
+
+`video_completed` records a successful final render independently of cleanup and current story version. Before deleting an unfinished Extend, remove only its exact PremiseUsage reservation; completed projects retain the FK-null tombstone. Legacy deleted records without completion evidence are not automatically released.

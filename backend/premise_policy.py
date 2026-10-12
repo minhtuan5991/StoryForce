@@ -41,6 +41,28 @@ leave every remaining candidate unchanged. Examples of mechanics are illustratio
 '''
 
 
+PROFILE_POLICY_PROMPT = '''
+Channel-specific Idea 1 contract (technical gates remain unchanged): reserve Idea 1 at
+index 0 with premise_role=source_close/rank_role=SOURCE_CLOSE when sourced, otherwise
+original_primary/ORIGINAL_PRIMARY. Keep the required source_core and signature fields,
+but translate source appeal into the approved channel genre. fear_engine and
+survival_problem may describe emotional vulnerability, trust or a practical dilemma;
+anomaly may be a contradictory decision or unexplained observation, not physical impossibility.
+Never transplant an incompatible supernatural explanation into a family story.
+Provide at least six concrete transformed aspects and three anti-copy changes when sourced.
+Use a concrete title and logline of at least 20 words: protagonist/job, situation,
+specific contradiction, consequences and mechanism. signature_rule is an observable
+behavior or relationship pattern, 1–250 characters. Preserve the selected content mix.
+Use the existing rubric: hook_immediacy/clarity>=85, transformative_distance>=70,
+retention_engine/thumbnail_clarity>=80, source_dna_alignment>=80 when sourced,
+surface_similarity_risk<=35 when sourced. family_drama and speculative_mystery require
+genre_promise>=85; horror_promise may be null. Custom genres use the channel's own
+genre promise, never the source's horror label. Scores are rubric estimates, not metrics.
+For repair requests return only the corrected Idea 1 plus source_core when sourced;
+keep remaining candidates immutable. Preserve schemas, ranking, automatic selection and timing.
+'''
+
+
 def ordered(db, project_id):
     rows = db.query(Premise).filter_by(project_id=project_id).order_by(Premise.created_at, Premise.id).all()
     return sorted(rows, key=lambda p: (p.signature or {}).get('_premise', {}).get('number', 999))
@@ -84,7 +106,7 @@ def mock_batch(context, result):
     return result
 
 
-def validate_batch(output, source, channel, count):
+def validate_batch(output, source, channel, count, genre_mode=None):
     result = deepcopy(output)
     items = result.get('premises')
     if not isinstance(items, list) or len(items) != count or not 1 <= count <= 50:
@@ -111,8 +133,13 @@ def validate_batch(output, source, channel, count):
         value = scores.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not minimum <= value <= 100:
             reasons.append(f'{key} must be {minimum}–100')
-    genre_text = str(channel.get('niche', '')) + ' ' + str(channel.get('dna', {})) + ' ' + str((source or {}).get('dna', {}))
-    genre_key = 'horror_promise' if any(term in genre_text.lower() for term in ('horror', 'kinh dị', 'kinh di')) else 'genre_promise'
+    genre_text = str(channel.get('niche', '')) + ' ' + str(channel.get('dna', {}))
+    if genre_mode is None:
+        genre_text += ' ' + str((source or {}).get('dna', {}))
+    else:
+        genre_text = str(channel.get('niche', '')) + ' ' + str(channel.get('dna', {}).get('primary_genres', []))
+    genre_key = ('genre_promise' if genre_mode in ('family_drama', 'speculative_mystery') else
+                 'horror_promise' if any(term in genre_text.lower() for term in ('horror', 'kinh dị', 'kinh di')) else 'genre_promise')
     if not isinstance(scores.get(genre_key), (int, float)) or isinstance(scores.get(genre_key), bool) or not 85 <= scores[genre_key] <= 100:
         reasons.append(f'{genre_key} must be 85–100')
     value = scores.get('surface_similarity_risk')

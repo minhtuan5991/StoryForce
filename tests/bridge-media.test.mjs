@@ -5,8 +5,10 @@ import {createMediaBridge} from '../browser-extension/media-automatic.js';
 function fixture(provider='aistudio'){
   const storage={autoBridge:{enabled:true}},messages=[],downloads=[];
   let time=1000,tabCount=0,runs=0,imports=0;const claims={};
-  const makeJob=i=>({id:'media'+i,attempt:1,provider,url:provider==='flow'?'https://flow.google.com/project/test':'https://aistudio.google.com/generate-speech',prompt:'Audio '+i,
-    media:{batch_id:'batch',folder:'Project',filename:(provider==='flow'?'scene_00':'tts_00')+i+(provider==='flow'?'.mp4':'.wav')}});
+  const makeJob=i=>({id:'media'+i,attempt:1,provider,url:provider==='flow'?'https://flow.google.com/project/test':
+    provider==='lyria'?'https://aistudio.google.com/new_music?model=lyria-3-pro-preview':provider==='gemini'?'https://gemini.google.com/app':'https://aistudio.google.com/generate-speech',prompt:'Audio '+i,
+    media:{batch_id:'batch',folder:'Project',filename:(provider==='flow'?'scene_00':provider==='lyria'?'bgm_00':'tts_00')+i+
+      (provider==='flow'?'.mp4':provider==='lyria'?'.mp3':'.wav')}});
   const state={jobs:[makeJob(1)],tabStatus:'complete',ready:true,generated:true,lostRun:false};
   const chrome={storage:{local:{get:async k=>({[k]:structuredClone(storage[k])}),set:async values=>Object.assign(storage,structuredClone(values))}},
     tabs:{create:async()=>({id:++tabCount,url:makeJob(1).url,status:state.tabStatus}),get:async id=>({id,url:makeJob(1).url,status:state.tabStatus}),
@@ -92,6 +94,66 @@ test('unavailable Flow controls stop at the preparation deadline without sending
   clock+=180001;await engine.tick();assert.equal(failed,1);assert.equal(f.counts().runs,0);
 });
 
+test('Flow gives distinct upload/selection milestones time to finish and persists project reference provenance',async()=>{
+  const f=fixture('flow'),send=f.chrome.tabs.sendMessage;let clock=1000,stage=0,failed=0;
+  const library=[{name:'sf_ref_0123456789abcdef.jpg',url:'https://media.test/our-reference.jpg',projectUrl:f.state.jobs[0].url}];
+  f.chrome.tabs.sendMessage=async(id,m)=>{
+    if(m.action==='media-setup')return {ok:true,ready:true};
+    if(m.action==='media-prepare'){
+      if(stage<3)return {ok:true,ready:false,preparationProgress:['uploaded','selected','confirmed'][stage],referenceLibrary:library,message:'Waiting for this upload step'};
+      assert.deepEqual(m.referenceLibrary,library);return {ok:true,baseline:[],preparationProgress:'verified',referenceLibrary:library};
+    }
+    return send(id,m);
+  };
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,...rest)=>{
+    if(path.endsWith('/failure')){failed++;return {accepted:true}}return f.request(path,...rest);
+  },ensureContent:async()=>{},now:()=>clock,pageSettleMs:0});
+  await engine.tick();await engine.tick();
+  for(stage=0;stage<3;stage++){await engine.tick();clock+=160000}
+  for(let i=0;i<3;i++)await engine.tick();
+  assert.equal(failed,0);assert.equal(f.counts().runs,1);
+  assert.deepEqual((await engine.read()).sessions['legacy:Project:flow'].referenceLibrary,library);
+});
+
+test('the same Flow upload progress cannot postpone a frozen reference picker forever',async()=>{
+  const f=fixture('flow');let clock=1000,failed;
+  f.chrome.tabs.sendMessage=async(id,m)=>m.action==='media-setup'?{ok:true,ready:true}:
+    {ok:true,ready:false,preparationProgress:'uploaded:one',message:'Waiting for Add to prompt'};
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,...rest)=>{
+    if(path.endsWith('/failure')){failed=rest[1];f.state.jobs=[];return {accepted:true}}return f.request(path,...rest);
+  },ensureContent:async()=>{},now:()=>clock,pageSettleMs:0});
+  await engine.tick();await engine.tick();await engine.tick();
+  clock+=170000;await engine.tick();clock+=11000;await engine.tick();
+  assert.match(failed.reason,/Waiting for Add to prompt/);assert.equal(f.counts().runs,0);
+});
+
+test('Flow preparation has a ten-minute cap even if the provider reports new progress forever',async()=>{
+  const f=fixture('flow');let clock=1000,count=0,failed=0;
+  f.chrome.tabs.sendMessage=async(id,m)=>m.action==='media-setup'?{ok:true,ready:true}:
+    {ok:true,ready:false,preparationProgress:'uploaded:'+count++};
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,...rest)=>{
+    if(path.endsWith('/failure')){failed++;f.state.jobs=[];return {accepted:true}}return f.request(path,...rest);
+  },ensureContent:async()=>{},now:()=>clock,pageSettleMs:0});
+  await engine.tick();await engine.tick();
+  for(let i=0;i<7;i++){await engine.tick();clock+=100000}
+  await engine.tick();
+  assert.equal(failed,1);assert.equal(f.counts().runs,0);
+});
+
+test('turning Auto off keeps only the owned media heartbeat and suspends deadlines without sending or touching the tab',async()=>{
+  const f=fixture('flow');let clock=1000,heartbeats=0;
+  f.state.ready=false;
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
+    if(path.endsWith('/claim')){heartbeats++;assert.notEqual(body.authorize_send,true)}return f.request(path,method,body);
+  },ensureContent:async()=>{},now:()=>clock,pageSettleMs:0});
+  await engine.tick();await engine.tick();const before=await engine.read();
+  f.storage.autoBridge.enabled=false;const messages=f.messages.length,beats=heartbeats;
+  await engine.tick();clock+=240000;await engine.tick();
+  assert.equal(f.messages.length,messages);assert.equal(heartbeats,beats+2);assert.equal(f.counts().runs,0);
+  f.storage.autoBridge.enabled=true;await engine.tick();
+  assert.equal((await engine.read()).phase,'opening');assert.equal((await engine.read()).preparationDeadline,before.preparationDeadline+240000);
+});
+
 test('media waits for complete page and stable controls; reuses one tab for all audio segments',async()=>{
   const f=fixture();let engine=f.create();f.state.tabStatus='loading';
   await f.tick(engine);assert.deepEqual(f.messages,[]);
@@ -103,6 +165,30 @@ test('media waits for complete page and stable controls; reuses one tab for all 
   assert.equal(f.counts().runs,2);assert.equal(f.counts().tabCount,1);assert.equal(f.downloads.length,2);
   f.downloads[1].state='complete';await f.tick(engine);
   assert.equal(f.counts().imports,2);
+});
+
+test('Gemini media observes readiness during the shorter page guard without sending until prepared',async()=>{
+  const f=fixture('gemini');let time=1000;
+  const create=()=>createMediaBridge({chrome:f.chrome,request:f.request,ensureContent:async()=>{},now:()=>time});
+  let engine=create();await engine.tick();
+  assert.deepEqual(f.messages,['media-setup']);assert.equal(f.counts().runs,0);
+  time+=500;await engine.tick();assert.ok(!f.messages.includes('media-prepare'));
+  engine=create();time+=500;await engine.tick();
+  assert.equal((await engine.read()).phase,'prepared');assert.equal(f.counts().runs,0);
+  f.state.ready=false;time+=500;await engine.tick();assert.equal(f.counts().runs,0);
+  f.state.ready=true;time+=500;await engine.tick();assert.equal(f.counts().runs,1);
+  assert.equal(f.counts().tabCount,1);
+});
+
+test('AI Studio TTS, Lyria and Flow keep the five-second page guard',async()=>{
+  for(const provider of ['aistudio','lyria','flow']){
+    const f=fixture(provider);let time=1000;
+    const engine=createMediaBridge({chrome:f.chrome,request:f.request,ensureContent:async()=>{},now:()=>time});
+    await engine.tick();time+=1000;await engine.tick();assert.deepEqual(f.messages,[]);
+    time+=3999;await engine.tick();assert.deepEqual(f.messages,[]);
+    time+=1;await engine.tick();assert.ok(f.messages.includes('media-setup'));
+    assert.equal(f.counts().runs,0);
+  }
 });
 
 test('a reused provider tab is activated once when the next media job starts',async()=>{
@@ -136,20 +222,39 @@ test('AI Studio saves only the captured full WAV and sends its player duration f
   assert.equal(f.counts().imports,1);
 });
 
-test('a rejected incomplete WAV automatically retries the existing download once without another Run',async()=>{
-  const f=fixture();let rejected=true;
-  const engine=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
-    if(path.endsWith('/result')&&rejected)throw Error('[TTS_INCOMPLETE] WAV is only a streaming fragment');
+for(const provider of ['aistudio','lyria'])test(provider+' retries an incomplete download once without another generation, including after a restart',async()=>{
+  const f=fixture(provider);let rejected=true;
+  const request=async(path,method,body)=>{
+    if(path.endsWith('/result')&&rejected)throw Error('['+(provider==='lyria'?'MUSIC':'TTS')+'_INCOMPLETE] File is only a streaming fragment');
     return f.request(path,method,body);
+  };
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
+    return request(path,method,body);
   },ensureContent:async()=>{},now:()=>100000,pageSettleMs:0});
   for(let i=0;i<5;i++)await engine.tick();
   f.downloads[0].state='complete';await engine.tick();
   const state=await engine.read();
   assert.equal(state.phase,'download_ready');assert.equal(state.fullDownloadRetry,true);
   assert.equal(state.downloadId,undefined);assert.equal(f.counts().imports,0);
-  rejected=false;await engine.tick();
+  const resumed=createMediaBridge({chrome:f.chrome,request,ensureContent:async()=>{},now:()=>100000,pageSettleMs:0});
+  rejected=false;await resumed.tick();
   assert.equal(f.counts().runs,1);assert.equal(f.downloads.length,2);
-  f.downloads[1].state='complete';await engine.tick();assert.equal(f.counts().imports,1);
+  f.downloads[1].state='complete';await resumed.tick();assert.equal(f.counts().imports,1);
+});
+
+test('an incomplete Lyria download stops after one retry and preserves the sent generation',async()=>{
+  const f=fixture('lyria');let failures=0;
+  const engine=createMediaBridge({chrome:f.chrome,request:async(path,method,body)=>{
+    if(path.endsWith('/result'))throw Error('[MUSIC_INCOMPLETE] Download duration differs from Music player');
+    if(path.endsWith('/failure')){failures++;f.state.jobs=[];return {accepted:true}}
+    return f.request(path,method,body);
+  },ensureContent:async()=>{},now:()=>100000,pageSettleMs:0});
+  for(let i=0;i<5;i++)await engine.tick();
+  f.downloads[0].state='complete';await engine.tick();await engine.tick();
+  f.downloads[1].state='complete';await engine.tick();
+  for(let i=0;i<4;i++)await engine.tick();
+  assert.equal(failures,1);assert.equal(f.downloads.length,2);assert.equal(f.counts().runs,1);
+  assert.equal(f.counts().imports,0);assert.equal((await engine.read()).phase,'idle');
 });
 
 test('lost Run acknowledgment and worker restart only collect; never run again',async()=>{

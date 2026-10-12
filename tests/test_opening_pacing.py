@@ -6,7 +6,7 @@ from backend.intelligence import duration_profile
 from backend.media import timeline_from_audio
 from backend.models import Job, Project, Scene
 from backend.visual_planning import narration_clock, opening_layout, visual_budget
-from conftest import build_story, job
+from conftest import build_story, job, approve_resources
 
 
 def text(count):
@@ -194,6 +194,7 @@ def test_real_render_starts_with_two_native_clips_then_the_image(client, project
     assert [s['offset'] for s in timeline['scenes']] == [0, 10, 20]
     assert client.patch('/api/settings', json={'render_width': 320, 'render_height': 180,
                                               'render_fps': 12, 'render_encoder': 'cpu'}).status_code == 200
+    approve_resources(client, project)
     report = job(client, project, 'render')
     assert report['status'] == 'READY', report
     output = tmp_path / 'final_video.mp4'

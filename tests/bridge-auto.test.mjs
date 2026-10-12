@@ -2,13 +2,15 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createAutomaticBridge,parseResult,parseBridgeResult} from '../browser-extension/automatic.js';
 import {withTabReadDeadline,isTabEditBusy} from '../browser-extension/transport.js';
+import {bridgePollDelay} from '../browser-extension/preparation-timing.js';
 
 function fixture(options={pageSettleMs:0}){
   const db={};const calls=[];const closed=[];let time=1000;let sent=0;let saved=0;let claim;let created=0;
   const job={id:'job1',attempt:1,kind:'premise_mini_test',provider:'chatgpt',url:'https://chatgpt.com/',prompt:'Test prompt',timeout:30};
-  const state={jobs:[job],poll:{text:'{"answer":"new response"}',busy:false},lostSend:false,rejectResult:false,retries:0};
-  const chrome={storage:{local:{get:async key=>structuredClone({[key]:db[key]}),set:async values=>Object.assign(db,structuredClone(values))}},tabs:{remove:async id=>{assert.ok(saved>0);if(state.closeError)throw Error(state.closeError===true?'Cannot close':state.closeError);closed.push(id)},create:async()=>{state.createCalls=(state.createCalls||0)+1;if(state.createError)throw Error(state.createError);return {id:9+created++}},get:async()=>({id:9,url:state.tabUrl||job.url,status:state.tabStatus||'complete'}),sendMessage:async(id,message)=>{
+  const state={jobs:[job],poll:{text:'{"answer":"new response"}',busy:false},lostSend:false,rejectResult:false,retries:0,responseRetries:0,retryLedger:{},repair:null};
+  const chrome={storage:{local:{get:async key=>structuredClone({[key]:db[key]}),set:async values=>Object.assign(db,structuredClone(values))}},tabs:{remove:async id=>{assert.ok(saved>0||state.retries>0);if(state.closeError)throw Error(state.closeError===true?'Cannot close':state.closeError);closed.push(id)},create:async()=>{state.createCalls=(state.createCalls||0)+1;if(state.createError)throw Error(state.createError);return {id:9+created++}},get:async()=>({id:9,url:state.tabUrl||state.jobs[0]?.url||job.url,status:state.tabStatus||'complete',pendingUrl:state.pendingUrl}),sendMessage:async(id,message)=>{
     calls.push(message.action);
+    state.messages??=[];state.messages.push({tabId:id,...structuredClone(message)});
     if(message.action==='auto-ready'){if(state.hungReady)return new Promise(()=>{});return {ok:true,ready:state.editorReady!==false}}
     if(message.action==='auto-prepare'){
       if(state.prepareError)return {ok:false,error:state.prepareError,code:state.prepareCode};
@@ -16,7 +18,7 @@ function fixture(options={pageSettleMs:0}){
       return {ok:true,baseline:{count:1,last:'Old answer'}};
     }
     if(message.action==='auto-check-send'&&state.checkError)return {ok:false,error:state.checkError,code:state.checkCode};
-    if(message.action==='auto-send'){sent++;if(state.lostSend)throw Error('Response port closed');return {ok:true,submitted:true}}
+    if(message.action==='auto-send'){sent++;state.onSend?.(message);if(state.lostSend||state.lostRepairSend&&message.jobKey.includes(':repair:'))throw Error('Response port closed');return {ok:true,submitted:true}}
     if(message.action==='auto-poll'&&state.hungPoll)return new Promise(resolve=>{state.finishPoll=resolve});
     if(message.action==='auto-poll'&&state.pollError)throw Error(state.pollError);
     return {ok:true,...state.poll};
@@ -26,8 +28,8 @@ function fixture(options={pageSettleMs:0}){
     if(path.endsWith('/parse-result')){
       state.parseReads=(state.parseReads||0)+1;
       assert.equal(body.attempt,state.jobs[0].attempt);
-      if(!state.parsedResult)throw Error('Invalid JSON syntax');
-      assert.equal(body.result,state.rawText||state.poll.text);
+      if(!state.parsedResult)throw Object.assign(Error('Invalid JSON syntax'),{code:'INVALID_JSON'});
+      assert.equal(body.result,state.fileText||state.rawText||state.poll.text);
       return {result:state.parsedResult};
     }
     if(path.endsWith('/claim')){
@@ -36,13 +38,26 @@ function fixture(options={pageSettleMs:0}){
       if(body.authorize_send){if(claim.phase==='sent')return {send:false,claim};claim={...claim,phase:'sent'};return {send:true,claim}}
       return {send:false,claim};
     }
+    if(path.endsWith('/repair')){
+      assert.equal(body.attempt,state.jobs[0].attempt);assert.equal(claim.phase,'sent');
+      state.repair??={id:body.repair_id,owner:body.owner,attempt:body.attempt,reason:body.reason,
+        phase:'prepared',prompt:body.reason==='INVALID_JSON'?'Hãy viết lại câu trả lời chuẩn Json':'Viết lại câu trả lời theo đúng yêu cầu'};
+      assert.equal(body.repair_id,state.repair.id);
+      const send=!!body.authorize_send&&state.repair.phase!=='sent';
+      if(send)state.repair.phase='sent';
+      return {repair:structuredClone(state.repair),send};
+    }
     if(path.endsWith('/retry')){
+      if(state.retryLedger[body.retry_id])return state.retryLedger[body.retry_id];
+      if(!state.jobs.length)throw Object.assign(Error('Cancelled'),{status:409});
       assert.equal(body.attempt,state.jobs[0].attempt);
-      if(state.retries>=3)throw Error('Đã tự gửi lại 3 lần. Kiểm tra tab AI rồi tiếp tục thủ công hoặc bấm Thử lại.');
+      if(body.reason==='SEND_NOT_READY'&&state.retries>=3)throw Object.assign(Error('Đã thử nút gửi 3 lần.'),{status:409});
+      if(body.reason!=='SEND_NOT_READY'){assert.equal(state.repair.phase,'sent');assert.equal(body.repair_id,state.repair.id);state.responseRetries++}
       state.retryReasons??=[];state.retryReasons.push(body.reason);
-      state.retries++;state.jobs=[{...job,attempt:body.attempt+1}];claim=undefined;
+      state.retries++;state.jobs=[{...state.jobs[0],attempt:body.attempt+1,response_retry_count:state.responseRetries}];claim=undefined;state.repair=null;
+      state.retryLedger[body.retry_id]={accepted:true,retry_count:state.retries};
       if(state.loseRetryResponse){state.loseRetryResponse=false;throw Error('Response lost')}
-      return {accepted:true,retry_count:state.retries};
+      return state.retryLedger[body.retry_id];
     }
     if(path.endsWith('/result')){
       if(state.rejectResult)throw Object.assign(Error('Invalid result schema'),{code:state.resultCode});
@@ -50,11 +65,141 @@ function fixture(options={pageSettleMs:0}){
     }
     return {updated:true};
   };
-  const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},now:()=>time,readTimeoutMs:20,...options});const tick=engine.tick;engine.tick=async()=>{time+=2000;return tick()};return engine};
+  const create=()=>{const engine=createAutomaticBridge({chrome,request,ensureContent:async()=>{if(state.connectionError)throw Error(state.connectionError)},captureRaw:async(tabId,target)=>{state.rawReads=(state.rawReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.copyTarget);if(state.rawError)throw Error(state.rawError);return {text:state.rawText}},captureFile:async(tabId,target)=>{state.fileReads=(state.fileReads||0)+1;assert.equal(tabId,9);assert.deepEqual(target,state.poll.fileTarget);if(state.fileError)throw Object.assign(Error(state.fileError),{code:'FILE_RESPONSE_UNAVAILABLE'});return {text:state.fileText}},now:()=>time,readTimeoutMs:20,...options});const tick=engine.tick;engine.tick=async()=>{time+=options.tickMs??2000;return tick()};return engine};
   return {state,db,calls,closed,create,created:()=>created,counts:()=>({sent,saved}),advance:(ms=31000)=>{time+=ms}};
 }
 
 const tabEditError='Tabs cannot be edited right now (user may be dragging a tab).';
+async function until(engine,phase,limit=35){for(let i=0;i<limit;i++){await engine.tick();if((await engine.read()).phase===phase)return}assert.equal((await engine.read()).phase,phase)}
+
+for(const provider of ['chatgpt','gemini']){
+test(provider+' corrects non-JSON in the same conversation with a separate send key across restarts',async()=>{
+  const f=fixture();let a=f.create();
+  Object.assign(f.state.jobs[0],{provider,url:provider==='gemini'?'https://gemini.google.com/app':'https://chatgpt.com/'});
+  f.state.poll.text='The result is ready.';
+  await a.setEnabled(true);await until(a,'repair_request');
+  const id=(await a.read()).repairId;a=f.create();await a.tick();assert.equal((await a.read()).repair.id,id);
+  assert.equal(f.created(),1);f.state.poll.text='{"answer":"new response"}';
+  a=f.create();for(let i=0;i<8;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.state.retries,0);assert.deepEqual(f.closed,[9]);
+  const sends=f.state.messages.filter(m=>m.action==='auto-send');
+  assert.equal(sends[0].prompt,'Test prompt');assert.match(sends[1].prompt,/^Hãy viết lại câu trả lời chuẩn Json/);
+  assert.equal(sends[0].tabId,sends[1].tabId);assert.notEqual(sends[0].jobKey,sends[1].jobKey);
+});
+}
+
+test('failed original, correction and fresh reply stop after exactly three sends, including Resume',async()=>{
+  const f=fixture();let a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);
+  await until(a,'paused');assert.deepEqual(f.counts(),{sent:3,saved:0});
+  assert.equal(f.created(),2);assert.equal(f.state.retries,1);assert.deepEqual(f.closed,[9]);
+  assert.equal((await a.read()).retryStopped,true);assert.equal((await a.read()).responseRetries,1);
+  a=f.create();for(let i=0;i<8;i++)await a.tick();assert.equal(f.counts().sent,3);
+  await a.resume();await until(a,'paused');assert.equal(f.counts().sent,3);assert.equal(f.created(),2);
+  const sends=f.state.messages.filter(m=>m.action==='auto-send');
+  assert.equal(new Set(sends.map(m=>m.jobKey)).size,3);assert.equal(sends[2].prompt,'Test prompt');
+  assert.throws(()=>parseResult('[{"answer":"new response"}]'),/JSON/);
+});
+
+test('malformed JSON inside a readable response file is corrected instead of treated as a download failure',async()=>{
+  const f=fixture(),a=f.create();f.state.poll={text:'Download result.json',busy:false,fileTarget:{messageId:'reply',files:['result.json']}};
+  f.state.fileText='Invalid JSON in the file';await a.setEnabled(true);await until(a,'repair_request');
+  assert.equal(f.state.fileReads,1);assert.equal(f.counts().sent,1);
+  f.state.fileText='{"answer":"new response"}';for(let i=0;i<9;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.created(),1);
+});
+
+test('a length/schema rejection sends the format correction in the same chat',async()=>{
+  const f=fixture(),a=f.create();f.state.rejectResult=true;f.state.resultCode='OUTPUT_CONTRACT';
+  await a.setEnabled(true);await until(a,'repair_request');f.state.rejectResult=false;
+  for(let i=0;i<8;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.created(),1);
+  assert.match(f.state.messages.find(m=>m.action==='auto-send'&&m.jobKey.includes(':repair:')).prompt,/^Viết lại câu trả lời theo đúng yêu cầu/);
+});
+
+test('lost correction Send acknowledgment collects the new reply without a duplicate correction',async()=>{
+  const f=fixture();let a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);
+  await until(a,'repair_request');f.state.lostRepairSend=true;
+  f.state.onSend=message=>{if(message.jobKey.includes(':repair:'))f.state.poll.text='{"answer":"new response"}'};
+  await a.tick();await a.tick();assert.equal((await a.read()).phase,'submitted');
+  a=f.create();for(let i=0;i<9;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.created(),1);assert.equal(f.state.retries,0);
+});
+
+test('busy replies, quota notices and failed source capture never request correction',async()=>{
+  for(const mode of ['busy','quota','copy']){
+    const f=fixture(),a=f.create();f.state.poll={text:mode==='quota'?"You've hit the message limit":'Not JSON',busy:mode==='busy'};
+    if(mode==='copy'){f.state.poll.copyTarget={messageId:'reply'};f.state.rawError='The selected response changed'}
+    await a.setEnabled(true);for(let i=0;i<12;i++)await a.tick();
+    assert.equal(f.state.repair,null);assert.equal(f.created(),1);assert.equal(f.counts().sent,1);
+    assert.equal((await a.read()).phase,mode==='busy'?'submitted':'paused');
+  }
+});
+
+test('navigating away, cancelling or disabling before correction never sends into another chat',async()=>{
+  for(const mode of ['navigated','cancelled','disabled']){
+    const f=fixture(),a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);await until(a,'repair_request');
+    if(mode==='navigated')f.state.tabUrl='https://chatgpt.com/c/my-other-chat';
+    if(mode==='cancelled')f.state.jobs=[];
+    if(mode==='disabled')await a.setEnabled(false);
+    for(let i=0;i<4;i++)await a.tick();assert.equal(f.counts().sent,1);assert.equal(f.created(),1);
+  }
+});
+
+test('a navigated or unowned failed tab is preserved when the fresh attempt is authorized',async()=>{
+  for(const mode of ['navigated','unowned']){
+    const f=fixture(),a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);await until(a,'retry_wait');
+    if(mode==='navigated')f.state.tabUrl='https://chatgpt.com/c/my-other-chat';
+    if(mode==='unowned')f.db.autoBridge.ownedTab=false;
+    await a.tick();await a.tick();assert.deepEqual(f.closed,[]);assert.equal(f.state.retries,1);
+  }
+});
+
+test('a stable file response reads JSON from its artifact and submits once without another prompt',async()=>{
+  const f=fixture(),a=f.create();
+  f.state.poll={text:'The JSON is complete. Download the file.',busy:false,fileTarget:{messageId:'reply',text:'The JSON is complete.',files:['result.json']}};
+  f.state.fileText='{"answer":"new response"}';
+  await a.setEnabled(true);for(let i=0;i<10;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.state.fileReads,1);
+  assert.equal(f.state.retries,0);assert.equal(f.state.rawReads,undefined);
+});
+
+test('an unavailable response file pauses collection and resumes the same sent attempt',async()=>{
+  const f=fixture(),a=f.create();
+  f.state.poll={text:'Response file: result.json',busy:false,fileTarget:{messageId:'reply',text:'',files:['result.json']}};
+  f.state.fileError='Response file unavailable';f.state.fileText='{"answer":"new response"}';
+  await a.setEnabled(true);for(let i=0;i<10;i++)await a.tick();
+  assert.equal((await a.read()).phase,'paused');assert.equal(f.state.retries,0);
+  assert.deepEqual(f.counts(),{sent:1,saved:0});
+  f.state.fileError='';await a.resume();for(let i=0;i<8;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.state.retries,0);
+});
+
+test('a completed empty response waits for rendering then corrects once in the same chat',async()=>{
+  const f=fixture(),a=f.create();f.state.poll={text:'',busy:false,emptyResponse:true};
+  await a.setEnabled(true);await until(a,'repair_request');
+  assert.deepEqual(f.counts(),{sent:1,saved:0});
+  assert.equal(f.state.retries,0);
+  f.state.poll={text:'{"answer":"new response"}',busy:false};
+  for(let i=0;i<7;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.state.retries,0);assert.equal(f.created(),1);
+});
+
+test('empty response retries never fire during reasoning or when no fresh completed turn exists',async()=>{
+  for(const poll of [{text:'',busy:true,emptyResponse:true},{text:'',busy:false,emptyResponse:false}]){
+    const f=fixture(),a=f.create();f.state.poll=poll;
+    await a.setEnabled(true);for(let i=0;i<15;i++)await a.tick();
+    assert.equal((await a.read()).phase,'submitted');assert.equal(f.state.retries,0);
+    assert.deepEqual(f.counts(),{sent:1,saved:0});
+  }
+});
+
+test('a late response cancels the empty result timer and collects without another request',async()=>{
+  const f=fixture(),a=f.create();f.state.poll={text:'',busy:false,emptyResponse:true};
+  await a.setEnabled(true);await a.tick();await a.tick();await a.tick();
+  f.state.poll={text:'{"answer":"new response"}',busy:false};
+  for(let i=0;i<7;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:1,saved:1});assert.equal(f.state.retries,0);
+});
 
 test('only explicit tab-strip busy rejections are classified as safe retries',()=>{
   assert.equal(isTabEditBusy(Error(tabEditError)),true);
@@ -162,17 +307,13 @@ test('pasted text file preparation stays in the same tab and never authorizes Se
   assert.equal((await a.read()).phase,'submitted');assert.equal(f.counts().sent,1);assert.equal(f.created(),1);
 });
 
-test('retention evidence rejection waits before one corrected request and never saves a false pass',async()=>{
+test('retention evidence rejection corrects once in the same chat and never saves a false pass',async()=>{
   const f=fixture(),a=f.create();f.state.jobs[0].kind='retention_audit';
   f.state.rejectResult=true;f.state.resultCode='RETENTION_EVIDENCE';
-  await a.setEnabled(true);for(let i=0;i<6;i++)await a.tick();
-  assert.equal((await a.read()).phase,'retry_wait');
+  await a.setEnabled(true);await until(a,'repair_request');
   assert.deepEqual(f.counts(),{sent:1,saved:0});
-  await a.tick();assert.equal(f.state.retries,0);
-  f.advance();await a.tick();
-  assert.deepEqual(f.state.retryReasons,['RETENTION_EVIDENCE']);
-  f.state.rejectResult=false;for(let i=0;i<7;i++)await a.tick();
-  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.state.retries,1);
+  f.state.rejectResult=false;for(let i=0;i<9;i++)await a.tick();
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.state.retries,0);assert.equal(f.created(),1);
 });
 
 for(const legacyMessage of ['Retention evidence does not belong to the reported time zone',
@@ -185,21 +326,64 @@ test('legacy retention pause rereads the existing result and disabled retry neve
   a=f.create();await a.tick();
   assert.equal((await a.read()).phase,'submitted');assert.equal(f.counts().sent,1);
   f.state.rejectResult=true;f.state.resultCode='RETENTION_EVIDENCE';
-  for(let i=0;i<6;i++)await a.tick();
-  assert.equal((await a.read()).phase,'retry_wait');
+  await until(a,'repair_request');
   await a.setEnabled(false);f.advance();await a.tick();
   assert.deepEqual(f.counts(),{sent:1,saved:0});assert.equal(f.state.retries,0);
 });
 }
 
 test('waits after complete, resets on reload and preserves the wait across worker restarts',async()=>{
-  const f=fixture({});let a=f.create();f.state.tabStatus='loading';await a.setEnabled(true);await a.tick();
+  const f=fixture({pageSettleMs:5000});let a=f.create();f.state.tabStatus='loading';await a.setEnabled(true);await a.tick();
   assert.deepEqual(f.calls,[]);
-  f.state.tabStatus='complete';await a.tick();await a.tick();assert.deepEqual(f.calls,[]);
+  f.state.tabStatus='complete';await a.tick();await a.tick();assert.ok(!f.calls.includes('auto-prepare'));
   f.state.tabStatus='loading';await a.tick();f.state.tabStatus='complete';await a.tick();
-  a=f.create();await a.tick();await a.tick();assert.deepEqual(f.calls,[]);
-  f.state.editorReady=false;await a.tick();assert.deepEqual(f.calls,['auto-ready']);
+  a=f.create();await a.tick();await a.tick();assert.ok(!f.calls.includes('auto-prepare'));
+  f.state.editorReady=false;await a.tick();assert.ok(!f.calls.includes('auto-prepare'));
   f.state.editorReady=true;await a.tick();assert.equal(f.counts().sent,1);assert.equal(f.created(),1);
+});
+
+for(const provider of ['chatgpt','gemini']){
+test(provider+' observes the composer during the one-second page guard and sends once across worker restart',async()=>{
+  const f=fixture({tickMs:500});let a=f.create();
+  f.state.jobs[0].provider=provider;
+  f.state.jobs[0].url=provider==='gemini'?'https://gemini.google.com/app':'https://chatgpt.com/';
+  f.state.tabUrl=f.state.jobs[0].url;
+  await a.setEnabled(true);await a.tick();
+  assert.deepEqual(f.calls,['auto-ready']);assert.equal(f.counts().sent,0);
+  assert.equal(bridgePollDelay(await a.read()),500);
+  await a.tick();assert.equal(f.counts().sent,0);assert.ok(!f.calls.includes('auto-prepare'));
+  a=f.create();await a.tick();
+  assert.equal(f.counts().sent,1);assert.equal(f.created(),1);
+  assert.equal(f.calls.filter(action=>action==='auto-ready').length,3);
+  assert.equal(bridgePollDelay(await a.read()),2000);
+  for(let i=0;i<5;i++)await a.tick();assert.equal(f.counts().sent,1);
+});
+}
+
+test('a pending navigation or a changed URL restarts the shortened page guard before Paste',async()=>{
+  const f=fixture({tickMs:500}),a=f.create();
+  await a.setEnabled(true);await a.tick();
+  f.state.pendingUrl='https://chatgpt.com/c/new';await a.tick();
+  assert.equal(f.calls.filter(action=>action==='auto-ready').length,1);
+  f.state.pendingUrl=undefined;f.state.tabUrl='https://chatgpt.com/c/new';await a.tick();
+  await a.tick();assert.equal(f.counts().sent,0);
+  f.state.tabUrl='https://chatgpt.com/c/another';await a.tick();await a.tick();
+  assert.ok(!f.calls.includes('auto-prepare'));
+  await a.tick();assert.equal(f.counts().sent,1);
+});
+
+test('fast preparation polling does not accelerate collection, other providers or idle checks',()=>{
+  const text={jobId:'text',phase:'opening'};
+  const media={jobId:'image',provider:'gemini',phase:'opening'};
+  assert.equal(bridgePollDelay(text,media),500);
+  assert.equal(bridgePollDelay({...text,phase:'submitted'},media),2000);
+  assert.equal(bridgePollDelay({...text,phase:'closing'},media),2000);
+  assert.equal(bridgePollDelay({...text,phase:'paused'},media),500);
+  assert.equal(bridgePollDelay({},media),500);
+  assert.equal(bridgePollDelay({},{...media,phase:'prepared'}),500);
+  assert.equal(bridgePollDelay({},{...media,phase:'submitted'}),2000);
+  for(const provider of ['flow','aistudio','lyria'])assert.equal(bridgePollDelay({},{...media,provider}),2000);
+  assert.equal(bridgePollDelay(),5000);
 });
 
 test('unready or frozen pages wait without filling and pause at the existing deadline',async()=>{
@@ -216,7 +400,7 @@ test('cancel or disable during page settling never fills or sends',async()=>{
   for(const cancel of [false,true]){
     const f=fixture({}),a=f.create();await a.setEnabled(true);await a.tick();
     if(cancel)f.state.jobs=[];else await a.setEnabled(false);
-    for(let i=0;i<6;i++)await a.tick();assert.deepEqual(f.calls,[]);assert.equal(f.counts().sent,0);
+    for(let i=0;i<6;i++)await a.tick();assert.ok(!f.calls.includes('auto-prepare'));assert.equal(f.counts().sent,0);
   }
 });
 
@@ -286,18 +470,18 @@ test('missing Send retries are bounded and recovery sends exactly once',async()=
   assert.equal(g.calls.filter(c=>c==='auto-check-send').length,5);assert.deepEqual(g.closed,[]);
 });
 
-test('incomplete JSON is polled again without resending, including across worker restarts',async()=>{
-  const f=fixture();let a=f.create();f.state.poll.text='{"answer":';await a.setEnabled(true);
+test('incomplete JSON during generation is polled without resending, including across worker restarts',async()=>{
+  const f=fixture();let a=f.create();f.state.poll={text:'{"answer":',busy:true};await a.setEnabled(true);
   for(let i=0;i<5;i++)await a.tick();assert.equal((await a.read()).phase,'submitted');
-  assert.equal((await a.read()).jsonChecks,1);assert.deepEqual(f.closed,[]);
-  a=f.create();f.state.poll.text='{"answer":"new response"}';for(let i=0;i<6;i++)await a.tick();
+  assert.equal(f.state.repair,null);assert.deepEqual(f.closed,[]);
+  a=f.create();f.state.poll={text:'{"answer":"new response"}',busy:false};for(let i=0;i<6;i++)await a.tick();
   assert.deepEqual(f.counts(),{sent:1,saved:1});assert.deepEqual(f.closed,[9]);
 });
 
-test('persistent non-JSON schedules a fresh request after waiting and keeps the failed tab',async()=>{
+test('completed non-JSON prepares a correction in the existing tab before any fresh request',async()=>{
   const f=fixture(),a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);
-  for(let i=0;i<22;i++)await a.tick();
-  assert.equal((await a.read()).phase,'retry_wait');assert.deepEqual(f.counts(),{sent:1,saved:0});assert.deepEqual(f.closed,[]);
+  await until(a,'repair_request');
+  assert.deepEqual(f.counts(),{sent:1,saved:0});assert.deepEqual(f.closed,[]);assert.equal(f.created(),1);
 });
 
 test('source Copy is only used for stable invalid rendered JSON and saves once without resending',async()=>{
@@ -344,14 +528,13 @@ test('manual Bridge capture uses the same recovery; valid JSON needs no extra ap
   assert.equal(calls,1);
 });
 
-test('new request retry persists across restarts, then completes with one send per attempt',async()=>{
+test('rejected correction retries once in a new tab across restarts and closes both owned tabs',async()=>{
   const f=fixture();let a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);
-  for(let i=0;i<22;i++)await a.tick();
+  await until(a,'retry_wait');
   const before=await a.read();assert.equal(before.phase,'retry_wait');
-  a=f.create();await a.tick();assert.equal((await a.read()).retryId,before.retryId);assert.equal(f.state.retries,0);
-  f.advance();await a.tick();assert.equal(f.state.retries,1);
+  assert.equal(f.counts().sent,2);a=f.create();await a.tick();assert.equal((await a.read()).retryId,before.retryId);assert.equal(f.state.retries,1);
   f.state.poll.text='{"answer":"new response"}';for(let i=0;i<8;i++)await a.tick();
-  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.created(),2);assert.deepEqual(f.closed,[10]);
+  assert.deepEqual(f.counts(),{sent:3,saved:1});assert.equal(f.created(),2);assert.deepEqual(f.closed,[9,10]);
 });
 
 test('persistent missing Send stops after three new attempts',async()=>{
@@ -365,35 +548,33 @@ test('persistent missing Send stops after three new attempts',async()=>{
 test('cancel and disable during retry wait do not send a new request',async()=>{
   for(const cancel of [true,false]){
     const f=fixture(),a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);
-    for(let i=0;i<22;i++)await a.tick();
+    await until(a,'repair_request');
     if(cancel)f.state.jobs=[];else await a.setEnabled(false);
     f.advance();await a.tick();assert.equal(f.state.retries,0);assert.equal(f.counts().sent,1);
   }
 });
 
-test('thumbnail contract correction waits before a new attempt and uses the same bounded retry budget',async()=>{
+test('thumbnail contract correction uses the old chat and keeps existing validators',async()=>{
   const f=fixture(),a=f.create();f.state.jobs[0].kind='thumbnail_plan';
   f.state.rejectResult=true;f.state.resultCode='THUMBNAIL_CONTRACT';await a.setEnabled(true);
-  for(let i=0;i<8;i++)await a.tick();
-  assert.equal((await a.read()).phase,'retry_wait');assert.equal(f.state.retries,0);
-  assert.match((await a.read()).message,/kế hoạch thumbnail/);
-  f.advance();await a.tick();assert.deepEqual(f.state.retryReasons,['THUMBNAIL_CONTRACT']);
+  await until(a,'repair_request');assert.equal(f.state.retries,0);
   f.state.rejectResult=false;for(let i=0;i<8;i++)await a.tick();
-  assert.deepEqual(f.counts(),{sent:2,saved:1});
+  assert.deepEqual(f.counts(),{sent:2,saved:1});assert.equal(f.created(),1);assert.equal(f.state.retries,0);
 });
 
-test('legacy paused JSON error automatically schedules the authorized new retry',async()=>{
+test('legacy paused JSON error rereads the sent reply before the new correction protocol',async()=>{
   const f=fixture(),a=f.create();await a.setEnabled(true);await a.tick();
   f.db.autoBridge={...f.db.autoBridge,phase:'paused',message:'Câu trả lời vẫn chưa phải JSON hợp lệ sau các lần chờ.',resumePhase:'submitted'};
-  await a.tick();assert.equal((await a.read()).phase,'retry_wait');assert.equal(f.state.retries,0);
+  await a.tick();assert.equal((await a.read()).phase,'submitted');assert.equal(f.state.retries,0);
+  f.state.poll.text='Not JSON';await until(a,'repair_request');assert.equal(f.counts().sent,1);
 });
 
 test('lost retry response does not cause a second new attempt',async()=>{
   const f=fixture();let a=f.create();f.state.poll.text='Not JSON';await a.setEnabled(true);
-  for(let i=0;i<22;i++)await a.tick();
+  await until(a,'retry_wait');
   f.state.loseRetryResponse=true;f.advance();await a.tick();
-  a=f.create();f.state.poll.text='{"answer":"new response"}';for(let i=0;i<8;i++)await a.tick();
-  assert.equal(f.state.retries,1);assert.deepEqual(f.counts(),{sent:2,saved:1});
+  a=f.create();f.state.poll.text='{"answer":"new response"}';for(let i=0;i<9;i++)await a.tick();
+  assert.equal(f.state.retries,1);assert.deepEqual(f.counts(),{sent:3,saved:1});assert.deepEqual(f.closed,[9,10]);
 });
 
 test('accepted result cleanup survives restart, skips navigated tabs and tolerates close failure',async()=>{

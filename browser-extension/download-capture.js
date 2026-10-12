@@ -27,7 +27,7 @@ export function armDownloadCapture(ticket,provider){
   }
   function record(anchor){
     if(Date.now()>until||!anchor?.href||!anchor.hasAttribute('download'))return false;
-    if(provider==='lyria'&&!/\.mp3$/i.test(anchor.getAttribute('download')||''))return false;
+    if(provider==='lyria'&&!/\.(?:mp3|wav)$/i.test(anchor.getAttribute('download')||''))return false;
     const protocol=new URL(anchor.href,location.href).protocol;
     if(!['blob:','https:','data:'].includes(protocol))return false;
     const url=downloadableUrl(anchor.href);
@@ -47,7 +47,7 @@ export function armDownloadCapture(ticket,provider){
   function post(data,...rest){
     const output=data?.values?.[0],filename=data?.values?.[1];
     const expected=provider==='gemini'?output?.type==='image/png'&&/^Gemini_Generated_Image_[a-z0-9_]+(?:\.png)?$/i.test(filename):
-      provider==='lyria'?['audio/mpeg','audio/mp3'].includes(output?.type)&&/\.mp3$/i.test(filename):
+      provider==='lyria'?['','audio/mpeg','audio/mp3','audio/wav','audio/x-wav','audio/wave'].includes(output?.type)&&/\.(?:mp3|wav)$/i.test(filename):
       provider==='aistudio'&&['','audio/wav','audio/x-wav','audio/wave'].includes(output?.type)&&/^Generated Audio [\w ,:()-]+(?:\.wav)?$/i.test(filename);
     if(expected&&Date.now()<=until&&typeof data?.code==='string'&&data.code.replace(/\s+/g,'')===sandboxDownload.replace(/\s+/g,'')&&
       Array.isArray(data.paramNames)&&data.paramNames.join(',')==='blob,filename'&&data.values?.length===2&&
@@ -55,7 +55,8 @@ export function armDownloadCapture(ticket,provider){
       const anchor=document.createElement('a');
       // AI Studio's assembled WAV Blob currently has an empty MIME type.
       // Preserve every byte and supply the WAV type only for this exact message.
-      const blob=provider==='aistudio'&&!output.type?new Blob([output],{type:'audio/wav'}):output;
+      const blob=['aistudio','lyria'].includes(provider)&&!output.type?
+        new Blob([output],{type:provider==='lyria'&&/\.mp3$/i.test(filename)?'audio/mpeg':'audio/wav'}):output;
       anchor.href=URL.createObjectURL(blob);anchor.download=filename;created.add(anchor.href);
       if(record(anchor))return originalPost.call(this,{...data,code:'void 0;'},...rest);
     }

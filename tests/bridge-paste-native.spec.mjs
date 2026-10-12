@@ -48,7 +48,7 @@ test('real extension connection retains the readiness timer instead of reinjecti
       return {ping,readiness,version:chrome.runtime.getManifest().version};
     },f.tabId);
     const first=await observe();assert.equal(first.ping.version,first.version);assert.equal(first.readiness.ready,false);
-    await f.page.waitForTimeout(2100);
+    await f.page.waitForTimeout(550);
     assert.equal((await observe()).readiness.ready,true);
     const prepared=await f.invoke({action:'auto-prepare',jobKey:'stable:1',prompt});assert.equal(prepared.ok,true,prepared.error);
     assert.equal(await f.page.evaluate(()=>window.pastes.length),1);
@@ -58,12 +58,15 @@ test('real extension connection retains the readiness timer instead of reinjecti
 for(const [provider,host,field,button] of [
   ['gemini','gemini.google.com','<rich-textarea><div contenteditable="true" role="textbox" class="ql-editor"></div></rich-textarea>','Send message'],
   ['flow','flow.google.com','<div contenteditable="true" role="textbox"></div>','Generate'],
-  ['aistudio','aistudio.google.com','<textarea aria-label="Text"></textarea>','Run'],
+  ['aistudio','aistudio.google.com','<button type="button">Speaker 1 - Enzo</button><button type="button" aria-label="Style">Friendly</button><textarea aria-label="Text"></textarea>','Run'],
 ]){
   test(provider+' receives a trusted native Paste with all lines, and replaces only its owned previous scene',async()=>{
     const f=await fixture(host,'<main><form>'+field+'<button type="button" id="send" aria-label="'+button+'">'+button+'</button></form></main>');
     try{
       const message={provider,jobId:'first',prompt};
+      if(provider==='aistudio'){
+        for(let i=0;i<35;i++){const setup=await f.invoke({...message,action:'media-setup'});assert.equal(setup.ok,true,setup.error);if(setup.ready)break;await f.page.waitForTimeout(100)}
+      }
       const prepared=await f.invoke({...message,action:'media-prepare'});
       assert.equal(prepared.ok,true,prepared.error);
       assert.deepEqual(prepared.baseline,[]);
@@ -84,6 +87,29 @@ for(const [provider,host,field,button] of [
     }finally{await f.close()}
   });
 }
+
+for(const style of ['Calm, intimate delivery.\nMeasured pauses.',''])test('AI Studio persists a custom Style through native Paste'+(style?'':' (neutral empty style)'),async()=>{
+  const f=await fixture('aistudio.google.com','<button type="button">Speaker 1 - Fola</button><button type="button" id="style" aria-label="Style">Style</button><textarea id="speech" aria-label="Text"></textarea><button type="button" id="send" aria-label="Run">Run</button><script>\n'+
+    'window.styleText="Previous style";document.querySelector("#style").onclick=()=>{const old=document.querySelector(".cdk-overlay-pane");if(old){window.styleText=old.querySelector("textarea").value;old.remove();return}const menu=document.createElement("div");menu.className="cdk-overlay-pane";menu.innerHTML=\'<textarea placeholder="Describe the voice style. e.g. Tone, mood, pace..."></textarea>\';menu.querySelector("textarea").value=window.styleText;document.body.append(menu)};\n</script>');
+  try{
+    const message={provider:'aistudio',jobId:'custom-style',prompt,media:{voice:'Fola',style}};
+    let result;
+    for(let i=0;i<55;i++){result=await f.invoke({...message,action:'media-setup'});assert.equal(result.ok,true,result.error);if(result.ready)break;await f.page.waitForTimeout(100)}
+    assert.equal(result.ready,true);assert.equal(await f.page.evaluate(()=>window.styleText),style);
+    assert.equal(await f.page.locator('#speech').inputValue(),'');
+    assert.equal((await f.invoke({...message,action:'media-prepare'})).ok,true);
+    await f.page.getByRole('button',{name:'Speaker 1 - Fola',exact:true}).evaluate(el=>el.textContent='Speaker 1 - Enzo');
+    assert.equal((await f.invoke({...message,action:'media-send'})).ok,false);
+    assert.equal(await f.page.evaluate(()=>window.sends),0);
+    await f.page.getByRole('button',{name:'Speaker 1 - Enzo',exact:true}).evaluate(el=>el.textContent='Speaker 1 - Fola');
+    assert.equal((await f.invoke({...message,action:'media-send'})).submitted,true);
+    const pastes=await f.page.evaluate(()=>window.pastes);
+    assert.ok(pastes.every(e=>e.trusted));assert.equal(pastes.at(-1).text.replace(/\r\n?/g,'\n'),prompt);
+    await f.page.getByRole('button',{name:'Speaker 1 - Fola',exact:true}).evaluate(el=>el.textContent='Speaker 1 - Enzo');
+    const next={...message,jobId:'another-style-job',action:'media-send'};
+    assert.equal((await f.invoke(next)).ok,false);
+  }finally{await f.close()}
+});
 test('ChatGPT text and Gemini JSON use native Paste and send once after exact verification',async()=>{
   for(const host of ['chatgpt.com','gemini.google.com']){
     const f=await fixture(host,'<main><form><div contenteditable="true" role="textbox" id="prompt-textarea"></div><button type="button" id="send" data-testid="composer-send-button" aria-label="Send message">Send</button></form></main>');

@@ -121,21 +121,15 @@ def test_manual_mode_and_default_premise_count(client,project):
     assert client.patch('/api/settings',json={'pipeline_mode':'invalid'}).status_code==422
 
 
-def test_assisted_mode_pauses_for_outline_and_draft_review(client,project):
+def test_assisted_mode_continues_through_outline_and_draft_without_another_click(client,project):
     url='/api/projects/'+project['id']
     client.post(url+'/pipeline')
     detail=client.get(url).json()
     client.post(url+'/select-premise',json={'premise_id':detail['premises'][0]['id']})
-    # Selecting a premise now resumes automatically to the outline checkpoint.
+    # Selecting a premise resumes through outline, draft and verification.
     detail=client.get(url).json()
     assert 'outline_rewrite' in detail['artifacts']
-    assert not detail['draft']
-    client.post(url+'/pipeline')
-    detail=client.get(url).json()
     assert detail['draft']
-    assert not detail['issues']
-    client.post(url+'/pipeline')
-    detail=client.get(url).json()
     assert detail['lock_gate']['can_lock']
     assert detail['locked']
     assert detail['chunks']

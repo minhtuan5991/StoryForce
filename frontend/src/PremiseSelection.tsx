@@ -33,7 +33,7 @@ export function PremiseChoice({project:p,premise:pr,active,act}:{project:Row,pre
     setBusy(true);
     try {
       const result=await act(()=>api('/projects/'+p.id+'/select-premise','POST',{premise_id:pr.id}),branching?'New project created from premise':'Premise selected');
-      if(result?.id&&result.id!==p.id)navigate('/projects/'+result.id+'/bible');
+      if(result?.id&&result.id!==p.id)navigate('/projects/'+result.id+(result.settings?.setup_confirmation?.required?'/overview':'/bible'));
     } catch { /* The shared action displays the error. */ }
     finally {setBusy(false)}
   };

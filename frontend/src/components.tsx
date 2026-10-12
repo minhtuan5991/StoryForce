@@ -19,9 +19,10 @@ export function Modal({title,onClose,children,wide=false}:{title:string,onClose:
   useEffect(()=>{const dialog=ref.current;dialog?.showModal();return ()=>dialog?.close()},[]);
   return <dialog ref={ref} aria-modal="true" aria-labelledby={titleId} className={'modal '+(wide?'wide':'')} onCancel={e=>{e.preventDefault();onClose()}} onClick={e=>{if(e.target===e.currentTarget)onClose()}}><div className="modal-head"><h2 id={titleId}><ViewText text={title}/></h2><button className="icon-button" aria-label={tr("Close dialog")} onClick={onClose}><X size={20}/></button></div>{children}</dialog>
 }
-export function JsonEditor({value,onSave,title='Structured data',readOnly=false}:{value:any,onSave?:(value:any)=>Promise<any>,title?:string,readOnly?:boolean}) {
+export function JsonEditor({value,onSave,title='Structured data',readOnly=false,onDirtyChange}:{value:any,onSave?:(value:any)=>Promise<any>,title?:string,readOnly?:boolean,onDirtyChange?:(dirty:boolean)=>void}) {
   const [text,setText]=useState(pretty(value)),[error,setError]=useState(''),[busy,setBusy]=useState(false),[mode,setMode]=useState('read');
   useEffect(()=>{setText(pretty(value))},[pretty(value)]);
+  useEffect(()=>{onDirtyChange?.(text!==pretty(value))},[text,pretty(value),onDirtyChange]);
   async function save(){try{setBusy(true);setError('');await onSave?.(JSON.parse(text));setMode('read')}catch(e){setError(String(e))}finally{setBusy(false)}}
   return <div className="json-editor"><div className="inline between"><span className="eyebrow">{tr(title)}</span><div className="segmented"><button className={mode==='read'?'active':''} onClick={()=>setMode('read')}>{tr("Readable")}</button><button className={mode==='json'?'active':''} onClick={()=>setMode('json')}>{readOnly?tr("JSON"):tr("Edit JSON")}</button></div></div>{mode==='read'?<Readable value={value}/>:<><textarea className="code-editor" aria-label={title} value={text} readOnly={readOnly} onChange={e=>setText(e.target.value)}/>{onSave&&<Button primary disabled={busy} onClick={save}>{busy?<Loader2 className="spin" size={16}/>:<Check size={16}/>}{tr("Save changes")}</Button>}</>}{error&&<p role="alert" className="error-text">{error}</p>}</div>
 }

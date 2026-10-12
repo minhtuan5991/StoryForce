@@ -5,7 +5,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 PROVIDER_HOSTS = {
     'gemini': ('gemini.google.com',),
-    'lyria': ('gemini.google.com',),
+    'lyria': ('aistudio.google.com',),
     'aistudio': ('aistudio.google.com',),
     'flow': ('flow.google.com', 'labs.google'),
 }
@@ -24,9 +24,17 @@ def provider_page(provider, value):
             if not match:
                 return None
             path = path[:match.end()]
-        elif provider in ('gemini', 'lyria') and not re.search(r'/app/[\w-]+$', path):
+        elif provider == 'gemini' and not re.search(r'/app/[\w-]+$', path):
+            return None
+        elif provider == 'lyria' and not re.fullmatch(r'/(?:music|prompts)/[\w-]+', path):
+            # new_music is a fresh composer, not a recoverable conversation.
+            # Never reuse a Gemini chat or the speech playground for music.
+            return None
+        elif provider == 'lyria' and path == '/prompts/new_chat':
             return None
         elif provider == 'aistudio' and path in ('/', '/app'):
+            return None
+        elif provider == 'aistudio' and (path == '/new_music' or path.startswith('/music/')):
             return None
         return urlunsplit(('https', parsed.hostname, path, '', ''))
     except (ValueError, TypeError):

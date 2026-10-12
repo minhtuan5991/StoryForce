@@ -9,7 +9,7 @@ import './thumbnail.css';
 type Action=(fn:()=>Promise<any>,message?:string)=>Promise<any>;
 const reviewLabels:Record<string,string>={image_matches_story:'Image matches the story',anomaly_readable:'The anomaly is recognizable',mobile_readable:'Readable in the small preview',text_correct:'Text and meaningful prop labels are correct',no_major_spoiler:'No ending or major twist is revealed'};
 const strategyLabels:Record<string,string>={concrete_anomaly:'Concrete visual anomaly',human_threat:'Human stakes',atmospheric_context:'Atmosphere and setting',alternative_evidence:'Alternative story evidence'};
-const defaults={visual_language:'Grounded cinematic realism; restrained mystery; believable materials and lighting.',text_usage:'AUTO',typography:'LEGACY_2_3_FONTS',color_mode:'LEGACY_TWO_ACCENTS',research_evidence:[]};
+const defaults={visual_language:'Grounded cinematic realism; restrained mystery; believable materials and lighting.',text_usage:'SHORT_TEXT',typography:'LEGACY_2_3_FONTS',color_mode:'LEGACY_TWO_ACCENTS',research_evidence:[]};
 
 export function ThumbnailPackaging({project:p,act}:{project:Row,act:Action}){
   const state=p.thumbnail_packaging||{},plan=state.plan;
@@ -27,11 +27,11 @@ export function ThumbnailPackaging({project:p,act}:{project:Row,act:Action}){
   const duplicates=hashes.length!==new Set(hashes).size;
   return <Section title={tr('Story-specific thumbnail concepts')} caption={tr('Three visual hypotheses grounded in the locked story. Concept scores are not measurements of the generated image or predictions of CTR.')}>
     <details className="thumbnail-settings"><summary>{tr('Channel thumbnail style (optional)')}</summary>
-      <p>{tr('Font and color choices are reused across this channel. Text is optional; settings do not change the story or scene plan.')}</p>
+      <p>{tr('Every thumbnail A/B/C includes an image and a distinct short headline. Fonts, colors and atmosphere follow the plot; scene plans stay unchanged.')}</p>
       <form onSubmit={async e=>{e.preventDefault();const result=await action(()=>api('/projects/'+p.id+'/thumbnail-style','PATCH',style),'Thumbnail style saved');if(result){setStyle(result);setDirty(false)}else setError(tr('Could not save thumbnail style. Keep your inputs and try again.'))}}>
         <Field label="Visual treatment"><textarea rows={2} maxLength={700} required disabled={active||busy} value={style.visual_language} onChange={e=>update('visual_language',e.target.value)}/></Field>
         <div className="form-grid">
-          <Field label="Thumbnail text mode"><select disabled={active||busy} value={style.text_usage} onChange={e=>update('text_usage',e.target.value)}><option value="AUTO">{tr('Story-driven: optional text')}</option><option value="NO_TEXT">{tr('No overlay text')}</option><option value="SHORT_TEXT">{tr('Short headline (1–4 words)')}</option></select></Field>
+          <Field label="Thumbnail text mode"><select disabled value="SHORT_TEXT"><option value="SHORT_TEXT">{tr('Required short headline (1–4 words)')}</option></select></Field>
           <Field label="Thumbnail typography"><select disabled={active||busy} value={style.typography} onChange={e=>update('typography',e.target.value)}><option value="LEGACY_2_3_FONTS">{tr('Keep existing 2–3 font treatment')}</option><option value="SINGLE_BOLD_FONT">{tr('One bold readable font')}</option></select></Field>
           <Field label="Thumbnail color treatment"><select disabled={active||busy} value={style.color_mode} onChange={e=>update('color_mode',e.target.value)}><option value="LEGACY_TWO_ACCENTS">{tr('Keep two contrasting accent colors')}</option><option value="STORY_DRIVEN">{tr('Colors from the story and lighting')}</option></select></Field>
         </div>

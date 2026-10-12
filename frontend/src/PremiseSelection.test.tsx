@@ -8,10 +8,10 @@ const premise={id:'second',warnings:[]};
 const project={id:'finished',selected_premise_id:'first',premise_reuse:{ready:true}};
 const act=async(fn:()=>Promise<any>)=>fn();
 it('opens the newly created project without navigating back to the finished one',async()=>{
-  vi.mocked(api).mockResolvedValue({id:'new-story'});
+  vi.mocked(api).mockResolvedValue({id:'new-story',settings:{setup_confirmation:{required:true,confirmed:false}}});
   render(<PremiseChoice project={project} premise={premise} active={false} act={act}/>);
   fireEvent.click(screen.getByRole('button',{name:'Create new project'}));
-  await waitFor(()=>expect(navigate).toHaveBeenCalledWith('/projects/new-story/bible'));
+  await waitFor(()=>expect(navigate).toHaveBeenCalledWith('/projects/new-story/overview'));
   expect(api).toHaveBeenCalledWith('/projects/finished/select-premise','POST',{premise_id:'second'});
 });
 it('keeps the selected idea and unfinished projects unavailable for branching',()=>{

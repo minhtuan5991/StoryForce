@@ -1,0 +1,14 @@
+.source-collection-note {justify-content: space-between; flex-wrap: wrap; gap: 12px;}
+.source-collection-note > span {flex: 1 1 420px;}
+.source-collection-note > a {flex-shrink: 0;}
+.source-collection-toolbar {flex-wrap: wrap; gap: 16px;}
+.source-collection-toolbar > .inline {justify-content: flex-end;}
+.source-collection-table td:nth-child(2) {min-width: 230px; max-width: 440px; white-space: normal; overflow-wrap: anywhere;}
+.source-collection-table .table-title {align-items: flex-start;}
+.source-collection-table .table-title svg {flex-shrink: 0; margin-top: 2px;}
+.source-row-actions {display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-width: 180px;}
+.source-collection-detail {margin-bottom: 24px;}
+@media (max-width: 600px) {
+  .source-collection-toolbar > .inline {justify-content: flex-start; width: 100%;}
+  .source-collection-toolbar .search-field {width: 100%;}
+}

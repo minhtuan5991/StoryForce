@@ -1,5 +1,6 @@
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator
+from .project_naming import base_title
 
 
 class ChannelCreate(BaseModel):
@@ -25,6 +26,12 @@ class SourceCreate(BaseModel):
     channel_id: str | None = None
 
 
+class SourceCollectionMove(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    ids: list[str] = Field(min_length=1, max_length=100)
+    collection: Literal['inbox', 'library']
+
+
 class ProductionOptions(BaseModel):
     music_enabled: bool = False
     image_count: int = Field(3, ge=3, le=198)
@@ -37,6 +44,39 @@ class ProductionOptions(BaseModel):
         return self
 
 
+class NarrationVoice(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    speaker: str = Field(min_length=1, max_length=100)
+    style: str = Field('', max_length=2000)
+
+    @field_validator('style', mode='before')
+    @classmethod
+    def trim_text(cls, value):
+        return value.replace('\r\n','\n').replace('\r','\n').strip() if isinstance(value, str) else value
+
+    @field_validator('speaker', mode='before')
+    @classmethod
+    def exact_speaker(cls, value):
+        if isinstance(value, str):
+            value=value.strip()
+            if any(ord(c)<32 for c in value):raise ValueError('Speaker must be a single exact voice name')
+        return value
+
+
+class ProjectSetup(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    confirmed: Literal[True]
+    target_minutes: float = Field(10, ge=1, le=240)
+    production_options: ProductionOptions
+    narration_voice: NarrationVoice | None = None
+
+    @model_validator(mode='after')
+    def opening_budget(self):
+        if self.production_options.video_count * 10 >= self.target_minutes * 60:
+            raise ValueError('Leave narration time for the still images after the opening videos')
+        return self
+
+
 class ProjectCreate(BaseModel):
     channel_id: str
     source_id: str | None = None
@@ -46,6 +86,12 @@ class ProjectCreate(BaseModel):
     target_minutes: float = Field(10, ge=1, le=240)
     wpm: int = Field(150, ge=80, le=240)
     production_options: ProductionOptions | None = None
+    narration_voice: NarrationVoice | None = None
+
+    @field_validator('title', mode='before')
+    @classmethod
+    def creative_title(cls, value):
+        return base_title(value) if isinstance(value, str) else value
 
     @model_validator(mode='after')
     def opening_budget(self):

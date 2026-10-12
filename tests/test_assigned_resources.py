@@ -63,7 +63,10 @@ def test_arbitrary_named_video_is_sufficient_and_sync_uses_assigned_audio(client
     assert timeline['duration']==2.5
     assert timeline['scenes'][0]['duration']==pytest.approx(video['metadata_json']['video_duration'])
     assert timeline['scenes'][1]['ending_thumbnail']
-    assert client.get(base).json()['next']=={'kind':'render'}
+    detail=client.get(base).json()
+    assert detail['resource_review']['ready'] and not detail['resource_review']['required']
+    assert detail['next']['action_kind']=='render'
+    assert not any(j['kind']=='render' for j in detail['jobs'])
 
 
 def test_delete_assets_clears_maps_and_logo_keeps_shared_and_rendered_files(client,project):

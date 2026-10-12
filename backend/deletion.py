@@ -8,9 +8,10 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, text
 
-from .models import Artifact, Job, Novelty, Project, Source, Premise, PremiseUsage, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, CalendarEntry, Channel, DNAVersion
+from .models import Artifact, Job, Novelty, Project, Source, Premise, PremiseUsage, StoryVersion, Issue, Chunk, Scene, Asset, Analytics, CalendarEntry, Channel, DNAVersion, ChannelGuidance
 from .providers import PROVIDERS
 from .project_files import private_file_plan, remove_planned_files
+from .narration import release_unfinished_idea
 
 
 class DeletionRequest(BaseModel):
@@ -112,7 +113,7 @@ class Deletions:
                 children[model.__tablename__] = [(row.id, row.updated_at) for row in rows]
                 affected[model.__tablename__] = len(rows)
         if request.kind == "channels":
-            for model in (Project, DNAVersion, Source):
+            for model in (Project, DNAVersion, Source, ChannelGuidance):
                 rows = db.query(model).filter(model.channel_id.in_(ids)).order_by(model.id).all()
                 children[model.__tablename__] = [(row.id, row.updated_at) for row in rows]
                 affected[model.__tablename__] = len(rows)
@@ -166,7 +167,9 @@ class Deletions:
                     db.query(model).filter(model.channel_id.in_(report['ids']),
                         or_(model.project_id.is_not(None), model.source_id.is_not(None))).update({model.channel_id: None}, synchronize_session=False)
             for id in report["ids"]:
-                db.delete(db.get(self.models[request.kind], id))
+                item=db.get(self.models[request.kind], id)
+                if request.kind=='projects':release_unfinished_idea(db,item)
+                db.delete(item)
             db.commit()
             result={"deleted": True, "count": len(report["ids"])}
             if request.delete_files:

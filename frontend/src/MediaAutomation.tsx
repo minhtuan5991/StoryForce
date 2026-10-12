@@ -7,7 +7,9 @@ import {MediaSessions} from './MediaSessions';
 
 export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'tts'|'visuals',active:boolean,act:(fn:()=>Promise<any>,message?:string)=>Promise<any>}){
   const [busy,setBusy]=useState(false),[preview,setPreview]=useState<Row|null>(null),[regenerate,setRegenerate]=useState(false);
+  const assisted=p.workflow_settings?.pipeline_mode==='assisted';
   const batch=p.settings?.media_automation;
+  const voice=p.narration_voice||p.settings?.narration_voice||{speaker:'Enzo',style:'Friendly'};
   const live=p.jobs.filter((j:Row)=>['queued','running','waiting_user'].includes(j.status));
   const ttsBusy=live.length>0&&live.every((j:Row)=>j.kind==='tts_context'&&j.payload?._media?.target_type==='chunk');
   const blocked=active&&!(kind==='visuals'&&ttsBusy);
@@ -21,12 +23,18 @@ export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'t
   }
   async function review(){
     setBusy(true);
-    try{const result=await act(()=>api('/projects/'+p.id+'/media-automation/preview'));if(result)setPreview(result)}
+    try{const result=await act(()=>api('/projects/'+p.id+'/media-automation/preview'));if(result){
+      const initial=p.settings?.production_options;
+      if(assisted&&initial?.preset_counts&&result.image_count===initial.image_count&&result.video_count===initial.video_count){
+        await start({confirmation:result.confirmation,image_count:result.image_count,video_count:result.video_count});
+      }else setPreview(result);
+    }}
     finally{setBusy(false)}
   }
-  return <Section title={tr('Automatically create and download resources')} caption={kind==='tts'?'Enzo / Friendly · one AI Studio tab · sequential audio segments':'Gemini images / Flow videos · one tab per service · thumbnail first'}>
-    <p>{tr(kind==='tts'?'Start to generate missing narration segments and download them immediately. No count confirmation is needed.':'Choose your image/video counts in the visual plan below. Automatic creation starts only after you confirm the final counts.')}</p>
+  return <Section title={tr('Automatically create and download resources')} caption={kind==='tts'?`${voice.speaker} · ${tr('Project Speaker/Style · one AI Studio tab · sequential audio segments')}`:tr('Gemini images · Flow videos created manually · thumbnails first')}>
+    <p>{tr(kind==='tts'?'Start to generate missing narration segments and download them immediately. No count confirmation is needed.':assisted&&p.settings?.production_options?.preset_counts?'Assisted mode uses the counts confirmed when creating the project and creates all three thumbnails. Changed counts need a new confirmation.':'Choose your image/video counts in the visual plan below. Automatic creation starts only after you confirm the final counts.')}</p>
     <p className="muted">{tr('Keep StoryForge and the paired Browser Bridge open with automation enabled. Completed downloads are automatically attached to their audio segment or scene.')}</p>
+    {kind==='visuals'&&<p className="notice compact">{tr('Flow videos are created manually. Automatic generation includes all three thumbnails, scene images and character references. Import your clips in Assets before rendering.')}</p>}
     <MediaSessions project={p} kind={kind} act={act}/>
     <label className="check-field"><input type="checkbox" checked={regenerate} disabled={blocked||busy} onChange={e=>setRegenerate(e.target.checked)}/>{tr('Generate again, including already assigned resources')}</label>
     <div className="inline wrap">
@@ -41,16 +49,16 @@ export function MediaAutomation({project:p,kind,active,act}:{project:Row,kind:'t
     {show&&<div className="notice compact" role="status"><Download size={18}/><div>
       <strong>{tr(batch.phase==='completed'?'Resources downloaded and attached':batch.phase==='completed_with_missing'?'Queue finished with missing resources':batch.phase==='cancelled'?'Resource automation stopped':'Resource queue')}: {batch.completed} / {batch.total}</strong>
       <p>{tr('Already assigned resources skipped')}: {batch.skipped}</p>
+      {batch.manual_video_count>0&&<p>{tr('Videos to create manually in Flow')}: {batch.manual_video_count}</p>}
       {batch.failed>0&&<p>{tr('Failed items skipped')}: {batch.failed} · <a href={'#/projects/'+p.id+'/assets'}>{tr('Resources still missing')}</a></p>}
       <p style={{overflowWrap:'anywhere'}}>{batch.download_path}</p>
       <Progress value={batch.total?(batch.completed+(batch.failed||0))*100/batch.total:100}/>
     </div></div>}
     {preview&&<Modal title={tr('Confirm image and video counts')} onClose={()=>{if(!busy)setPreview(null)}}>
-      <p><strong>{preview.image_count} {tr('images')} · {preview.video_count} {tr('videos')} + 1 {tr('thumbnail')}</strong></p>
-      <p>{tr('Thumbnail is created first. Scene resources follow the approved plan in order. Existing assigned files are kept unless you choose to generate them again.')}</p>
+      <p><strong>{preview.image_count} {tr('images')} · {preview.video_count} {tr('videos')} + 3 {tr('Thumbnails')}</strong></p>
+      <p>{tr('Three thumbnails are created first, followed by scene images. Videos are created manually in Flow; existing clips are kept.')}</p>
       <p>{tr('If opening videos need a character reference, one main-cast reference image is created before the clips and shared by Gemini and Flow. It is saved separately and is not included in the timeline or scene counts.')}</p>
-      <p>Flow: Video / {tr('Ingredients')} / 16:9 / Omni 1.1 Flash / 720p / 10 {tr('seconds')} / x1</p>
-      <p className="muted">{tr('Video creation uses Flow credits at the rate shown on its page.')}</p>
+      <p>{tr('Videos to create manually in Flow')}: {preview.video_count} · 16:9 · 10 {tr('seconds')}</p>
       <p style={{overflowWrap:'anywhere'}}>{preview.download_path}</p>
       <div className="modal-actions"><Button disabled={busy} onClick={()=>setPreview(null)}>{tr('Cancel')}</Button>
         <Button primary disabled={busy} onClick={()=>start({confirmation:preview.confirmation,image_count:preview.image_count,video_count:preview.video_count})}>{tr('Confirm counts and create resources')}</Button>

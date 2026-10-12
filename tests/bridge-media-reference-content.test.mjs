@@ -19,7 +19,24 @@ function fixture(provider='gemini'){
   window.eval(adapter);
   const ref={name:'sf_ref_0123456789abcdef.jpg',mime:'image/jpeg',data:'aW1hZ2U='};
   const message={provider,jobId:'scene-two',prompt:'A person beside a bridge.',references:[ref]};
-  const execute=(action,extra={})=>window.storyForgeMediaExecute({...message,action:'media-'+action,...extra});
+  const execute=async(action,extra={})=>{
+    const request={...message,action:'media-'+action,...extra};
+    const result=await window.storyForgeMediaExecute(request);
+    if(result.referenceUpload){
+      // This content-only fixture models the MAIN-world upload acknowledgement.
+      // Actual native/detached file selectors are covered in the isolated
+      // browser by bridge-flow-references.spec.mjs.
+      const upload=result.referenceUpload;
+      d.querySelector('[data-storyforge-reference-upload="'+upload.ticket+'"]').click();
+      const selected=upload.names.map(name=>request.references.find(file=>file.name===name)).slice(0,input.multiple?3:1);
+      input.files=selected.map(file=>new window.File([Uint8Array.from(window.atob(file.data),c=>c.charCodeAt(0))],file.name,{type:file.mime}));
+      input.dispatchEvent(new window.Event('change',{bubbles:true}));
+      const accepted=await window.storyForgeMediaExecute({...message,action:'media-reference-uploaded',jobId:request.jobId,
+        upload:{ticket:upload.ticket,names:selected.map(file=>file.name),mode:'file-input'}});
+      assert.equal(accepted.uploaded,true);
+    }
+    return result;
+  };
   const complete=()=>{d.querySelector('#attachments').innerHTML='<img src="blob:reference"><button type="button" aria-label="Remove file '+ref.name+'">Remove</button>';d.querySelector('#attachments button').onclick=()=>d.querySelector('#attachments').replaceChildren()};
   const turn=(prompt,url)=>{const container=d.createElement('div');container.innerHTML='<user-query></user-query><model-response><section><img><button type="button" aria-label="Download">Download</button></section></model-response>';
     container.querySelector('user-query').textContent=prompt;container.querySelector('img').src=url;d.querySelector('#history').append(container);return container};
@@ -65,9 +82,156 @@ test('Flow selects Upload media inside its ingredients dialog instead of togglin
   const upload=f.d.createElement('button');upload.type='button';upload.setAttribute('aria-label','Tải nội dung nghe nhìn lên');
   upload.onclick=()=>{uploads++;form.append(f.input);dialog.remove()};dialog.append(upload);f.d.body.append(dialog);
   assert.equal((await f.execute('prepare')).ready,false);assert.equal(uploads,1);assert.equal(adds,0);
-  await f.execute('prepare');assert.equal(f.counts().uploads,1);assert.equal(f.counts().sends,0);
+  assert.equal(f.counts().uploads,1);assert.equal(f.counts().sends,0);
   f.complete();await f.execute('prepare');f.advance(2200);await f.execute('prepare');
   assert.equal((await f.execute('ready')).ready,true);await f.execute('send');assert.equal(f.counts().sends,1);
+});
+
+function flowConfirmFixture({multiple=true,locale='vi'}={}){
+  const f=fixture('flow'),form=f.d.querySelector('form');f.input.remove();f.input.multiple=multiple;
+  let uploads=0,fileUploads=0,selected=[],confirmed=[],userSelections=0;
+  const picker=f.d.createElement('div');picker.setAttribute('role','dialog');picker.setAttribute('aria-label','Thêm thành phần vào dự án');
+  picker.innerHTML='<input placeholder="Tìm kiếm thành phần"><div role="list"></div><section id="preview"></section><button id="upload" type="button" aria-label="Tải nội dung nghe nhìn lên">Tải nội dung ...</button><button id="close" type="button">Đóng</button>';
+  const list=picker.querySelector('[role=list]');
+  const card=(name,url,onselect)=>{const e=f.d.createElement('button');e.type='button';e.setAttribute('role','option');e.innerHTML='<img src="'+url+'"><span>'+name+'</span><span>Hình ảnh</span>';e.onclick=()=>onselect(e);return e};
+  list.append(card('character_reference.png','blob:manual-board',()=>userSelections++));
+  const open=()=>{form.setAttribute('inert','');f.d.body.append(picker)};
+  const add=f.d.createElement('button');add.type='button';add.setAttribute('aria-label','Thêm thành phần vào ô nhập câu lệnh');add.onclick=open;form.append(add);
+  picker.querySelector('#upload').onclick=()=>{uploads++;picker.append(f.input)};
+  picker.querySelector('#close').onclick=()=>{picker.remove();form.removeAttribute('inert')};
+  f.input.onchange=()=>{
+    fileUploads++;
+    for(const file of f.input.files){
+      const url='blob:'+file.name;
+      list.append(card(file.name,url,e=>{
+        selected.push(file.name);list.querySelectorAll('[aria-selected]').forEach(c=>c.removeAttribute('aria-selected'));e.setAttribute('aria-selected','true');
+        const preview=picker.querySelector('#preview');preview.innerHTML='<img src="'+url+'"><button type="button">'+(locale==='en'?'Add to prompt':'Thêm vào câu lệnh')+'</button>';
+        preview.querySelector('button').onclick=()=>{
+          confirmed.push(file.name);const image=f.d.createElement('img');image.src=url;image.setAttribute('data-file-name',file.name);f.d.querySelector('#attachments').append(image);
+          preview.replaceChildren();picker.remove();form.removeAttribute('inert');
+        };
+      }));
+    }
+  };
+  // Keep provider settings out of this upload regression fixture.
+  f.window.storyForgeMediaOwned.setupJobId=f.message.jobId;f.window.storyForgeMediaOwned.flowConfigured=true;
+  return {...f,picker,open,stats:()=>({uploads,fileUploads,selected,confirmed,userSelections})};
+}
+
+test('Flow uploads from an already open inert picker, confirms Add to prompt, then pastes and sends exactly once',async()=>{
+  const f=flowConfirmFixture();f.open();
+  assert.equal((await f.execute('setup')).ready,true);
+  assert.equal((await f.execute('prepare')).ready,false);assert.equal(f.stats().uploads,1);
+  await f.execute('setup');await f.execute('prepare');
+  assert.equal(f.input.files[0].name,f.ref.name);assert.equal(f.input.files[0].type,'image/jpeg');
+  await f.execute('setup');assert.deepEqual(f.stats().selected,[f.ref.name]);
+  assert.equal(f.d.querySelector('textarea').value,'');assert.equal(f.counts().sends,0);
+  await f.execute('setup');assert.deepEqual(f.stats().confirmed,[f.ref.name]);
+  assert.equal(f.stats().userSelections,0);assert.equal(f.stats().uploads,1);
+  await f.execute('prepare');f.advance(2200);await f.execute('prepare');
+  assert.equal((await f.execute('ready')).ready,true);await f.execute('send');await f.execute('send');
+  assert.equal(f.counts().sends,1);assert.equal(f.d.querySelector('textarea').value,f.message.prompt);
+});
+
+test('Flow waits for a disabled confirmation and refuses to send after the reference is removed',async()=>{
+  const f=flowConfirmFixture({locale:'en'});f.open();await f.execute('prepare');await f.execute('setup');
+  const confirm=f.picker.querySelector('#preview button');confirm.disabled=true;
+  for(let i=0;i<3;i++){assert.equal((await f.execute('setup')).ready,false);f.advance(2100)}
+  assert.deepEqual(f.stats().selected,[f.ref.name]);assert.deepEqual(f.stats().confirmed,[]);assert.equal(f.counts().sends,0);
+  confirm.disabled=false;await f.execute('setup');await f.execute('prepare');f.advance(2200);await f.execute('prepare');
+  assert.equal((await f.execute('ready')).ready,true);f.d.querySelector('#attachments').replaceChildren();
+  assert.equal((await f.execute('ready')).ready,false);await assert.rejects(f.execute('send'),/Chưa xác minh/);
+  assert.equal(f.counts().sends,0);
+});
+
+test('Flow confirms all three references without reuploading or closing the preview instead of adding it',async()=>{
+  const f=flowConfirmFixture(),references=[f.ref,{...f.ref,name:'sf_ref_aaaaaaaaaaaaaaaa.jpg'},{...f.ref,name:'sf_ref_bbbbbbbbbbbbbbbb.jpg'}];
+  f.open();await f.execute('prepare',{references});await f.execute('prepare',{references});
+  for(let i=0;i<10&&f.stats().confirmed.length<3;i++){await f.execute('setup');assert.equal(f.counts().sends,0)}
+  assert.deepEqual(f.stats().confirmed,references.map(r=>r.name));assert.equal(f.stats().uploads,1);assert.equal(f.stats().userSelections,0);
+  await f.execute('prepare',{references});f.advance(2200);await f.execute('prepare',{references});
+  assert.equal((await f.execute('ready')).ready,true);await f.execute('send');assert.equal(f.counts().sends,1);
+});
+
+test('Flow recovers an old adapter selection still in the preview without another upload',async()=>{
+  const f=flowConfirmFixture();f.open();await f.execute('prepare');await f.execute('setup');
+  assert.deepEqual(f.stats().confirmed,[]);assert.ok(f.picker.querySelector('#preview button'));
+  const upload=f.window.storyForgeMediaOwned.referenceUpload;delete upload.flowPending;upload.flowSelections=[f.ref.name];
+  await f.execute('setup');assert.deepEqual(f.stats().confirmed,[f.ref.name]);assert.equal(f.stats().uploads,1);
+  assert.deepEqual(f.stats().selected,[f.ref.name]);assert.equal(f.counts().sends,0);
+  await f.execute('prepare');f.advance(2200);await f.execute('prepare');assert.equal((await f.execute('ready')).ready,true);
+});
+
+test('Flow does not confirm a preview when the user selects a different library image',async()=>{
+  const f=flowConfirmFixture();f.open();await f.execute('prepare');await f.execute('setup');
+  f.picker.querySelectorAll('[aria-selected]').forEach(e=>e.removeAttribute('aria-selected'));
+  f.picker.querySelector('[role=option]').setAttribute('aria-selected','true');
+  await assert.rejects(f.execute('setup'),/Ảnh được chọn.*thay đổi/);
+  assert.deepEqual(f.stats().confirmed,[]);assert.equal(f.counts().sends,0);
+});
+
+async function finishFlowReference(f,extra={}){
+  for(let i=0;i<18;i++){
+    const setup=await f.execute('setup',extra);
+    if(setup.ready){
+      const result=await f.execute('prepare',extra);
+      if(result.baseline)return result;
+    }
+    f.advance(2100);
+  }
+  assert.fail('Flow reference preparation did not complete');
+}
+
+test('Flow setup/prepare polling completes Upload, preview, Add to prompt and Paste in worker order',async()=>{
+  const f=flowConfirmFixture();f.open();
+  const result=await finishFlowReference(f);
+  assert.deepEqual(f.stats().confirmed,[f.ref.name]);assert.equal(f.stats().uploads,1);
+  assert.equal(result.referenceLibrary[0].name,f.ref.name);
+  assert.equal(result.referenceLibrary[0].projectUrl,'https://flow.google.com/project/one');
+  assert.equal((await f.execute('ready')).ready,true);await f.execute('send');assert.equal(f.counts().sends,1);
+});
+
+test('Flow ignores reference-library upload progress as generation busy and still requires the attached image',async()=>{
+  const f=flowConfirmFixture();f.open();
+  const progress=f.d.createElement('div');progress.setAttribute('role','progressbar');f.picker.append(progress);
+  await finishFlowReference(f);
+  assert.deepEqual(f.stats().confirmed,[f.ref.name]);assert.equal((await f.execute('ready')).ready,true);
+  const videoProgress=progress.cloneNode();f.d.querySelector('main').append(videoProgress);
+  assert.equal((await f.execute('ready')).ready,false);await assert.rejects(f.execute('send'),/Ô nhập đã thay đổi/);
+  assert.equal(f.counts().sends,0);
+});
+
+test('Flow reuses its exact uploaded library image in the next scene without a second upload',async()=>{
+  const f=flowConfirmFixture();f.open();await finishFlowReference(f);await f.execute('send');
+  f.d.querySelector('#attachments').replaceChildren();f.d.querySelector('textarea').value='';
+  const extra={jobId:'scene-three',prompt:'The same actor in another scene.'};
+  await f.execute('prepare',extra); // Reopen our library, instead of upload.
+  for(let i=0;i<6;i++){await f.execute('prepare',extra);f.advance(2100)}
+  assert.equal(f.stats().uploads,1);assert.deepEqual(f.stats().confirmed,[f.ref.name,f.ref.name]);
+  assert.equal((await f.execute('ready',extra)).ready,true);await f.execute('send',extra);
+  assert.equal(f.counts().sends,2);assert.equal(f.stats().userSelections,0);
+});
+
+test('Flow restores library provenance after content reload and rejects a filename-only replacement',async()=>{
+  const f=flowConfirmFixture();f.open();const prepared=await finishFlowReference(f);
+  f.d.querySelector('#attachments').replaceChildren();f.d.querySelector('textarea').value='';
+  delete f.window.storyForgeMediaOwned;f.window.eval(adapter);
+  const extra={jobId:'scene-after-reload',prompt:'Same characters after reload.',referenceLibrary:prepared.referenceLibrary};
+  for(let i=0;i<7;i++){await f.execute('prepare',extra);f.advance(2100)}
+  assert.equal(f.stats().uploads,1);assert.equal((await f.execute('ready',extra)).ready,true);
+  f.d.querySelector('#attachments').replaceChildren();f.d.querySelector('textarea').value='';
+  f.picker.querySelectorAll('[role=option]')[1].querySelector('img').src='blob:manual-replacement';
+  const next={...extra,jobId:'scene-replaced',prompt:'Next.'};
+  for(let i=0;i<8;i++){await f.execute('prepare',next);f.advance(2100)}
+  assert.equal(f.stats().fileUploads,2);assert.equal((await f.execute('ready',next)).ready,true);
+  assert.equal(f.stats().userSelections,0);
+});
+
+test('Flow does not reuse another project library even when the reference filename is the same',async()=>{
+  const f=flowConfirmFixture();f.open();
+  const referenceLibrary=[{name:f.ref.name,url:'blob:'+f.ref.name,projectUrl:'https://flow.google.com/project/other'}];
+  await finishFlowReference(f,{referenceLibrary});
+  assert.equal(f.stats().uploads,1);assert.equal(f.stats().confirmed.length,1);
 });
 
 test('Flow selects only its uploaded reference from the ingredients library before inspecting the inert composer',async()=>{

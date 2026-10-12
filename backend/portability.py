@@ -8,6 +8,7 @@ from .models import *
 from .config import safe_path
 from .youtube_metadata import upload_text, metadata_fingerprint
 from .project_storage import project_path
+from .database import SCHEMA_VERSION
 
 
 def project_archive(db, root: Path, project, include_media=False):
@@ -77,7 +78,7 @@ def _inspect_connection(connection):
         if not required <= tables:
             raise ValueError("This is not a StoryForge database")
         version = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-        if version not in (1, 2, 3):
+        if version not in range(1, SCHEMA_VERSION + 1):
             raise ValueError("Unsupported schema version")
 
 

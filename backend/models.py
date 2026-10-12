@@ -47,6 +47,22 @@ class DNAVersion(Record, Base):
     status = Column(String, default="accepted")
 
 
+class ChannelGuidance(Record, Base):
+    __tablename__ = "channel_creative_guidance"
+    __table_args__ = (UniqueConstraint('channel_id', 'version'),)
+    channel_id = Column(String, ForeignKey('channels.id', ondelete='CASCADE'), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    status = Column(String, default='researching', nullable=False)
+    origin = Column(String, default='chatgpt')
+    dna_hash = Column(String, nullable=False)
+    channel_snapshot = Column(JSON, default=dict)
+    criteria = Column(JSON, default=dict)
+    content = Column(JSON, default=dict)
+    parts = Column(JSON, default=dict)
+    job_ids = Column(JSON, default=dict)
+    note = Column(Text, default='')
+
+
 class Source(Record, Base):
     __tablename__ = "sources"
     channel_id = Column(String, ForeignKey("channels.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -59,6 +75,7 @@ class Source(Record, Base):
     tags = Column(JSON, default=list)
     language = Column(String, default="English")
     status = Column(String, default="INBOX", index=True)
+    collection = Column(String(16), nullable=False, default="inbox", server_default="inbox", index=True)
     dna = Column(JSON, default=dict)
     raw_result = Column(Text, default="")
 
@@ -67,7 +84,7 @@ class Project(Record, Base):
     __tablename__ = "projects"
     channel_id = Column(String, ForeignKey("channels.id", ondelete="RESTRICT"), index=True, nullable=False)
     source_id = Column(String, ForeignKey("sources.id", ondelete="SET NULL"), nullable=True)
-    title = Column(String(300), nullable=False)
+    title = Column(String(320), nullable=False)
     duration_mode = Column(String, default="10")
     target_minutes = Column(Float, default=10)
     wpm = Column(Integer, default=150)

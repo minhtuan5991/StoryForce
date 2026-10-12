@@ -1,7 +1,7 @@
 from backend.project_storage import project_path
 import pytest
 
-from conftest import job
+from conftest import job, confirm_setup
 from backend.media import render_inputs_hash
 from backend.models import Artifact, Channel, Job, Premise, Project, serialize
 from backend.workflow import settings_for
@@ -20,7 +20,7 @@ def finished(client, project):
         p.selected_premise_id = candidates[0]['id']
         p.story_version, p.locked, p.draft = 1, True, 'Finished narration that must remain unchanged.'
         p.publish = {'final_reviewed': True, 'url': 'https://youtube.com/watch?v=finished'}
-        p.settings = {'visual_options': {'mode': 'custom', 'image_count': 2, 'video_count': 1},
+        p.settings = {**p.settings, 'visual_options': {'mode': 'custom', 'image_count': 2, 'video_count': 1},
                       'render_options': {'overlay': True, 'logo_asset_id': 'old-logo'}, 'media_automation': {'old': 1}}
         file = project_path(client.app.state.root, p.id) / 'render' / 'v1' / 'final_video.mp4'
         file.parent.mkdir(parents=True)
@@ -45,7 +45,8 @@ def test_other_premises_create_independent_projects_without_changing_finished_wo
         response = client.post(url + '/select-premise', json={'premise_id': candidate['id']})
         assert response.status_code == 200, response.text
         new = response.json()
-        assert new['id'] != project['id'] and new['title'] == candidate['title']
+        assert new['id'] != project['id'] and new['title'] == 'Extend - ' + candidate['title']
+        assert new['settings']['project_type'] == 'extend' and new['settings']['story_title'] == candidate['title']
         assert new['channel_id'] == project['channel_id'] and new['source_id'] == project['source_id']
         assert (new['target_minutes'], new['wpm'], new['duration_mode']) == (5, 150, '5')
         assert not new['locked'] and not new['draft'] and new['story_version'] == 0
@@ -53,7 +54,7 @@ def test_other_premises_create_independent_projects_without_changing_finished_wo
         assert 'final_reviewed' not in new['publish']
         detail = client.get('/api/projects/' + new['id']).json()
         assert len(detail['premises']) == 1
-        assert detail['next']['kind'] == 'story_bible'
+        assert detail['next']['action_kind'] == 'project_setup'
         assert detail['selected_premise_id'] != candidate['id']
         assert next(p for p in detail['premises'] if p['id'] == detail['selected_premise_id'])['title'] == candidate['title']
         assert detail['artifacts']['content_direction']['content'] == before['artifacts']['content_direction']['content']
@@ -68,16 +69,15 @@ def test_other_premises_create_independent_projects_without_changing_finished_wo
     assert file.read_bytes() == b'original completed video'
 
 
-@pytest.mark.parametrize('problem', ['unreviewed', 'stale_version', 'missing_video', 'changed_inputs', 'qa_failed', 'busy'])
+@pytest.mark.parametrize('problem', ['unreviewed', 'stale_version', 'qa_failed', 'empty_qa', 'busy'])
 def test_new_idea_waits_for_current_finished_video(client, project, problem):
     candidates, report_id, file = finished(client, project)
     with client.app.state.database.session() as db:
         p, report = db.get(Project, project['id']), db.get(Artifact, report_id)
         if problem == 'unreviewed': p.publish = {'final_reviewed': False}
         elif problem == 'stale_version': p.story_version = 2
-        elif problem == 'missing_video': file.unlink()
-        elif problem == 'changed_inputs': p.settings = {}
         elif problem == 'qa_failed': report.content = {**report.content, 'status': 'BLOCKED', 'checks': {'video_present': False}}
+        elif problem == 'empty_qa': report.content = {**report.content, 'checks': {}}
         elif problem == 'busy': db.add(Job(project_id=p.id, kind='render', status='running'))
         db.commit()
     detail = client.get('/api/projects/' + project['id']).json()
@@ -85,6 +85,22 @@ def test_new_idea_waits_for_current_finished_video(client, project, problem):
     assert client.post('/api/projects/' + project['id'] + '/select-premise', json={'premise_id': candidates[1]['id']}).status_code == 422
     with client.app.state.database.session() as db:
         assert db.query(Project).count() == 1
+
+
+def test_completed_pool_survives_renderer_updates_and_removed_media(client, project):
+    candidates, report_id, file = finished(client, project)
+    file.unlink()
+    client.patch('/api/settings', json={'music_db': -20})
+    with client.app.state.database.session() as db:
+        report = db.get(Artifact, report_id)
+        report.content = {**report.content, 'inputs_hash': 'old-renderer-hash'}
+        db.commit()
+    base = '/api/projects/' + project['id']
+    assert client.get(base).json()['premise_reuse']['ready']
+    response = client.post(base + '/select-premise', json={'premise_id': candidates[1]['id']})
+    assert response.status_code == 200, response.text
+    assert response.json()['title'] == 'Extend - ' + candidates[1]['title']
+    assert client.get('/api/projects/' + response.json()['id']).json()['next']['action_kind'] == 'project_setup'
 
 
 def test_assisted_branch_continues_only_the_new_project_and_is_idempotent(client, project):
@@ -95,6 +111,9 @@ def test_assisted_branch_continues_only_the_new_project_and_is_idempotent(client
     assert new['id'] != project['id']
     assert client.post(url, json={'premise_id': candidates[1]['id']}).json()['id'] == new['id']
     jobs = client.get('/api/projects/' + new['id']).json()['jobs']
+    assert not jobs
+    confirm_setup(client,new)
+    jobs = client.get('/api/projects/' + new['id']).json()['jobs']
     assert len(jobs) == 1 and jobs[0]['kind'] == 'story_bible' and jobs[0]['status'] == 'waiting_user'
     assert not [j for j in client.get('/api/projects/' + project['id']).json()['jobs'] if j['kind'] == 'story_bible']
 
@@ -104,7 +123,7 @@ def test_branch_pipeline_skips_missing_generation_artifact_and_rejects_new_ideas
     new = client.post('/api/projects/' + project['id'] + '/select-premise', json={'premise_id': candidates[1]['id']}).json()
     url = '/api/projects/' + new['id']
     detail = client.get(url).json()
-    assert detail['next'] == {'kind': 'story_bible'}
+    assert detail['next']['action_kind'] == 'project_setup'
     assert detail['premise_pool']['project_id'] == project['id']
     assert candidates[1]['id'] in detail['premise_pool']['used_premise_ids']
     for kind in ('content_direction', 'premise_generation', 'premise_mini_test'):
@@ -113,9 +132,8 @@ def test_branch_pipeline_skips_missing_generation_artifact_and_rejects_new_ideas
         # Legacy branches can lack direction as well as generation artifacts.
         db.query(Artifact).filter_by(project_id=new['id'], kind='content_direction').delete()
         db.commit()
-    assert client.get(url).json()['next']['kind'] == 'story_bible'
-    result = client.post(url + '/pipeline')
-    assert result.status_code == 200, result.text
+    assert client.get(url).json()['next']['action_kind'] == 'project_setup'
+    result = confirm_setup(client,new)
     assert client.get(url).json()['jobs'][0]['kind'] == 'story_bible'
 
 

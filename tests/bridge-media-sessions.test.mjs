@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import {createMediaBridge} from '../browser-extension/media-automatic.js';
 import {providerPage,projectSessionKey} from '../browser-extension/media-sessions.js';
 
-function fixture(provider='gemini'){
+function fixture(provider='gemini',{durable=true}={}){
   const storage={autoBridge:{enabled:true}},tabs=new Map(),claims={},sessions={},actions=[],opens=[],downloads=[];
   let time=1000,nextId=0;
   const state={jobs:[],fail:false};
-  const base=provider==='gemini'?'https://gemini.google.com/app':provider==='flow'?'https://flow.google.com/':'https://aistudio.google.com/generate-speech';
-  const page=id=>provider==='gemini'?'https://gemini.google.com/app/'+id:provider==='flow'?'https://flow.google.com/project/'+id:'https://aistudio.google.com/prompts/'+id;
+  const base=provider==='gemini'?'https://gemini.google.com/app':provider==='flow'?'https://flow.google.com/':provider==='lyria'?'https://aistudio.google.com/new_music?model=lyria-3-pro-preview':'https://aistudio.google.com/generate-speech';
+  const page=id=>!durable?base:provider==='gemini'?'https://gemini.google.com/app/'+id:provider==='flow'?'https://flow.google.com/project/'+id:'https://aistudio.google.com/prompts/'+id;
   const job=(project,id)=>({id,project_id:project,provider,attempt:1,url:base,prompt:'Prompt '+id,
     media:{project_id:project,folder:'Same title',filename:'scene_001.'+(provider==='flow'?'mp4':provider==='gemini'?'png':'wav')},media_session:sessions[project]||{}});
   const chrome={storage:{local:{get:async key=>({[key]:structuredClone(storage[key])}),set:async value=>Object.assign(storage,structuredClone(value))}},
@@ -41,7 +41,7 @@ function fixture(provider='gemini'){
   const create=()=>createMediaBridge({chrome,request,ensureContent:async()=>{},now:()=>time,pageSettleMs:0});
   let engine=create();
   const tick=async(count=1)=>{for(let i=0;i<count;i++){time+=2000;await engine.tick()}};
-  return {state,storage,tabs,sessions,opens,actions,job,page,tick,create,engine:()=>engine,restart:()=>engine=create(),advance:ms=>time+=ms};
+  return {state,storage,tabs,sessions,claims,opens,actions,job,page,tick,create,engine:()=>engine,restart:()=>engine=create(),advance:ms=>time+=ms};
 }
 
 test('project identity isolates equal titles and reuses the original Gemini chat after A -> B -> A',async()=>{
@@ -81,4 +81,45 @@ test('Gemini adopts the durable chat URL appearing after Send; Flow discards onl
   assert.equal(providerPage('flow','https://flow.google.com/'),undefined);
   assert.equal(providerPage('gemini','https://gemini.google.com.evil.test/app/story'),undefined);
   assert.notEqual(projectSessionKey({project_id:'A',provider:'gemini',media:{folder:'Same'}}),projectSessionKey({project_id:'B',provider:'gemini',media:{folder:'Same'}}));
+});
+
+test('an unsent Lyria task moves from the old Gemini session to AI Studio without altering the old tab',async()=>{
+  const f=fixture('lyria'),j=f.job('A','music');
+  const old='https://gemini.google.com/app/old-music';
+  f.tabs.set(7,{id:7,url:old,status:'complete'});
+  f.storage.mediaBridge={phase:'idle',sessions:{[projectSessionKey(j)]:{tabId:7,url:old,submitted:true,previousPrompt:'Old music prompt'}}};
+  f.sessions.A={url:old,last_prompt:'Old music prompt'};
+  f.state.jobs=[j];await f.tick(9);
+  assert.deepEqual(f.opens,['https://aistudio.google.com/new_music?model=lyria-3-pro-preview']);
+  assert.equal(f.tabs.get(7).url,old);
+  const sends=f.actions.filter(a=>a.action==='media-send');
+  assert.equal(sends.length,1);assert.notEqual(sends[0].id,7);
+  assert.equal(f.sessions.A.url,f.page('A'));
+});
+
+test('a prepared but unsent old Lyria task is reopened on AI Studio before sending',async()=>{
+  const f=fixture('lyria'),j=f.job('A','prepared-music');
+  f.tabs.set(7,{id:7,url:'https://gemini.google.com/app/old',status:'complete'});
+  f.storage.mediaBridge={phase:'prepared',jobId:j.id,attempt:1,provider:'lyria',owner:'music-owner',tabId:7,
+    sessionKey:projectSessionKey(j),sessions:{},media:j.media,prompt:j.prompt,referencesPrepared:true,deadline:1e7,preparationDeadline:1e7};
+  f.state.jobs=[j];await f.tick(9);
+  assert.equal(f.opens.length,1);assert.match(f.opens[0],/new_music\?model=lyria-3-pro-preview$/);
+  assert.equal(f.actions.filter(a=>a.action==='media-send').length,1);
+  assert.ok(f.actions.filter(a=>a.action==='media-prepare').every(a=>a.id!==7));
+});
+
+test('a sent legacy Lyria task never opens a new composer or sends another prompt',async()=>{
+  const f=fixture('lyria'),j=f.job('A','already-sent');
+  f.claims[j.id]={owner:'another-owner',attempt:1,phase:'sent'};
+  f.state.jobs=[j];await f.tick();
+  assert.equal(f.opens.length,0);assert.equal(f.actions.filter(a=>a.action==='media-send').length,0);
+});
+
+test('a closed completed Lyria playground without a saved chat can reopen the exact music model for a new job',async()=>{
+  const f=fixture('lyria',{durable:false});
+  f.state.jobs=[f.job('A','first')];await f.tick(8);
+  assert.equal((await f.engine().read()).phase,'idle');
+  f.tabs.clear();f.restart();f.state.jobs=[f.job('A','next')];await f.tick(8);
+  assert.deepEqual(f.opens,['https://aistudio.google.com/new_music?model=lyria-3-pro-preview','https://aistudio.google.com/new_music?model=lyria-3-pro-preview']);
+  assert.deepEqual(f.actions.filter(a=>a.action==='media-send').map(a=>a.jobId),['first','next']);
 });

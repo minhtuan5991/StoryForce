@@ -152,6 +152,7 @@ def test_schema_migration_preserves_old_rows_and_adds_optional_fields(tmp_path):
         db.execute('DELETE FROM schema_migrations WHERE version>=2')
     updated=Database(tmp_path)
     with updated.session() as db:
-        assert db.get(Project,pid).title=='Preserved project' and not db.get(Project,pid).settings
-        assert db.execute(__import__('sqlalchemy').text('SELECT MAX(version) FROM schema_migrations')).scalar()==3
+        assert db.get(Project,pid).title=='Full Step - Preserved project'
+        assert db.get(Project,pid).settings=={'project_type':'full_step','story_title':'Preserved project','narration_voice':{'speaker':'Enzo','style':'Friendly'}}
+        assert db.execute(__import__('sqlalchemy').text('SELECT MAX(version) FROM schema_migrations')).scalar()==7
     updated.engine.dispose()

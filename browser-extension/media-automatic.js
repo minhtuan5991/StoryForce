@@ -2,8 +2,9 @@
 // their exact ID/URL, never by whichever file happened to arrive most recently.
 import {withTabReadDeadline} from './transport.js';
 import {providerPage,projectSessionKey} from './media-sessions.js';
+import {AI_PAGE_SETTLE_MS} from './preparation-timing.js';
 
-export function createMediaBridge({chrome,request,ensureContent,armCapture,readCapture,now=()=>Date.now(),pageSettleMs=5000}){
+export function createMediaBridge({chrome,request,ensureContent,armCapture,readCapture,uploadReferences,now=()=>Date.now(),pageSettleMs}){
   let busy=false;
   const read=async()=> (await chrome.storage.local.get('mediaBridge')).mediaBridge||{phase:'idle',tabs:{}};
   const write=async state=>{await chrome.storage.local.set({mediaBridge:state});return state};
@@ -26,13 +27,34 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
   }
   const call=async(state,action,extra={})=>{
     const result=await withTabReadDeadline(()=>chrome.tabs.sendMessage(state.tabId,{type:'storyforge',action:'media-'+action,
-      provider:state.provider,jobId:state.jobId,prompt:state.prompt,previousPrompt:state.prompts?.[state.tabId],media:state.media,baseline:state.baseline,collection:state.collection,...extra}));
+      provider:state.provider,jobId:state.jobId,prompt:state.prompt,previousPrompt:state.prompts?.[state.tabId],media:state.media,baseline:state.baseline,collection:state.collection,
+      referenceLibrary:state.sessions?.[state.sessionKey]?.referenceLibrary,...extra}));
     if(!result?.ok)throw Object.assign(new Error(result?.error||'Không kết nối được tab tạo tài nguyên'),{code:result?.code});
     return result;
   };
   const status=async(state,message)=>{
     if(state.message!==message){await write({...state,message});await request('/jobs/'+state.jobId+'/status','POST',{step:message})}
   };
+  async function observePreparation(state,result){
+    if(state.provider!=='flow')return state;
+    const changes={},progress=result.preparationProgress,seen=state.preparationProgress||[];
+    // Allow each actual upload/selection/confirmation milestone its own wait
+    // window. Repeated waiting messages cannot keep a frozen page alive.
+    if(typeof progress==='string'&&progress.length<512&&!seen.includes(progress)){
+      changes.preparationProgress=[...seen,progress].slice(-32);
+      changes.preparationMaxDeadline=state.preparationMaxDeadline||Math.min(state.deadline,now()+10*60*1000);
+      changes.preparationDeadline=Math.min(changes.preparationMaxDeadline,now()+180000);
+    }
+    if(Array.isArray(result.referenceLibrary)){
+      const context=state.sessions?.[state.sessionKey]||{};
+      const page=providerPage('flow',context.url);
+      const entries=result.referenceLibrary.filter(e=>page&&e?.projectUrl===page&&/^sf_ref_[a-f0-9]{16}\.jpg$/.test(e.name)&&
+        typeof e.url==='string'&&e.url.length<5001&&/^(?:https:\/\/|blob:)/.test(e.url)).slice(-3);
+      if(entries.length&&JSON.stringify(entries)!==JSON.stringify(context.referenceLibrary))
+        changes.sessions={...state.sessions,[state.sessionKey]:{...context,referenceLibrary:entries}};
+    }
+    return Object.keys(changes).length?write({...state,...changes}):state;
+  }
   async function resume(){
     const s=await read();
     if(s.phase!=='paused')return s;
@@ -62,9 +84,26 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       message:'Đang tiếp tục lấy tài nguyên; yêu cầu đã gửi không được gửi lại.'});
   }
   async function tick(){
-    if(busy||!await enabled())return;
+    if(busy)return;
+    if(!await enabled()){
+      // Turning Auto off deliberately suspends work, rather than disconnecting
+      // the browser. Keep the already-owned job's heartbeat without UI actions
+      // or another Send permit, so the app watchdog does not discard its result.
+      const paused=await read();
+      if(paused.jobId&&paused.owner){
+        if(paused.suspendedAt===undefined)await write({...paused,suspendedAt:now()});
+        try{await request('/media/'+paused.jobId+'/claim','POST',{owner:paused.owner,attempt:paused.attempt})}catch{}
+      }
+      return;
+    }
     busy=true;
     let state=await read();
+    if(state.suspendedAt!==undefined){
+      const elapsed=Math.max(0,now()-state.suspendedAt);
+      state=await write({...state,suspendedAt:undefined,deadline:state.deadline+elapsed,
+        preparationDeadline:state.preparationDeadline+elapsed,
+        ...(state.preparationMaxDeadline?{preparationMaxDeadline:state.preparationMaxDeadline+elapsed}:{})});
+    }
     let job;
     try{
       const {items}=await request('/jobs');
@@ -86,7 +125,8 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         const context={...legacy,...previous,...(server?{url:server,syncedUrl:server}:{})};
         if(!context.previousPrompt&&job.media_session?.last_prompt)context.previousPrompt=job.media_session.last_prompt;
         state=await write({phase:'opening',tabs:state.tabs||{},pages:state.pages||{},folders:state.folders||{},prompts:state.prompts||{},sessions:{...state.sessions,[key]:context},sessionKey:key,jobId:job.id,attempt:job.attempt,provider:job.provider,
-          prompt:job.prompt,media:job.media,owner:crypto.randomUUID(),deadline:now()+30*60*1000,preparationDeadline:now()+180000});
+          prompt:job.prompt,media:job.media,owner:crypto.randomUUID(),deadline:now()+30*60*1000,preparationDeadline:now()+180000,
+          preparationMaxDeadline:now()+(job.provider==='flow'?10*60*1000:180000)});
         const {claim}=await request('/media/'+job.id+'/claim','POST',{owner:state.owner,attempt:state.attempt});
         if(claim.phase==='sent')throw new Error('Yêu cầu đã gửi từ một phiên khác. Kiểm tra tab trước khi tiếp tục.');
       }
@@ -103,8 +143,22 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       const {claim}=await request('/media/'+job.id+'/claim','POST',permit);
       if(['opening','prepared'].includes(state.phase)&&(claim.phase==='sent'||state.sentAt))
         throw new Error('Yêu cầu này đã được gửi. Kiểm tra tab lấy kết quả; không mở lại bước tạo media.');
+      if(state.provider==='lyria'&&['opening','prepared'].includes(state.phase)&&!state.sentAt){
+        const context=state.sessions?.[state.sessionKey]||{};
+        let oldTab;
+        const saved=state.tabId||context.tabId;
+        if(saved){try{oldTab=await chrome.tabs.get(saved)}catch{}}
+        const oldGemini=value=>{try{return new URL(value).hostname==='gemini.google.com'}catch{return false}};
+        if(oldGemini(context.url)||oldGemini(oldTab?.url)){
+          // An unsent v1.1.38 music job can migrate to AI Studio. Leave its
+          // Gemini tab intact, and never migrate/re-send a submitted job.
+          state=await write({...state,phase:'opening',tabId:undefined,pageReadyAt:0,baseline:undefined,referencesPrepared:false,
+            preparationDeadline:now()+180000,sessions:{...state.sessions,[state.sessionKey]:{}},
+            message:'Đang chuyển tác vụ nhạc chưa gửi sang AI Studio Lyria 3 Pro…'});
+        }
+      }
       if(now()>state.deadline)throw new Error('Đã hết thời gian chờ media; scene này cần tạo lại thủ công.');
-      if(['opening','prepared'].includes(state.phase)&&now()>state.preparationDeadline)throw new Error('Chưa chuẩn bị được tab media sau 3 phút; scene này cần tạo lại thủ công.');
+      if(['opening','prepared'].includes(state.phase)&&now()>state.preparationDeadline)throw new Error('Chưa chuẩn bị được tab media sau 3 phút không tiến triển; scene này cần tạo lại thủ công.'+(state.message?' Bước đang chờ: '+state.message:''));
       if(state.phase==='opening'){
         let tab;
         const key=state.provider;
@@ -124,11 +178,11 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
           }
           if(!tab){
             const savedPage=context.url;
-            if(context.submitted&&!savedPage&&state.provider!=='aistudio')
+            if(context.submitted&&!savedPage&&!['aistudio','lyria'].includes(state.provider))
               throw new Error('Chưa có đường dẫn phiên đã gửi trước đó. Mở lại phiên cũ để giữ nhân vật; scene này cần xử lý thủ công.');
             // Only reopen a page we recorded for this project before Send.
             // A submitted job always stays on its original result-collection path.
-            const hosts={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],lyria:['gemini.google.com'],flow:['flow.google.com','labs.google']}[key];
+            const hosts={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],lyria:['aistudio.google.com'],flow:['flow.google.com','labs.google']}[key];
             let url=job.url;
             try{if(savedPage&&hosts.includes(new URL(savedPage).hostname))url=savedPage}catch{}
             tab=await chrome.tabs.create({url,active:true});
@@ -138,9 +192,9 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
             sessions:{...state.sessions,[state.sessionKey]:{...context,tabId:tab.id}}});
         }
         const host=new URL(tab.url||job.url).hostname;
-        const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],lyria:['gemini.google.com'],flow:['flow.google.com','labs.google']}[state.provider];
+        const allowed={aistudio:['aistudio.google.com'],gemini:['gemini.google.com'],lyria:['aistudio.google.com'],flow:['flow.google.com','labs.google']}[state.provider];
         if(!allowed.includes(host))throw new Error('Tab media đã chuyển sang trang khác. Mở lại dịch vụ để tiếp tục.');
-        if(tab.status!=='complete'||tab.pendingUrl){await write({...state,pageReadyAt:0});return}
+        if(tab.status!=='complete'||tab.pendingUrl){await write({...state,pageReadyAt:0,pageReadyUrl:undefined});return}
         const currentPage=providerPage(state.provider,tab.url);
         if(context.url&&currentPage!==context.url&&context.restoredFor!==job.id){
           tab=await chrome.tabs.update(tab.id,{url:context.url,active:true});
@@ -155,13 +209,31 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
         // Setup may create a Flow project before it finishes selecting options.
         // Save that URL now so closing the browser does not lose the project.
         state=await remember(state,job);
-        if(!state.pageReadyAt){await write({...state,pageReadyAt:now()});return}
-        if(now()-state.pageReadyAt<pageSettleMs)return;
+        const fastPreparation=state.provider==='gemini';
+        if(!state.pageReadyAt||(fastPreparation&&state.pageReadyUrl!==tab.url)){
+          state=await write({...state,pageReadyAt:now(),pageReadyUrl:tab.url});
+          if(!fastPreparation)return;
+        }
+        const pageSettling=now()-state.pageReadyAt<(pageSettleMs??(fastPreparation?AI_PAGE_SETTLE_MS:5000));
+        if(pageSettling&&!fastPreparation)return;
         await ensureContent(state.tabId);
         const setup=await call(state,'setup',{recovery:!!context.recover});
-        if(!setup.ready){await status(state,setup.message||'Đang chờ trang và cài đặt media sẵn sàng…');return}
+        state=await observePreparation(state,setup);
+        if(pageSettling||!setup.ready){await status(state,setup.message||'Đang chờ trang và cài đặt media sẵn sàng…');return}
         const {files=[]}=await request('/media/'+job.id+'/references','POST',permit);
         const prepared=await call(state,'prepare',{references:files,recovery:!!context.recover});
+        state=await observePreparation(state,prepared);
+        if(prepared.referenceUpload){
+          if(state.provider!=='flow'||!uploadReferences)throw new Error('Reload Browser Bridge để hỗ trợ cửa sổ chọn ảnh tham chiếu Flow.');
+          const target=prepared.referenceUpload;
+          if(!Array.isArray(target.names)||!target.names.length||target.names.some(name=>!files.some(file=>file.name===name)))
+            throw new Error('Lượt tải ảnh Flow không thuộc tài nguyên đã chọn của dự án');
+          if(!await enabled())return;
+          await request('/media/'+job.id+'/claim','POST',permit);
+          const uploaded=await uploadReferences(state.tabId,target.ticket,target.names.map(name=>files.find(file=>file.name===name)));
+          await call(state,'reference-uploaded',{upload:uploaded});
+          await status(state,'Đã gửi ảnh tham chiếu cho Flow; đang chờ chọn và thêm vào câu lệnh…');return;
+        }
         if(prepared.ready===false){await status(state,prepared.message||'Đang tải ảnh nhân vật tham chiếu…');return}
         state=await remember(state,job);
         state=await write({...state,phase:'prepared',baseline:prepared.baseline,
@@ -269,21 +341,23 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
       }else{
         // Retry the existing full WAV download once, without another Run.
         // A persistent provider/tab/download failure skips only this item.
-        const incomplete=/\[TTS_INCOMPLETE\]/.test(error.message||'');
+        const incomplete=/\[(?:TTS|MUSIC)_INCOMPLETE\]/.test(error.message||'');
         const retry=incomplete?{downloadId:undefined,downloadInitiated:false,downloadTicket:undefined,
           downloadAt:undefined,downloadUrl:undefined}:{};
         if(incomplete&&!state.fullDownloadRetry){
           await write({...state,...retry,phase:'download_ready',fullDownloadRetry:true,errors,
-            message:'WAV chưa đầy đủ. Đang tải lại kết quả đã tạo, không gửi lại nội dung.'});
+            message:state.provider==='lyria'?'File nhạc chưa đầy đủ. Đang tải lại bản đã tạo, không gửi lại prompt.':
+              'WAV chưa đầy đủ. Đang tải lại kết quả đã tạo, không gửi lại nội dung.'});
           return;
         }
-        let skipped=false;
+        let skipped=false,configurationPaused=false;
         if(state.jobId&&state.owner){
           try{
             if(state.tabId&&job){try{state=await remember(state,job)}catch{}}
             const result=await request('/media/'+state.jobId+'/failure','POST',{owner:state.owner,attempt:state.attempt,
-              reason:error.message||String(error),stage:state.phase});
+              reason:error.message||String(error),stage:state.phase,code:error.code});
             skipped=result.accepted===true;
+            configurationPaused=result.paused===true;
           }catch{}
         }
         if(skipped){
@@ -292,7 +366,8 @@ export function createMediaBridge({chrome,request,ensureContent,armCapture,readC
           const key=state.sessionKey,context=state.sessions?.[key]||{};
           state={...state,sessions:{...state.sessions,[key]:{...context,recover:true,submitted:!!state.sentAt||context.submitted,
             previousPrompt:state.prompts?.[state.tabId]||context.previousPrompt}}};
-          await write(idle(state,'Đã bỏ qua '+state.media.filename+'. Giữ phiên của dự án và chuyển scene tiếp theo; xem Tài Nguyên để tạo phần còn thiếu.'));
+          await write(idle(state,configurationPaused?'TTS tạm dừng do Speaker/Style chưa hợp lệ. Sửa giọng đọc trong Tổng quan dự án rồi tiếp tục.':
+            'Đã bỏ qua '+state.media.filename+'. Giữ phiên của dự án và chuyển scene tiếp theo; xem Tài Nguyên để tạo phần còn thiếu.'));
         }else{
           // A disconnected local app or ownership conflict cannot authorize
           // skipping a job. Keep the exact stage for reconnection/manual resume.

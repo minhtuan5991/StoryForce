@@ -30,9 +30,9 @@ export function MediaSessions({project:p,kind,act}:{project:Row,kind:'tts'|'visu
       const url=mediaSessionUrl(p,provider);if(!url)return null;
       return <a key={provider} className="button small" href={url} target="_blank" rel="noreferrer"><ExternalLink size={14}/>{tr(provider==='gemini'?'Open this project’s Gemini chat':provider==='flow'?'Open this project’s Flow project':'Open this project’s AI Studio dialog')}</a>;
     })}</div>
-    <p className="muted">{tr(kind==='tts'?'The project keeps its AI Studio dialog and rechecks Enzo / Friendly before each segment. An unsaved dialog is recreated with the same settings if needed.':'The project keeps one Gemini chat and one Flow project, including when a scene fails or the browser restarts.')}</p>
+    <p className="muted">{tr(kind==='tts'?'The project keeps its AI Studio dialog and rechecks its confirmed Speaker and Style before each segment. An unsaved dialog is recreated with the same settings if needed.':'Gemini reuses the project chat for images. Create your videos manually in the same Flow project to keep character continuity.')}</p>
     {kind==='visuals'&&<details><summary>{tr('Character reference images (optional)')}</summary>
-      <p>{tr('Choose up to three images from this project. Leave the selection empty to use the first completed scene image automatically. The same references are attached to Gemini and Flow scene prompts.')}</p>
+      <p>{tr('Choose up to three character images for automatic Gemini scenes. Download the same references below and upload them yourself for Flow videos.')}</p>
       <p>{tr('New plans with opening videos create a main-cast reference image first when none is available. The same faces are reused for images and videos; the reference image stays outside the timeline.')}</p>
       <div className="reference-image-list">{images.map((a:Row)=><label key={a.id} className="check-field">
         <input type="checkbox" checked={ids.includes(a.id)} disabled={disabled||!ids.includes(a.id)&&ids.length>=3}

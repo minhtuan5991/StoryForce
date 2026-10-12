@@ -6,7 +6,7 @@
   }
   // Selector-map revisions are independent of the installed extension version.
   // Reporting the map revision here makes the worker reinject on every tick,
-  // resetting the two-second editor stability window indefinitely.
+  // resetting the editor stability window indefinitely.
   globalThis.storyForgeVersion = chrome.runtime.getManifest().version;
   globalThis.storyForgeLoaded = true;
   const visible = el => !!el && !!el.getClientRects().length && !el.closest('[inert],[aria-hidden="true"]') &&
@@ -41,7 +41,8 @@
   }
   const sent=globalThis.storyForgeSent||(globalThis.storyForgeSent=new Set());
   function responseFinished(latest){
-    if(!latest.matches('[data-markdown-text-style="assistant-message"]')&&
+    const assistantRoot='[data-message-author-role="assistant"],[data-turn="assistant"],[data-content-search-unit-key$=":assistant"],[data-chatgpt-search-unit-key$=":assistant"]';
+    if(!latest.matches(assistantRoot+', [data-markdown-text-style="assistant-message"]')&&
        !latest.querySelector('[data-markdown-text-style="assistant-message"]'))return undefined;
     let scope=latest;
     while(scope){
@@ -49,6 +50,7 @@
       // A user-message Copy button is not evidence that the assistant is done.
       if([...scope.querySelectorAll('.turn-action-controls button')].some(el=>
         /^(Copy|Copy response|Sao chép)$/i.test(el.getAttribute('aria-label')||'')&&
+        !el.closest('[data-message-author-role="user"],[data-turn="user"],[data-content-search-unit-key$=":user"],[data-chatgpt-search-unit-key$=":user"],[data-content-search-unit-key$=":thinking"],[data-chatgpt-search-unit-key$=":thinking"]')&&
         visible(el)&&!el.disabled&&el.getAttribute('aria-disabled')!=='true'))return true;
       if(scope.hasAttribute('data-turn-key'))break;
       scope=scope.parentElement;
@@ -74,12 +76,15 @@
         const blockSelector='.markdown,[data-message-content],[data-markdown-text-style="assistant-message"]';
         const blocks=[...latest.querySelectorAll(blockSelector)].filter(el=>
           visible(el)&&!el.parentElement?.closest(blockSelector));
-        const last=(blocks.length?blocks.map(el=>el.innerText).join('\n\n'):latest.innerText).trim();
+        let last=(blocks.length?blocks.map(el=>el.innerText).join('\n\n'):latest.innerText).trim();
         const id=latest.getAttribute('data-message-id')||latest.querySelector('[data-message-id]')?.getAttribute('data-message-id')||
           latest.getAttribute('data-chatgpt-selection-message-id')||latest.querySelector('[data-chatgpt-selection-message-id]')?.getAttribute('data-chatgpt-selection-message-id')||
           latest.getAttribute('data-testid')||latest.closest('[data-turn-key]')?.getAttribute('data-turn-key');
         const selectionId=latest.getAttribute('data-chatgpt-selection-message-id')||latest.querySelector('[data-chatgpt-selection-message-id]')?.getAttribute('data-chatgpt-selection-message-id');
-        return {count:roots.length,last,finished:responseFinished(latest),...(id?{id}:{}),...(selectionId?{selectionId}:{})};
+        const files=a.host==='chatgpt.com'?globalThis.storyForgeResponseFiles?.describe(latest)||[]:[];
+        const fileTarget=files.length&&(selectionId||id)?{messageId:selectionId||id,text:last,files}:null;
+        if(fileTarget&&!last)last='Response file: '+files.join(', ');
+        return {count:roots.length,last,finished:responseFinished(latest),...(id?{id}:{}),...(selectionId?{selectionId}:{}),...(fileTarget?{fileTarget}:{})};
       }
     }
     for(const selector of a.result){
@@ -124,9 +129,11 @@
         readiness={element,text,since:time};
         return {ready:false};
       }
-      return {ready:time-readiness.since>=2000};
+      const stabilityMs=['chatgpt.com','gemini.google.com'].includes(a.host)?500:2000;
+      return {ready:time-readiness.since>=stabilityMs};
     }
     if(message.action==='auto-prepare'){
+      if(document.readyState!=='complete')throw transient('Trang AI đang tải lại; chưa điền prompt.');
       if(first(a.busy))throw new Error('Trang AI đang trả lời. Chờ hoàn tất rồi tiếp tục.');
       const existing=promptField(a);
       if(existing&&inputText(existing)&&!promptMatches(existing,message)&&
@@ -167,10 +174,13 @@
       if(!message.baseline)throw new Error('Thiếu mốc câu trả lời trước khi gửi; hãy lấy kết quả thủ công.');
       const newMessage=current.count>message.baseline.count||
         (current.id&&message.baseline.id&&current.id!==message.baseline.id);
-      const fresh=newMessage&&current.last!==message.baseline.last;
+      // A distinct completed turn can repeat the same invalid answer. It must
+      // still be validated so the bounded correction cannot wait forever.
+      const fresh=newMessage&&!!current.last;
       const busy=!!first(a.busy)||current.finished===false;
-      return {text:fresh?current.last:'',busy,...(fresh&&current.selectionId?{copyTarget:{messageId:current.selectionId,text:current.last}}:{}),capture:{messages:current.count,
-        baselineMessages:message.baseline.count,characters:current.last.length,fresh:!!fresh,busy}};
+      const emptyResponse=!!(newMessage&&!current.last&&!busy&&current.finished===true);
+      return {text:fresh?current.last:'',busy,emptyResponse,...(fresh&&current.fileTarget?{fileTarget:current.fileTarget}:{}),...(fresh&&current.selectionId?{copyTarget:{messageId:current.selectionId,text:current.last}}:{}),capture:{messages:current.count,
+        baselineMessages:message.baseline.count,characters:current.last.length,fresh:!!fresh,busy,completedEmpty:!!emptyResponse}};
     }
     if (message.action === 'fill') {
       let element = null;
@@ -187,7 +197,8 @@
       if(!globalThis.storyForgePaste)throw new Error('Reload Browser Bridge để áp dụng cách nhập bằng Paste.');
       const filled=await globalThis.storyForgePaste.prepare(element,message.prompt,{jobKey:message.jobKey,
         getField:()=>promptField(a),allowAttachment:a.host==='chatgpt.com',validate:()=>{
-          check();if(first(a.busy))throw new Error('AI đang tạo câu trả lời; chưa Paste prompt.');
+          check();if(document.readyState!=='complete')throw transient('Trang AI đang tải lại; chưa Paste prompt.');
+          if(first(a.busy))throw new Error('AI đang tạo câu trả lời; chưa Paste prompt.');
           if(promptField(a)!==element)throw transient('Ô soạn thảo vừa tải lại. Đang chờ trang ổn định.','EDITOR_CHANGED');
         }});
       if(filled.ready===false)return filled;
@@ -211,7 +222,8 @@
       if (first(a.busy)) throw new Error('The provider is still generating. Wait before capture.');
       const text = lastResult();
       if (!text) throw new Error(a.media?'Download media manually, then attach it in StoryForge Assets.':'No response found. Copy the response and paste it in StoryForge Jobs.');
-      return {text};
+      const current=snapshot();
+      return {text,...(current.fileTarget?{fileTarget:current.fileTarget}:{})};
     }
     if (message.action === 'wait') {
       let previous = '', stable = 0;
@@ -220,7 +232,7 @@
         check();
         const text = lastResult();
         if (text && text === previous && !first(a.busy)) stable++; else stable = 0;
-        if (stable >= 3) return {text};
+        if (stable >= 3) return {text,...(snapshot().fileTarget?{fileTarget:snapshot().fileTarget}:{})};
         previous = text;
         await new Promise(resolve=>setTimeout(resolve,1500));
       }

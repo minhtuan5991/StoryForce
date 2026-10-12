@@ -3,6 +3,7 @@ import json
 import os
 import textwrap
 from .intelligence import words
+from .project_naming import story_title
 
 
 def outro_chunk(number, voice, language, wpm, previous):
@@ -15,14 +16,17 @@ def outro_chunk(number, voice, language, wpm, previous):
 
 
 def tts_scene_context(chunk, project, channel, scenes, start):
-    voice=chunk.get('voice_profile') or {}
+    voice=dict(chunk.get('voice_profile') or {})
+    profile=(project.get('settings') or {}).get('narration_voice')
+    if profile:
+        voice.update(voice_name=profile['speaker'],style=profile['style'])
     related=[s for s in scenes if s['end_word']>start and s['start_word']<start+chunk['word_count']]
     context='\n'.join(f"Scene {s['number']}: {s.get('text','')[:250]}\nSetting: {s.get('continuity',{}).get('location','')}" for s in related)
     if voice.get('segment_role')=='outro':
         context='The story has ended. Address the audience with quiet warmth and gratitude. Invite, never pressure. Pause briefly before the closing thanks.'
     return (f"Narration for {project['title']}, segment {chunk['number']}.\n"
             f"One consistent narrator. Language: {channel.get('language','English')}. Voice: {voice.get('voice_name','Kore')}. "
-            f"Delivery: {voice.get('style','Warm, natural')}. Mood: {chunk.get('mood','Measured')}. "
+            f"Delivery: {voice.get('style','Warm, natural') or 'Neutral, natural narration'}. Mood: {chunk.get('mood','Measured')}. "
             f"Aim for approximately {project['wpm']} words per minute, natural pauses and clear articulation.\n"
             f"{context or 'Narrative moment: '+chunk['text'][:400]}\n"
             "Read only the transcript in the speech block. Do not read these directions or add dialogue, music or sound effects.")
@@ -36,7 +40,7 @@ def thumbnail_prompt(project, scenes, channel=None, direction=None):
     scene_reference = next((s.get('prompt') or s.get('text') for s in scenes if s.get('prompt') or s.get('text')), '')
     draft = project.get('draft') or ''
     reference = {
-        'video_title': publish.get('title') or project['title'],
+        'video_title': publish.get('title') or story_title(project),
         'visual_concept': publish.get('thumbnail_concept') or packaging.get('thumbnail_concept') or scene_reference or draft[:600],
         'visual_focal_point': packaging.get('visual_focal_point', ''),
         'curiosity_question': packaging.get('core_curiosity_question', ''),

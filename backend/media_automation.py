@@ -12,7 +12,7 @@ import re
 import shutil
 import base64
 import io
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from sqlalchemy import text as sql_text
@@ -24,8 +24,10 @@ from .production_extras import thumbnail_prompt, scene_generation_prompt
 from .thumbnail_packaging import current_plan, variant_prompt, selection, image_checks, assign_thumbnail, plan_identifier
 from .providers import PROVIDER_URLS
 from .media_sessions import provider_page, TTS_OPTIONS, visual_identity, character_reference_prompt, reference_characters
+from .narration import project_voice, freeze_voice, require_setup
 from .resource_cleanup import archived
 from .background_music import BackgroundMusic, MUSIC_PROMPT, PROFILE, choices
+from .manual_video import FLOW_MANUAL_NOTICE, is_manual_video
 
 
 MEDIA_KINDS = {"tts_context": "audio", "image_generation": "image", "video_generation": "video", "music_generation": "music"}
@@ -114,7 +116,8 @@ class MediaAutomation:
                               [(target_hash(s), s.asset_id) for s in scenes], p.publish.get("thumbnail_asset_id"),
                               p.settings.get('character_references', {})])
         folder = project_download_folder(db, p)
-        return {"image_count": images, "video_count": videos, "thumbnail_count": 1,
+        return {"image_count": images, "video_count": videos, "thumbnail_count": 3,
+                "manual_video_count": videos, "video_mode": "manual",
                 "confirmation": fingerprint, "folder": folder,
                 "download_path": str(downloads_root() / folder), "flow": FLOW_OPTIONS}
 
@@ -155,7 +158,9 @@ class MediaAutomation:
         with self.workflow.deletion_lock, self.database.session() as db:
             db.execute(sql_text("BEGIN IMMEDIATE"))
             p = self.project(db, id)
-            if settings_for(db, db.get(Channel, p.channel_id))["provider_mode"] != "browser":
+            require_setup(p)
+            config = settings_for(db, db.get(Channel, p.channel_id))
+            if config["provider_mode"] != "browser":
                 raise ValueError("Choose Browser Bridge mode before generating media")
             kind = body.get("kind")
             if kind not in ("tts", "visuals", "thumbnails", "music"):
@@ -176,18 +181,28 @@ class MediaAutomation:
                     return {**queued, 'status': 'queued_after_tts'}
                 raise ValueError("Finish or cancel the active project job first")
             regenerate = body.get("regenerate") is True
+            if config['pipeline_mode']=='assisted' and kind in ('tts','visuals'):
+                p.settings = {**p.settings, 'auto_production': {**p.settings.get('auto_production', {}), 'cancelled':False}}
             items, skipped = [], 0
             if kind == 'music':
-                status = self.music.prepare(db, p, retry=body.get('retry') is True)
+                status = self.music.prepare(db, p, retry=body.get('retry') is True, regenerate=body.get('regenerate') is True)
                 if status != 'generate':
                     db.commit()
                     if status != 'waiting_library':
                         self.workflow.drain_production_queue(p.id)
+                        self.workflow.assisted_queue.tick()
                     return {'kind':'music', 'status':status, **p.settings.get('background_music', {})}
-                items.append({'kind':'music_generation', 'provider':'lyria', 'target_type':'background_music',
+                from .background_music import LYRIA_OPTIONS
+                items.append({'kind':'music_generation', 'provider':'lyria', 'target_type':'background_music', 'lyria': LYRIA_OPTIONS,
                               'target_id':PROFILE, 'source_hash':digest(MUSIC_PROMPT), 'filename':'bgm_mystery.mp3',
                               'prompt':MUSIC_PROMPT})
             elif kind == "tts":
+                if not (p.settings or {}).get('narration_voice'):freeze_voice(db,p)
+                if config['pipeline_mode']=='assisted':
+                    p.settings = {**p.settings, 'assisted_production': {
+                        'enabled':True, 'story_version':p.story_version, 'all_thumbnails':True},
+                        'auto_production': {**p.settings.get('auto_production', {}), 'tts_started':True,
+                            'signature':digest([p.story_version, p.draft, choices(p)])}}
                 targets = db.query(Chunk).filter_by(project_id=id).order_by(Chunk.number).all()
                 if not targets:
                     raise ValueError("Split narration into audio segments first")
@@ -200,7 +215,8 @@ class MediaAutomation:
                         continue
                     items.append({"kind": "tts_context", "provider": "aistudio", "target_type": "chunk", "target_id": chunk.id,
                                   "source_hash": target_hash(chunk), "filename": f"tts_{chunk.number:03}.wav",
-                                  "prompt": chunk.text, "voice": "Enzo", "style": "Friendly"})
+                                  "prompt": chunk.text, "voice": project_voice(db,p)['speaker'], "style": project_voice(db,p)['style'],
+                                  'voice_signature':digest(project_voice(db,p))})
             elif kind == 'thumbnails':
                 plan = current_plan(db, p)
                 if not plan or body.get('plan_hash') != plan_identifier(plan):
@@ -232,14 +248,23 @@ class MediaAutomation:
                 identity = visual_identity(bible.content if bible else {})
                 if not scenes:
                     raise ValueError("Choose image/video counts and create a visual plan first")
-                if regenerate or not self.available(db, p.publish.get("thumbnail_asset_id"), "image", p.story_version):
-                    prompt = self.thumbnail(db, p, [serialize(s) for s in scenes])
-                    plan = current_plan(db, p)
+                plan = current_plan(db, p)
+                if config['pipeline_mode'] == 'assisted':
+                    p.settings = {**p.settings, 'assisted_production': {
+                        'enabled': True, 'story_version': p.story_version, 'all_thumbnails': True}}
+                variants = ('A', 'B', 'C')
+                for variant in variants:
+                    existing = any(a.metadata_json.get('thumbnail_variant') == variant
+                                   and a.metadata_json.get('thumbnail_plan_hash') == plan_identifier(plan)
+                                   and self.available(db, a.id, 'image', p.story_version)
+                                   for a in db.query(Asset).filter_by(project_id=p.id, kind='image'))
+                    if not regenerate and existing:
+                        skipped += 1
+                        continue
+                    prompt = self.thumbnail(db, p, [serialize(s) for s in scenes], variant)
                     items.append({"kind": "image_generation", "provider": "gemini", "target_type": "thumbnail", "target_id": id,
-                                  'variant_id':selection(p, plan), 'plan_hash':plan_identifier(plan),
-                                  "source_hash": digest(prompt), "filename": "thumbnail.png", "prompt": prompt})
-                else:
-                    skipped += 1
+                                  'variant_id':variant, 'plan_hash':plan_identifier(plan),
+                                  "source_hash": digest(prompt), "filename": f'thumbnail_{variant}.png', "prompt": prompt})
                 opening_plan = any((s.continuity or {}).get('timing_policy', {}).get('version') == 2 and
                                    (s.continuity or {}).get('timing_policy', {}).get('opening_video_count', 0) > 0 for s in scenes)
                 reference_prompt = character_reference_prompt(bible.content if bible else {})
@@ -251,14 +276,15 @@ class MediaAutomation:
                     media_kind = "video" if scene.visual_type == "VIDEO" else "image"
                     if scene.story_version != p.story_version or scene.status == "STALE":
                         raise ValueError("Create a visual plan for the current story first")
+                    if media_kind == 'video':
+                        continue
                     if not regenerate and self.available(db, scene.asset_id, ("image", "video"), p.story_version):
                         skipped += 1
                         continue
-                    items.append({"kind": media_kind + "_generation", "provider": "flow" if media_kind == "video" else "gemini",
+                    items.append({"kind": "image_generation", "provider": "gemini",
                                   "target_type": "scene", "target_id": scene.id, "source_hash": target_hash(scene),
-                                  "filename": f"scene_{scene.number:03}.{'mp4' if media_kind == 'video' else 'png'}",
-                                  "prompt": scene_generation_prompt(serialize(scene)) + identity,
-                                  **({"flow": FLOW_OPTIONS} if media_kind == "video" else {})})
+                                  "filename": f"scene_{scene.number:03}.png",
+                                  "prompt": scene_generation_prompt(serialize(scene)) + identity})
             folder = 'StoryForge Background Music' if kind == 'music' else project_download_folder(db, p)
             if kind != 'music':
                 p.settings = {**p.settings, 'media_download_folder': folder}
@@ -266,15 +292,18 @@ class MediaAutomation:
                      "draft_hash": digest(p.draft), "folder": folder, "download_path": str(downloads_root() / folder),
                      "total": len(items), "completed": 0, "failed": 0, "skipped": skipped, "pending": items, "current_job_id": None,
                      "confirmed_counts": {"images": body.get("image_count"), "videos": body.get("video_count")} if kind == "visuals" else {},
+                     "manual_video_count": report['video_count'] if kind == 'visuals' else 0,
                      "created_at": now()}
             (downloads_root() / folder).mkdir(parents=True, exist_ok=True)
             self.advance(db, p, state)
             if kind == 'music' and state.get('current_job_id'):
                 self.music.lease(db, db.get(Job, state['current_job_id']))
-                p.settings = {**p.settings, 'background_music':{'status':'generating', 'job_id':state['current_job_id']}}
+                p.settings = {**p.settings, 'background_music':{**p.settings.get('background_music', {}),
+                              'status':'generating', 'job_id':state['current_job_id']}}
             db.commit()
             if not state.get('current_job_id'):
                 self.workflow.drain_production_queue(p.id)
+                self.workflow.assisted_queue.tick()
             return self.public(state)
 
     @staticmethod
@@ -282,13 +311,19 @@ class MediaAutomation:
         return {k: v for k, v in state.items() if k != "pending"}
 
     def advance(self, db, p, state):
-        pending = list(state["pending"])
+        # Also guard old batches restored from backups: no pending Flow item
+        # can become a new automatic job after the policy changes.
+        pending = [item for item in state['pending'] if not is_manual_video(item)]
+        removed = len(state['pending']) - len(pending)
+        if removed:
+            state = {**state, 'total': max(state.get('completed', 0) + state.get('failed', 0), state['total'] - removed),
+                     'manual_video_count': max(state.get('manual_video_count', 0), removed)}
         if pending:
             item = pending.pop(0)
             descriptor = {**item, "project_id": p.id, "batch_id": state["id"], "folder": state["folder"], "download_path": state["download_path"],
                           "story_version": state["story_version"]}
             if item['provider'] == 'aistudio':
-                descriptor['tts'] = TTS_OPTIONS
+                descriptor['tts'] = {**TTS_OPTIONS, 'voice': item['voice'], 'style': item['style']}
             payload = {"_media": descriptor, "_draft_hash": state["draft_hash"], "_story_version": state["story_version"], "auto_continue": False}
             job = Job(project_id=p.id, kind=item["kind"], provider=item["provider"], attempts=1, status="waiting_user",
                       step="Đang chờ Bridge tạo và tải tài nguyên", progress=20, payload=payload, prompt=item["prompt"],
@@ -298,9 +333,51 @@ class MediaAutomation:
             state.update(current_job_id=job.id, pending=pending)
         else:
             state.update(phase="completed_with_missing" if state.get('failed') else "completed", current_job_id=None, pending=[])
+            from .sound_design import enabled, prepare_library
+            if enabled(serialize(p)):
+                try:
+                    prepare_library(self.root)
+                    p.settings = {**p.settings, 'sound_design': {**p.settings.get('sound_design', {}), 'prepared': True, 'error': ''}}
+                except OSError as exc:
+                    p.settings = {**p.settings, 'sound_design': {**p.settings.get('sound_design', {}), 'prepared': False, 'error': str(exc)}}
         p.settings = {**(p.settings or {}), "media_automation": state}
 
+    def manualize_videos(self):
+        """Release legacy Flow jobs without deleting prompts, assets or sessions."""
+        with self.workflow.deletion_lock, self.database.session() as db:
+            db.execute(sql_text('BEGIN IMMEDIATE'))
+            stopped = {}
+            for job in db.query(Job).filter(Job.status.in_(('queued', 'running', 'waiting_user'))):
+                if not is_manual_video({'kind': job.kind, 'provider': job.provider}):
+                    continue
+                job.status, job.error, job.step = 'cancelled', '', FLOW_MANUAL_NOTICE
+                job.result = {**(job.result or {}), 'manual_video': True}
+                job.logs = [*(job.logs or []), {'time': now(), 'message': FLOW_MANUAL_NOTICE}]
+                stopped[job.id] = job.project_id
+            for p in db.query(Project):
+                state = p.settings.get('media_automation', {})
+                if state.get('phase') != 'running':
+                    continue
+                pending = state.get('pending', [])
+                filtered = [item for item in pending if not is_manual_video(item)]
+                current_stopped = state.get('current_job_id') in stopped
+                removed = len(pending) - len(filtered) + int(current_stopped)
+                if not removed:
+                    continue
+                videos = db.query(Scene).filter_by(project_id=p.id, visual_type='VIDEO').count()
+                state = {**state, 'pending': filtered,
+                         'total': max(state.get('completed', 0) + state.get('failed', 0), state['total'] - removed),
+                         'manual_video_count': videos}
+                if current_stopped:
+                    self.advance(db, p, state)
+                else:
+                    p.settings = {**p.settings, 'media_automation': state}
+            db.commit()
+            return len(stopped)
+
     def validate_job(self, db, job, body):
+        if is_manual_video({'kind': job.kind, 'provider': job.provider}):
+            raise ValueError(FLOW_MANUAL_NOTICE)
         media = (job.payload or {}).get("_media")
         if not media or job.kind not in MEDIA_KINDS:
             raise ValueError("This media job has no automatic generation approval")
@@ -312,6 +389,8 @@ class MediaAutomation:
             raise ValueError("This media batch was stopped or replaced")
         if media["story_version"] != p.story_version or job.payload.get("_draft_hash") != digest(p.draft):
             raise ValueError("The story changed; start media generation for the new version")
+        if media.get('voice_signature') and media['voice_signature']!=digest(project_voice(db,p)):
+            raise ValueError('The narration voice changed; discard this old TTS result')
         if media["target_type"] == "thumbnail":
             scenes = [serialize(s) for s in db.query(Scene).filter_by(project_id=p.id).order_by(Scene.number)]
             current_hash = digest(self.thumbnail(db, p, scenes, media.get('variant_id')))
@@ -345,7 +424,17 @@ class MediaAutomation:
             if claim and claim.get("owner") != owner:
                 raise ValueError("Another browser owns this media job; do not generate it twice")
             claim = claim or {"owner": owner, "attempt": job.attempts, "phase": "claimed"}
-            claim = {**claim, 'last_seen_at': now()}
+            heartbeat = now()
+            # Windows can report the same clock tick for successive claims.
+            # A renewed claim must invalidate an older watchdog decision even
+            # when both heartbeats happened inside that tick.
+            try:
+                previous = datetime.fromisoformat(claim.get('last_seen_at', ''))
+                if datetime.fromisoformat(heartbeat) <= previous:
+                    heartbeat = (previous + timedelta(microseconds=1)).isoformat()
+            except (ValueError, TypeError):
+                pass
+            claim = {**claim, 'last_seen_at': heartbeat}
             send = bool(body.get("authorize_send")) and claim["phase"] != "sent"
             if send:
                 claim = {**claim, "phase": "sent", "sent_at": now()}
@@ -371,6 +460,16 @@ class MediaAutomation:
             if not page:
                 return {'saved': False}
             previous = p.settings.get('media_sessions', {}).get(job.provider, {})
+            if job.provider == 'lyria' and previous.get('url'):
+                try:
+                    old_page = provider_page('lyria', previous['url'])
+                except ValueError:
+                    old_page = None
+                if not old_page:
+                    if (job.payload.get('_media_claim', {}).get('phase') == 'sent' and
+                            media.get('lyria', {}).get('surface') != 'aistudio_music'):
+                        raise ValueError('Collect the already submitted music in its original tab; do not resend it')
+                    previous = {}
             # An established chat/project must not silently be rebound to another.
             if previous.get('url') and previous['url'] != page and job.provider != 'aistudio':
                 raise ValueError('The provider session belongs to a different chat or project')
@@ -527,7 +626,8 @@ class MediaAutomation:
             kind = MEDIA_KINDS[job.kind]
             config = settings_for(db, db.get(Channel, p.channel_id))
             if kind == 'music':
-                asset = self.music.import_track(db, p, source, config, body['download_id'])
+                asset = self.music.import_track(db, p, source, config, body['download_id'],
+                                               expected_duration=body.get('expected_duration'))
                 p.publish = {**(p.publish or {}), 'final_reviewed':False}
                 job.result = {'asset_id':asset.id, 'download_id':body['download_id'], 'filename':media['filename'], 'duration':asset.duration}
                 job.status, job.progress, job.step = 'completed', 100, 'Đã lưu nhạc Lyria vào thư viện dùng chung'
@@ -536,6 +636,7 @@ class MediaAutomation:
                 db.commit()
                 self.workflow.drain_production_queue(p.id)
                 for project_id in resolved:self.workflow.drain_production_queue(project_id)
+                self.workflow.assisted_queue.tick()
                 return {'accepted':True, **job.result}
             folder = project_folder(self.root, p.id) / {"image": "images", "video": "videos", "audio": "audio"}[kind]
             temporary = folder / ("download-" + uid() + Path(media["filename"]).suffix)
@@ -617,6 +718,7 @@ class MediaAutomation:
                 db.commit()
                 if not state.get('current_job_id'):
                     self.workflow.drain_production_queue(p.id)
+                    self.workflow.assisted_queue.tick()
                 return {"accepted": True, **job.result}
             finally:
                 temporary.unlink(missing_ok=True)
@@ -649,14 +751,27 @@ class MediaAutomation:
             previous = [f for f in p.settings.get('resource_failures', []) if failure_key(f) != failure_key(failure)]
             p.settings = {**p.settings, 'resource_failures': [*previous, failure][-250:]}
             if media['target_type'] == 'background_music':
-                p.settings = {**p.settings, 'background_music':{'status':'missing', 'reason':reason}}
+                previous_music = p.settings.get('background_music', {})
+                p.settings = {**p.settings, 'background_music':{**previous_music,'status':'missing', 'reason':reason}}
+                fallback = self.music.fallback(db, p)
+                if fallback:
+                    self.music.link(db,p,fallback,manual=previous_music.get('selection_mode')=='manual' and previous_music.get('library_id')==fallback.id)
+                    p.settings = {**p.settings, 'background_music':{**p.settings['background_music'], 'upgrade_notice':reason}}
             job.status, job.step, job.error = 'failed', 'Đã bỏ qua tài nguyên lỗi; xem Tài nguyên để tạo thủ công', reason
             job.result = {'skipped': True, 'missing': failure}
-            self.advance(db, p, {**state, 'failed': state.get('failed', 0) + 1})
+            paused=job.provider=='aistudio' and media['target_type']=='chunk' and body.get('code')=='TTS_CONFIG'
+            if paused:
+                job.step='Thiết lập TTS chưa hợp lệ; sửa Speaker/Style trong Tổng quan rồi tiếp tục'
+                job.result={**job.result,'paused':True}
+                p.settings={**p.settings,'media_automation':{**state,'phase':'stopped','current_job_id':None,'failed':state.get('failed',0)+1},
+                            'auto_production':{**p.settings.get('auto_production',{}),'cancelled':True}}
+                self.workflow.assisted_queue.enroll(p,'waiting_user')
+            else:self.advance(db, p, {**state, 'failed': state.get('failed', 0) + 1})
             resolved=self.music.resolve_waiters(db) if media['target_type']=='background_music' else []
             db.commit()
-        self.workflow.drain_production_queue(p.id)
+        if not paused:self.workflow.drain_production_queue(p.id)
         for project_id in resolved:self.workflow.drain_production_queue(project_id)
+        self.workflow.assisted_queue.tick()
         return {'accepted': True, **job.result}
 
     def missing(self, db, p):

@@ -21,11 +21,11 @@ export function StoryLockApproval({project:p,onApprove}:{project:Row,onApprove:(
   const unavailable=!p.draft?.trim()||!p.story_version||active;
   const approve=async(body?:Row)=>{setSaving(true);try{if(await onApprove(body))setWarning(null)}finally{setSaving(false)}};
   return <><Section title={p.locked?tr('Story locked. Ready for production.'):tr('A deliberate checkpoint')}
-    caption={tr('Review verification warnings before approving production.')}
+    caption={tr(p.workflow_settings?.pipeline_mode==='assisted'?'Assisted mode locks automatically after review and repair passes. Remaining warnings stay in the report.':'Review verification warnings before approving production.')}
     action={<Button primary disabled={p.locked||unavailable||saving} title={active?tr('Finish or cancel active jobs before approving Story Lock'):unavailable?tr('Create a draft before approving Story Lock'):''}
       onClick={()=>p.lock_gate.can_lock?void approve():setWarning(structuredClone(p))}><LockKeyhole size={16} aria-hidden="true"/>{p.locked?tr('Locked v')+p.story_version+'.0':tr('Approve Story Lock')}</Button>}>
     {p.lock_gate.can_lock?<div className="notice success"><CheckCircle2 size={22}/><div><strong>{tr('Quality gates passed')}</strong><p>{tr('Review the story yourself before approving production.')}</p></div></div>:<Warnings project={p}/>}
-    {p.artifacts.story_lock_approval?.story_version===p.story_version&&<p className="notice compact">{tr('This version was approved manually with the recorded warnings.')}</p>}
+    {p.artifacts.story_lock_approval?.story_version===p.story_version&&<p className="notice compact">{tr(p.artifacts.story_lock_approval.content.automatic?'This version was locked automatically in Assisted mode. Remaining warnings and AI results are kept.':'This version was approved manually with the recorded warnings.')}</p>}
     {active&&<p className="muted">{tr('Finish or cancel active jobs before approving Story Lock')}</p>}
   </Section>{warning&&<Modal title={tr('Approve despite verification warnings?')} onClose={()=>{if(!saving)setWarning(null)}} wide>
     <div className="notice compact">{tr('This story has not passed all quality checks. Confirm only after reviewing these warnings. Your decision will be recorded; AI results will remain unchanged.')}</div>
